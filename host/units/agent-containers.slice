@@ -1,0 +1,7 @@
+[Unit]
+Description=Development container resource boundary
+[Slice]
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=300%
+TasksMax=1024

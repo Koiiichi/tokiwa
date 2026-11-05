@@ -1,0 +1,3 @@
+[test]
+# No test may run the installed launcher. See test-guard.ts.
+preload = ["./test-guard.ts"]

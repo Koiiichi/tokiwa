@@ -1,0 +1,5 @@
+[Slice]
+MemoryMax=24G
+MemorySwapMax=0
+CPUQuota=600%
+TasksMax=2048

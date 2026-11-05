@@ -1,0 +1,208 @@
+#!/bin/bash
+set -euo pipefail
+cd "$HOME"
+export PATH="$HOME/.local/lib/cloud-access:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export AWS_PAGER=''
+mode=${1:-dashboard}
+name=${2:-}
+extra=
+usage() {
+ cat <<'EOF'
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|shell|admin]
+
+Open the dashboard. Use attach NAME to enter a terminal directly.
+  dashboard     Open the Tokiwa interface (default)
+  new NAME      Create an independent terminal and attach
+  attach NAME [IDENTITY]
+                Attach to an existing terminal; with IDENTITY, only that exact session
+  new NAME --from SOURCE  Open a shell in SOURCE’s current directory
+  project NAME PROJECT  Put a session in a project: a name path such as studio/api, or a directory
+  create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT]
+                Create a session in a directory, or in a new folder in the workbench folder
+  move-project FROM TO  Move a project and the projects inside it, for example api studio/api
+  forget-project PROJECT  Forget a saved project without sessions; its folders stay
+  name [NAME]   Show or set the name that new shells show in the prompt (default tokiwa)
+  rename NAME NEW IDENTITY  Rename a session; only that exact session
+  health        Read host and workspace resource metrics
+  spend         Read the instance, volumes and public addresses as JSON for the spend estimate
+  sessions      List terminals and attached clients
+  status        Check AWS access, host state and the workbench server
+  --check       Same as status
+  shell         Open or select a terminal without the dashboard
+  admin         Open the existing administrator shell
+
+Detach: Ctrl-B, then D. Exit ends the remote shell.
+Use another local terminal tab for Tokiwa controls during a connection.
+Run claude auth login or codex login inside the workbench for application login.
+AWS access uses the profile that ~/.config/tokiwa/host.env names. Admin access has no extra authentication.
+EOF
+}
+fail() { printf 'Tokiwa: %s\n' "$*" >&2; exit 1; }
+case "$mode" in
+ --files)
+  [[ $# -eq 2 && $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 12000 ]] || fail 'The file request is invalid.'
+  mode=files ;;
+ --end-confirmed)
+  [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'A confirmed session identity is required.'
+  mode=end; extra=$3 ;;
+ --help|-h) usage; exit 0 ;;
+ new|attach|project)
+  [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
+  if [[ $mode == new && $# -eq 4 && $3 == --from ]]; then
+   [[ $4 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'The source session name is invalid.'
+   extra=$4
+  elif [[ $mode == attach && $# -eq 3 ]]; then
+   [[ $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
+   extra=$3
+  elif [[ $mode == project && $# -eq 3 ]]; then
+   [[ $3 == /* || $3 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,47}){0,5}$ ]] || fail 'Use a project name path such as studio/api, or an absolute directory.'
+   extra=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$3")
+  else
+   [[ $# -eq 2 && $mode != project ]] || fail 'Use new NAME --from SOURCE or project NAME PROJECT.'
+  fi ;;
+ create)
+  [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
+  extra=$(python3 - "${@:3}" <<'PY_CREATE'
+import base64, json, sys
+args, want = sys.argv[1:], {}
+keys = {'--dir': 'dir', '--folder': 'folder', '--project': 'project'}
+while args:
+    if len(args) < 2 or args[0] not in keys or keys[args[0]] in want:
+        raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT].')
+    want[keys[args[0]]] = args[1]
+    args = args[2:]
+if ('dir' in want) == ('folder' in want):
+    raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT].')
+print(base64.b64encode(json.dumps(want).encode()).decode())
+PY_CREATE
+) || exit 1 ;;
+ move-project)
+  [[ $# -eq 3 ]] || fail 'Use move-project FROM TO, for example api studio/api.'
+  name=$(python3 -c 'import base64,json,sys; print(base64.b64encode(json.dumps({"from":sys.argv[1],"to":sys.argv[2]}).encode()).decode())' "$2" "$3")
+  mode=relabel ;;
+ rename)
+  [[ $# -eq 4 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $4 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'Use rename NAME NEW IDENTITY; names are 1 to 48 letters, digits, hyphens or underscores.'
+  extra=$(python3 -c 'import base64,json,sys; print(base64.b64encode(json.dumps({"to":sys.argv[1],"identity":sys.argv[2]}).encode()).decode())' "$3" "$4") ;;
+ forget-project)
+  [[ $# -eq 2 ]] || fail 'Use forget-project PROJECT.'
+  name=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$2") ;;
+ name)
+  [[ $# -le 2 ]] || fail 'Use name [NAME].'
+  [[ -z $name || $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]] || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+
+ health|spend|dashboard|--snapshot|shell|admin|sessions|list|status|--check) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
+ *) usage >&2; exit 2 ;;
+esac
+# The host settings: KEY=VALUE lines. The file is read, never run. See docs/configuration.md.
+config=${TOKIWA_HOST_CONFIG:-$HOME/.config/tokiwa/host.env}
+[[ -r $config ]] || fail "Set the host in $config: instance=, profile= and region=, and optionally account= and end=."
+instance= profile= region= account= end=
+while IFS= read -r line || [[ -n $line ]]; do
+ [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+ [[ $line =~ ^(instance|profile|region|account|end)=([A-Za-z0-9._:+-]*)$ ]] || fail "$config has a line that is not KEY=VALUE for instance, profile, region, account or end."
+ printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+done < "$config"
+[[ $instance =~ ^i-[0-9a-f]{8,17}$ ]] || fail "$config: instance= must be an EC2 instance ID, for example i-0123456789abcdef0."
+[[ -n $profile ]] || fail "$config: profile= must name an AWS CLI profile."
+[[ $region =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || fail "$config: region= must be an AWS region, for example us-east-1."
+[[ -z $account || $account =~ ^[0-9]{12}$ ]] || fail "$config: account= must be a 12-digit AWS account ID."
+if [[ -n $end ]]; then
+ # An end time with an offset, for example 2026-12-31T23:59:00-08:00. After it, Tokiwa starts no connection.
+ end_epoch=$(python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); assert t.tzinfo; print(int(t.timestamp()))' "$end" 2>/dev/null) \
+  || fail "$config: end= must be a time with an offset, for example 2026-12-31T23:59:00-08:00."
+ [[ $(date -u +%s) -lt $end_epoch ]] || fail "The end time in $config has passed. No host was started."
+fi
+if [[ $mode == dashboard ]]; then
+ # The interface, installed by app/install.sh. It calls this launcher for every
+ # AWS and tmux operation. The other commands, for example attach NAME, work without it.
+ app="$HOME/.local/lib/tokiwa/opentui/run"
+ [[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command.'
+ [[ -x $app ]] || fail 'The Tokiwa interface is not installed. Run app/install.sh, or use tokiwa attach NAME.'
+ exec "$app"
+fi
+note() { [[ ${TOKIWA_DASHBOARD:-0} == 1 ]] || printf "$@"; }
+aws_call() { aws --profile "$profile" --region "$region" --cli-connect-timeout 5 --cli-read-timeout 10 "$@"; }
+note 'Tokiwa · checking AWS access…\n' >&2
+# The SSO session ends after the organization's sign-in time limit. In an interactive terminal, start the browser
+# login and continue. The dashboard and scripted calls keep failing with the command to run.
+if ! signed_in=$(aws_call sts get-caller-identity --query Account --output text 2>/dev/null); then
+ [[ -t 0 && -t 1 && ${TOKIWA_DASHBOARD:-0} != 1 ]] || fail "AWS authentication failed. Run aws sso login --profile $profile."
+ note "Tokiwa · AWS sign-in expired; starting aws sso login --profile ${profile}…\\n" >&2
+ aws sso login --profile "$profile" >&2 || fail "The AWS login did not complete. Run aws sso login --profile $profile."
+ signed_in=$(aws_call sts get-caller-identity --query Account --output text) || fail "AWS authentication failed. Run aws sso login --profile $profile."
+fi
+[[ -z $account || $signed_in == "$account" ]] || fail "The AWS account does not match account= in $config."
+if [[ $mode == spend ]]; then
+ # Read-only inventory for the local spend estimate. A stopped host still has volumes and addresses.
+ instance_json=$(aws_call ec2 describe-instances --instance-ids "$instance" --query 'Reservations[0].Instances[0].{type:InstanceType,state:State.Name,launch_time:LaunchTime,public_ip:PublicIpAddress,availability_zone:Placement.AvailabilityZone}' --output json) || fail 'The instance could not be read.'
+ volumes_json=$(aws_call ec2 describe-volumes --filters "Name=attachment.instance-id,Values=$instance" --query 'Volumes[].{id:VolumeId,type:VolumeType,size_gib:Size,iops:Iops,throughput:Throughput}' --output json) || fail 'The volumes could not be read.'
+ addresses_json=$(aws_call ec2 describe-addresses --filters "Name=instance-id,Values=$instance" --query 'Addresses[].{public_ip:PublicIp,allocation_id:AllocationId}' --output json) || fail 'The public addresses could not be read.'
+ exec python3 -c '
+import json, sys, time
+instance, volumes, addresses = (json.loads(value) for value in sys.argv[2:5])
+if not isinstance(instance, dict) or not isinstance(volumes, list) or not isinstance(addresses, list):
+    sys.exit("Tokiwa: The instance inventory is invalid.")
+print(json.dumps({"instance_id": sys.argv[1], "region": sys.argv[5], "read_at": time.time(), "instance": instance, "volumes": volumes, "addresses": addresses}))
+' "$instance" "$instance_json" "$volumes_json" "$addresses_json" "$region"
+fi
+state=$(aws_call ec2 describe-instances --instance-ids "$instance" --query 'Reservations[0].Instances[0].State.Name' --output text) || fail 'The host state could not be read.'
+[[ $state == running ]] || fail "The host is $state. No restart was requested."
+note 'Tokiwa · host running\n' >&2
+helper='sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 /opt/agent-platform/rootless/terminal-session.sh'
+case "$mode" in
+ list) mode=sessions ;;
+ --check) mode=status ;;
+ --snapshot) mode=snapshot ;;
+esac
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == files || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename ]]; then
+ remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
+ [[ $mode != health ]] || remote="$helper health"
+ if [[ -n $name ]]; then
+  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra")
+  remote="$remote $quoted"
+ fi
+ parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$remote")
+ id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'
+ status=Pending
+ for attempt in {1..15}; do
+  status=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query Status --output text 2>/dev/null) || status=Pending
+  case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
+  sleep 1
+ done
+ aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
+ if [[ $status != Success ]]; then
+  aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text >&2 || true
+  fail "The workbench check returned $status. No service was started."
+ fi
+ exit 0
+fi
+[[ -x "$HOME/.local/lib/cloud-access/session-manager-plugin" ]] || fail 'The Session Manager client is unavailable.'
+[[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command.'
+if [[ $mode == admin ]]; then
+ remote='sudo -n /bin/bash -l'
+ note 'Tokiwa · administrator access (existing authentication policy)\n' >&2
+else
+ remote="systemctl is-active --quiet cloud-workbench.service && $helper $mode"
+ [[ -z $name ]] || remote="$remote $name"
+ # The identity holds a dollar sign. Quote it so that the remote shell passes it unchanged.
+ if [[ $mode == attach && -n $extra ]]; then remote="$remote '$extra'"
+ elif [[ -n $extra ]]; then remote="$remote $extra"; fi
+ # The helper also checks the socket and never starts a tmux server.
+ remote="$remote || { printf 'The terminal connection ended with an error. Run tokiwa status.\\n' >&2; exit 1; }"
+ note 'Tokiwa · connecting to development terminal…\n' >&2
+fi
+parameters=$(python3 -c 'import json,sys; print(json.dumps({"command":[sys.argv[1]]}))' "$remote")
+# A dropped connection leaves the remote terminal modes on in the local terminal, for example mouse
+# reporting. Restore the local line settings and turn those modes off after every session.
+local_tty=$(stty -g)
+# Pass tmux's output through unchanged. tmux moves down one row in the same column with a bare
+# line feed. The Session Manager plugin runs `stty cbreak`, which on macOS turns opost on; with
+# onlcr on, that line feed becomes CR LF and the row lands at column 0. The restore below undoes it.
+stty -onlcr 2>/dev/null || true
+session_status=0
+aws --profile "$profile" --region "$region" ssm start-session --target "$instance" --document-name AWS-StartInteractiveCommand --parameters "$parameters" || session_status=$?
+stty "$local_tty" 2>/dev/null || true
+printf '\033[?1000l\033[?1002l\033[?1003l\033[?1005l\033[?1006l\033[?1015l\033[?1004l\033[?2004l\033[?1l\033>\033[>4m\033[<u\033[?25h'
+# After a clean detach, tmux has already left the alternate screen. Leave it here only after a failure.
+[[ $session_status -eq 0 ]] || printf '\033[?1049l\n'
+exit "$session_status"

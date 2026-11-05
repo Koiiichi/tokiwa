@@ -1,0 +1,40 @@
+[Unit]
+Description=Persistent unprivileged development shell
+RequiresMountsFor=/srv/development/state/workspaces/workbench /srv/development/private/homes/workbench
+[Service]
+Type=simple
+User=agent-workspace
+Group=agent-workspace
+Slice=agent-sessions.slice
+Environment=CLAUDE_CONFIG_DIR=/srv/development/private/homes/workbench/.claude
+Environment=CODEX_HOME=/srv/development/private/homes/workbench/.codex
+Environment=DISABLE_AUTOUPDATER=1
+Environment=PEERMESH_HOME=/srv/development/private/peermesh
+Environment=HOME=/srv/development/private/homes/workbench
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/srv/development/state/workspaces/workbench
+RuntimeDirectory=cloud-workbench
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/tmux -D -S /run/cloud-workbench/tmux.sock -f /dev/null
+ExecStartPost=/opt/agent-platform/rootless/start-workbench.sh
+Restart=no
+KillMode=control-group
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=300%
+TasksMax=512
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/var/lib/agent-platform
+ReadWritePaths=/srv/development/state/workspaces/workbench /srv/development/private/homes/workbench /srv/development/private/peermesh
+TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=256M,mode=1777 /var/tmp:rw,nosuid,nodev,size=256M,mode=1777
+UMask=0077
+[Install]
+WantedBy=multi-user.target

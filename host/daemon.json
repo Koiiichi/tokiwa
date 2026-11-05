@@ -1,0 +1,9 @@
+{
+  "data-root": "/srv/development/cache/rootless-engine/data",
+  "exec-root": "/run/user/2200/docker-exec",
+  "storage-driver": "overlay2",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "local",
+  "log-opts": {"max-size": "10m", "max-file": "3"},
+  "default-network-opts": {"bridge": {"com.docker.network.bridge.host_binding_ipv4": "127.0.0.1"}}
+}

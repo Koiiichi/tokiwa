@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-31T05:13:19.275026+00:00",
+  "title": "Design System: Tokiwa",
+  "extensions": {
+    "breakpoints": [
+      {
+        "name": "wide-health",
+        "value": "86 terminal columns"
+      }
+    ],
+    "shadows": [],
+    "motion": []
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "A quiet place to find a terminal and resume work.",
+    "overview": "Session list, grouped commands, embedded PTYs and a plain-text Health view.",
+    "keyCharacteristics": [
+      "Bounded Health column",
+      "Compact command groups",
+      "Retained independent terminals"
+    ],
+    "rules": [
+      {
+        "name": "Observed activity",
+        "body": "Do not interpret recent output as task success.",
+        "section": "colors"
+      },
+      {
+        "name": "Recorded samples",
+        "body": "Do not invent history for recorded samples.",
+        "section": "components"
+      }
+    ]
+  }
+}

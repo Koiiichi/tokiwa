@@ -1,0 +1,7 @@
+*
+!app.py
+!integration.py
+!requirements.lock
+!Dockerfile
+!independence.py
+.tokiwa-buildx

@@ -1,0 +1,7 @@
+table inet rootless_workspace {
+ chain output {
+  type filter hook output priority -101; policy accept;
+  meta skuid { 2200, 1048576-1114111 } ip daddr 169.254.0.0/16 reject
+  meta skuid { 2200, 1048576-1114111 } ip6 daddr fd00:ec2::254 reject
+ }
+}

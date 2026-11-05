@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded native rootless Docker user slice
+StopWhenUnneeded=yes
+[Slice]
+CPUWeight=100
+MemoryAccounting=yes
+TasksAccounting=yes
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=300%
+TasksMax=1024

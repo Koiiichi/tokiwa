@@ -1,0 +1,25 @@
+[Unit]
+Description=Rootless Docker for the development workspace
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=1
+[Service]
+Type=notify
+# dockerd sends readiness from the persistent RootlessKit child.
+NotifyAccess=all
+Environment=PATH=/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=true
+ExecStart=/opt/agent-platform/rootless/dockerd-rootless.sh --config-file=/opt/agent-platform/rootless/daemon.json
+ExecStartPost=/usr/bin/setfacl -m u:2100:--x %t
+ExecStartPost=/usr/bin/setfacl -m u:2100:rw %t/docker.sock
+Restart=no
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=90
+Delegate=yes
+KillMode=mixed
+LimitNOFILE=1048576
+TasksMax=1024
+[Install]
+WantedBy=default.target

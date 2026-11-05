@@ -1,0 +1,141 @@
+{
+  "services": {
+    "app": {
+      "cpus": 0.5,
+      "mem_limit": "256m",
+      "pids_limit": 128,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "logging": {
+        "driver": "local",
+        "options": {
+          "max-size": "10m",
+          "max-file": "2"
+        }
+      },
+      "build": {
+        "context": ".",
+        "args": {
+          "BASE": "python@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487"
+        }
+      },
+      "platform": "linux/amd64",
+      "environment": {
+        "DATABASE_URL": "postgresql://app:synthetic-only@postgres/app",
+        "REDIS_URL": "redis://redis:6379/0"
+      },
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy"
+        },
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "ports": [
+        "127.0.0.1:${APP_PORT:-18080}:8080"
+      ],
+      "read_only": true,
+      "tmpfs": [
+        "/tmp:rw,nosuid,nodev,size=16m"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"
+        ],
+        "interval": "5s",
+        "timeout": "4s",
+        "retries": 20
+      },
+      "volumes": [
+        "receipts:/receipts"
+      ]
+    },
+    "postgres": {
+      "cpus": 1,
+      "mem_limit": "512m",
+      "pids_limit": 128,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "logging": {
+        "driver": "local",
+        "options": {
+          "max-size": "10m",
+          "max-file": "2"
+        }
+      },
+      "image": "postgres@sha256:2cd2c0f809604aaeff6f0ec8f40aecbd025613107561015c69369a1a7f1d3416",
+      "platform": "linux/amd64",
+      "environment": {
+        "POSTGRES_USER": "app",
+        "POSTGRES_PASSWORD": "synthetic-only",
+        "POSTGRES_DB": "app"
+      },
+      "volumes": [
+        "pgdata:/var/lib/postgresql/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "pg_isready -U app -d app"
+        ],
+        "interval": "5s",
+        "timeout": "3s",
+        "retries": 20
+      }
+    },
+    "redis": {
+      "cpus": 0.5,
+      "mem_limit": "128m",
+      "pids_limit": 128,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "logging": {
+        "driver": "local",
+        "options": {
+          "max-size": "10m",
+          "max-file": "2"
+        }
+      },
+      "image": "redis@sha256:a7aad82554197a54c653388bfded882a59d6b4a02468484bc31bae6772dcc42c",
+      "platform": "linux/amd64",
+      "command": [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "always"
+      ],
+      "volumes": [
+        "redisdata:/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ],
+        "interval": "5s",
+        "timeout": "3s",
+        "retries": 20
+      }
+    }
+  },
+  "volumes": {
+    "pgdata": {},
+    "redisdata": {},
+    "receipts": {}
+  }
+}

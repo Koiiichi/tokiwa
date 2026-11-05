@@ -1,0 +1,22 @@
+#!/bin/sh
+# Open a web link in the browser of the Mac that shows this session in Tokiwa.
+# Programs run it as $BROWSER URL. It writes a request to the terminal; Tokiwa on the Mac reads
+# the request and opens the link only right after the owner clicked or typed in that view.
+set -eu
+url=${1:-}
+case $url in
+ http://* | https://*) ;;
+ *) printf 'tokiwa-open: only http and https links open on the Mac.\n' >&2; exit 2 ;;
+esac
+code=$(printf '%s' "$url" | base64 | tr -d '\n')
+request=$(printf '\033]7717;open;%s\007' "$code")
+# tmux passes the request on to the viewer only inside a passthrough, with its escape doubled.
+[ -n "${TMUX:-}" ] && request=$(printf '\033Ptmux;\033%s\033\\' "$request")
+# The program's own output can go elsewhere, so write to the terminal of the session.
+if ! { printf '%s' "$request" > /dev/tty; } 2>/dev/null; then
+ tty=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{pane_tty}' 2>/dev/null || true)
+ [ -n "$tty" ] && printf '%s' "$request" > "$tty" || {
+  printf 'tokiwa-open: no terminal to send the link to: %s\n' "$url" >&2
+  exit 1
+ }
+fi

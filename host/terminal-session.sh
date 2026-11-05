@@ -1,0 +1,330 @@
+#!/bin/bash
+# All shells belong to the existing protected tmux server.
+set -euo pipefail
+socket=${TOKIWA_SOCKET:-/run/cloud-workbench/tmux.sock}
+workdir=${TOKIWA_WORKDIR:-/srv/development/state/workspaces/workbench}
+# A new project folder is one name inside this folder. Sessions run in a service that can write
+# only inside the workbench folder (see units/cloud-workbench.service), so new folders go there.
+workspaces=${TOKIWA_WORKSPACES:-$workdir}
+# Saved projects, so that a project outlives its sessions: projects.json in this private folder.
+state=${TOKIWA_STATE:-/srv/development/private/homes/workbench/.tokiwa}
+# Programs open links through this helper, so the links open in the browser of the Mac.
+browser=${TOKIWA_BROWSER:-/opt/agent-platform/rootless/tokiwa-open}
+tm() { tmux -N -S "$socket" "$@"; }
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+valid_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]]; }
+valid_prompt_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]]; }
+mode=${1:-shell}
+name=${2:-}
+extra=${3:-}
+[[ $# -le 3 ]] || fail 'Too many arguments.'
+case "$mode" in
+ new|attach|ensure|project|end|create|rename) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
+ files) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 12000 && -z $extra ]] || fail 'The file request is invalid.' ;;
+ health|shell|sessions|status|snapshot) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
+ *) fail 'Unknown terminal command.' ;;
+esac
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || -z $extra ]] || fail 'Too many arguments.'
+if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
+if [[ $mode == files ]]; then
+ exec python3 "$(dirname "$0")/workbench-files.py" "$name"
+fi
+if [[ $mode == health ]]; then
+ exec python3 "$(dirname "$0")/workbench-health.py"
+fi
+if [[ $mode == end || ( $mode == attach && $# -eq 3 ) ]]; then
+ [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
+fi
+# -N prevents a failed connection from creating an unprotected server.
+tm show-options -s exit-empty >/dev/null 2>&1 || fail 'The workbench service is unavailable. No service was started. Run tokiwa status.'
+# A new shell shows the configured name in its prompt, for example `tokiwa:workbench$`.
+prompt_name() {
+ local value
+ value=$(tm show-options -gqv @tokiwa_name 2>/dev/null || true)
+ valid_prompt_name "$value" && printf '%s' "$value" || printf 'tokiwa'
+}
+# Start session $1 in directory $2 with a plain shell.
+start_shell() {
+ tm new-session -d -s "$1" -c "$2" env "BROWSER=$browser" "PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --norc
+}
+# Validate a project label from base64 $1: a name path such as studio/api, or an existing absolute directory.
+project_label() {
+ python3 - "$1" <<'PY_LABEL'
+import base64, os, re, sys
+try:
+    label = base64.b64decode(sys.argv[1], validate=True).decode('utf-8')
+    if label.startswith('/'):
+        if any(ord(c) < 32 or ord(c) == 127 for c in label):
+            raise ValueError()
+        label = os.path.realpath(label)
+        if not os.path.isdir(label) or not os.access(label, os.R_OK | os.X_OK):
+            raise ValueError()
+    else:
+        parts = label.split('/')
+        if not 1 <= len(parts) <= 6 or not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,47}', p) for p in parts):
+            raise ValueError()
+except (ValueError, OSError, UnicodeError):
+    raise SystemExit('Use a project name path such as studio/api, or an existing absolute directory.')
+print(label)
+PY_LABEL
+}
+# Change the saved projects: add LABEL DIR (keeps an existing entry), move FROM TO, forget LABEL.
+# A move or a forget also applies to the projects inside LABEL. Directory labels are not saved.
+registry() {
+ python3 - "$state" "$@" <<'PY_REGISTRY'
+import fcntl, json, os, sys
+state, op, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+os.makedirs(state, mode=0o700, exist_ok=True)
+path = os.path.join(state, 'projects.json')
+with open(os.path.join(state, 'projects.lock'), 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        with open(path) as f:
+            projects = json.load(f).get('projects', {})
+    except FileNotFoundError:
+        projects = {}
+    inside = lambda label, root: label == root or label.startswith(root + '/')
+    if op == 'add' and not args[0].startswith('/'):
+        projects.setdefault(args[0], {'dir': args[1]})
+    elif op == 'move':
+        projects = {(args[1] + k[len(args[0]):] if inside(k, args[0]) else k): v for k, v in projects.items()}
+    elif op == 'forget':
+        projects = {k: v for k, v in projects.items() if not inside(k, args[0])}
+    temp = path + '.tmp'
+    with open(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+        json.dump({'projects': projects}, f, indent=1, sort_keys=True)
+    os.replace(temp, path)
+PY_REGISTRY
+}
+ensure() {
+ if ! tm has-session -t "=$name" 2>/dev/null; then
+  printf 'Creating terminal: %s\n' "$name" >&2
+  if ! start_shell "$name" "$workdir"; then
+   # Another client can create this exact session between the two commands.
+   tm has-session -t "=$name" 2>/dev/null || fail 'The terminal could not be created.'
+  fi
+ fi
+}
+case "$mode" in
+ snapshot)
+  python3 - "$socket" "$state" <<'PY_SNAPSHOT'
+import json
+import subprocess
+import sys
+import hashlib
+import time
+
+output = subprocess.check_output(
+    ['tmux', '-N', '-S', sys.argv[1], 'list-sessions', '-F',
+     '#{session_name}\t#{session_attached}\t#{session_windows}'], text=True, timeout=10)
+sessions = []
+for line in output.splitlines():
+    name, clients, windows = line.rsplit('\t', 2)
+    def read(*args):
+        return subprocess.check_output(['tmux', '-N', '-S', sys.argv[1], *args], text=True, timeout=10).rstrip('\n')
+    cwd = read('display-message', '-p', '-t', '=' + name + ':', '#{pane_current_path}')
+    project = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_project') or cwd
+    parent = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_parent')
+    # One line per pane of every window. The window bell flag is set when a pane of the window
+    # rang the bell while no client viewed that window; viewing the window clears it.
+    panes = [pane.split('\t', 3) for pane in read('list-panes', '-s', '-t', '=' + name, '-F',
+             '#{pane_id}\t#{pane_dead}\t#{window_bell_flag}\t#{pane_current_command}').splitlines()]
+    bell = any(flag == '1' for _, _, flag, _ in panes)
+    activity = []
+    for pane_id, dead, _, command in panes[:16]:
+        screen = read('capture-pane', '-p', '-t', pane_id, '-S', '-20')
+        activity.append({'pane':pane_id, 'dead':dead == '1', 'command':command[:80], 'screen':hashlib.sha256(screen.encode()).hexdigest()})
+    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
+if len(sessions) > 100:
+    raise SystemExit('The session list exceeds the dashboard limit of 100.')
+# Drop optional activity before it can prevent session navigation.
+while len(json.dumps({'sessions': sessions})) > 22000:
+    row = next((row for row in reversed(sessions) if row['activity']), None)
+    if row is None:
+        raise SystemExit('The session list exceeds the response limit.')
+    row['activity'] = []
+    row['activity_partial'] = True
+try:
+    with open(sys.argv[2] + '/projects.json') as f:
+        projects = json.load(f).get('projects', {})
+except (FileNotFoundError, ValueError):
+    projects = {}
+print(json.dumps({'sessions': sessions, 'projects': projects}))
+PY_SNAPSHOT
+  exit ;;
+ end)
+  # Both the identity check and deletion run in the same tmux command queue.
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
+   "kill-session -t '$session_id'" "display-message -p 'Session identity changed. Nothing was ended.'") || fail 'The session could not be ended. Refresh its state.'
+  [[ -z $answer ]] || fail "$answer"
+  printf 'The selected session ended. Detached background processes may remain.\n'
+  exit ;;
+ rename)
+  # The identity check and the rename run in the same tmux command queue, as for end.
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  request=$(python3 - "$extra" <<'PY_RENAME'
+import base64, json, re, sys
+try:
+    want = json.loads(base64.b64decode(sys.argv[1], validate=True))
+    to, identity = want['to'], want['identity']
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}', to) or not re.fullmatch(r'[0-9]+:\$[0-9]+:[0-9]+', identity):
+        raise ValueError()
+    print(to, identity)
+except (ValueError, KeyError, TypeError, AttributeError):
+    raise SystemExit('Use a new name of 1 to 48 letters, digits, hyphens or underscores, and the session identity.')
+PY_RENAME
+) || exit 1
+  to=${request% *}; identity=${request#* }
+  tm has-session -t "=$to" 2>/dev/null && fail 'A session with this name exists.'
+  session_id=${identity#*:}; session_id=${session_id%%:*}
+  answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$identity}" \
+   "rename-session -t '$session_id' '$to'" "display-message -p 'Session identity changed. Nothing was renamed.'") || fail 'The session could not be renamed. Refresh its state.'
+  [[ -z $answer ]] || fail "$answer"
+  printf 'Renamed %s to %s.\n' "$name" "$to"
+  exit ;;
+ project)
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session does not exist.'
+  label=$(project_label "$extra") || exit 1
+  tm set-option -t "=$name:" @tokiwa_project "$label"
+  registry add "$label" "$(tm display-message -p -t "=$name:" '#{pane_current_path}')"
+  printf 'Project saved.\n'
+  exit ;;
+ relabel)
+  # Move project `from` and every project inside it to `to`. A session without its own label
+  # belongs to the project of its directory. Directories and processes do not change.
+  request=$(python3 - "$name" <<'PY_MOVE'
+import base64, json, sys
+try:
+    move = json.loads(base64.b64decode(sys.argv[1], validate=True))
+    print(base64.b64encode(move['from'].encode()).decode(), base64.b64encode(move['to'].encode()).decode())
+except (ValueError, KeyError, TypeError, AttributeError):
+    raise SystemExit('The project move is invalid.')
+PY_MOVE
+) || exit 1
+  from=$(project_label "${request% *}") || exit 1
+  to=$(project_label "${request#* }") || exit 1
+  [[ $to != /* ]] || fail 'Move a project to a name path such as studio/api.'
+  [[ $to != "$from" && $to != "$from"/* ]] || fail 'A project cannot move into itself.'
+  moved=0
+  first=''
+  while IFS=$'\t' read -r session label cwd; do
+   [[ -n $label ]] || label=$cwd
+   if [[ $label == "$from" ]]; then target=$to
+   elif [[ $label == "$from"/* ]]; then target=$to${label#"$from"}
+   else continue; fi
+   tm set-option -t "=$session:" @tokiwa_project "$target"
+   [[ -n $first || $target != "$to" ]] || first=$cwd
+   moved=$((moved + 1))
+  done < <(tm list-sessions -F $'#{session_name}\t#{@tokiwa_project}\t#{pane_current_path}')
+  registry move "$from" "$to"
+  [[ -z $first ]] || registry add "$to" "$first"
+  printf 'Moved %d sessions.\n' "$moved"
+  exit ;;
+ name)
+  if [[ -z $name ]]; then prompt_name; printf '\n'; exit; fi
+  tm set-option -g @tokiwa_name "$name"
+  printf 'New shells show %s in the prompt.\n' "$name"
+  exit ;;
+ forget-project)
+  # Forget a saved project and the projects inside it. Its folders and files stay.
+  label=$(project_label "$name") || exit 1
+  [[ $label != /* ]] || fail 'Only a saved project can be forgotten.'
+  while IFS=$'\t' read -r session current; do
+   [[ $current == "$label" || $current == "$label"/* ]] && fail "End the sessions of this project first, for example $session."
+  done < <(tm list-sessions -F $'#{session_name}\t#{@tokiwa_project}')
+  registry forget "$label"
+  printf 'Project forgotten. Its folders stay.\n'
+  exit ;;
+ create)
+  # A session in an existing directory, or in a new folder inside the workspaces folder.
+  tm has-session -t "=$name" 2>/dev/null && fail 'This session exists. Use tokiwa attach NAME.'
+  request=$(python3 - "$extra" "$workspaces" <<'PY_CREATE'
+import base64, json, os, re, sys
+try:
+    want = json.loads(base64.b64decode(sys.argv[1], validate=True))
+    if want.get('folder'):
+        folder = want['folder']
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,47}', folder):
+            raise ValueError()
+        path = os.path.join(sys.argv[2], folder)
+        os.makedirs(path, exist_ok=True)
+    elif want.get('dir'):
+        path = want['dir']
+        if not path.startswith('/') or any(ord(c) < 32 or ord(c) == 127 for c in path):
+            raise ValueError()
+    else:
+        raise ValueError()
+    path = os.path.realpath(path)
+    if not os.path.isdir(path) or not os.access(path, os.R_OK | os.X_OK):
+        raise ValueError()
+    label = want.get('project') or ''
+    print(base64.b64encode(path.encode()).decode(), base64.b64encode(label.encode()).decode() or '-')
+except (ValueError, OSError, TypeError, AttributeError):
+    raise SystemExit('Use an existing absolute directory, or a folder name of letters, digits, dots, hyphens or underscores.')
+PY_CREATE
+) || exit 1
+  directory=$(printf '%s' "${request% *}" | base64 -d)
+  label=''
+  [[ ${request#* } == - ]] || label=$(project_label "${request#* }") || exit 1
+  start_shell "$name" "$directory" || fail 'The terminal could not be created.'
+  if [[ -n $label ]]; then
+   tm set-option -t "=$name:" @tokiwa_project "$label"
+   registry add "$label" "$directory"
+  fi
+  printf 'Created terminal: %s\n' "$name"
+  exit ;;
+ status)
+  printf 'Workbench server ready.\n'
+  tm list-sessions -F '#{session_name} | clients=#{session_attached} | windows=#{session_windows}'
+  exit ;;
+ sessions)
+  tm list-sessions -F '#{session_name} | clients=#{session_attached} | windows=#{session_windows}'
+  exit ;;
+ ensure) ensure; exit ;;
+ new)
+  tm has-session -t "=$name" 2>/dev/null && fail 'This session exists. Use tokiwa attach NAME.'
+  project=''
+  if [[ -n $extra ]]; then
+   tm has-session -t "=$extra" 2>/dev/null || fail 'The source session no longer exists.'
+   workdir=$(tm display-message -p -t "=$extra:" '#{pane_current_path}')
+   project=$(tm show-options -qv -t "=$extra:" @tokiwa_project)
+   [[ -n $project ]] || project=$workdir
+   parent=$(tm display-message -p -t "=$extra:" '#{session_id}')
+  fi
+  [[ -d $workdir && -x $workdir ]] || fail 'The source directory is unavailable.'
+  start_shell "$name" "$workdir"
+  [[ -z $project ]] || tm set-option -t "=$name:" @tokiwa_project "$project"
+  # The shell opened from another session lists under it as a child.
+  [[ -z ${parent:-} ]] || tm set-option -t "=$name:" @tokiwa_parent "$parent" ;;
+
+ attach)
+  tm has-session -t "=$name" 2>/dev/null || fail 'This session does not exist. Use tokiwa sessions or tokiwa new NAME.'
+  if [[ $# -eq 3 ]]; then
+   [[ ${TOKIWA_QUIET:-0} == 1 ]] || printf 'Attaching: %s. Detach with Ctrl-B, then D. Exit ends this shell.\n' "$name" >&2
+   session_id=${extra#*:}; session_id=${session_id%%:*}
+   # The identity check and the attachment run in the same tmux command queue.
+   # A session that replaced the expected one under the same name is never attached.
+   exec tmux -N -S "$socket" if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
+    "attach-session -t '$session_id'" \
+    "display-message -p 'Session identity changed. No session was attached.' ; run-shell 'exit 1'"
+  fi ;;
+ shell)
+  names=()
+  while IFS= read -r item; do [[ -z $item ]] || names+=("$item"); done < <(tm list-sessions -F '#{session_name}')
+  if [[ ${#names[@]} -eq 0 ]]; then
+   name=workbench; ensure
+  elif [[ ${#names[@]} -eq 1 ]]; then
+   name=${names[0]}
+  else
+   printf 'Select a terminal. Use a separate local tab for another connection.\n' >&2
+   PS3='Terminal number: '
+   select name in "${names[@]}"; do [[ -n $name ]] && break; done
+   [[ -n $name ]] || fail 'No terminal was selected.'
+  fi ;;
+esac
+[[ ${TOKIWA_QUIET:-0} == 1 ]] || printf 'Attaching: %s. Detach with Ctrl-B, then D. Exit ends this shell.\n' "$name" >&2
+exec tmux -N -S "$socket" attach-session -t "=$name"
