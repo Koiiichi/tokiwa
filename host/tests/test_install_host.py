@@ -53,7 +53,7 @@ class HostInstall(unittest.TestCase):
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         out = result.stdout
-        self.assertIn('would run: apt-get install -y -qq --no-install-recommends tmux python3 acl nftables', out)
+        self.assertIn('would run: apt-get install -y -qq --no-install-recommends tmux python3 acl nftables openssl', out)
         self.assertIn('would run: useradd --uid 2100 --user-group --no-create-home --shell /bin/bash agent-workspace', out)
         self.assertIn('/opt/agent-platform/rootless/terminal-session.sh', out)
         self.assertIn('/etc/systemd/system/cloud-workbench.service', out)

@@ -1,5 +1,7 @@
 """Check CLI routing without AWS calls or provider requests."""
+import base64
 import os
+import re
 import pty
 import subprocess
 import tempfile
@@ -31,7 +33,17 @@ case "$*" in
  *describe-volumes*) echo '[{"id": "vol-1", "type": "gp3", "size_gib": 100}, {"id": "vol-2", "type": "gp3", "size_gib": 500}]' ;;
  *describe-addresses*) echo '[]' ;;
  *send-command*) echo test-command ;;
- *get-command-invocation*StandardOutputContent*) echo 'Workbench server ready.' ;;
+ *get-command-invocation*StandardOutputContent*)
+  if grep -q 'terminal-session.sh capture' "$HOME/calls"; then
+   # Act as the host: encrypt to the certificate that the launcher sent.
+   cert=$(grep -o "capture [^ ]* '[^']*' [0-9]* [A-Za-z0-9+/=]*" "$HOME/calls" | tail -1 | awk '{print $NF}')
+   printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
+   if [ -n "${TEST_BAD_CIPHER:-}" ]; then echo 'bm90IGNpcGhlcg=='; exit 0; fi
+   printf '{"text": "screen text"}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\\n'
+   echo
+  else
+   echo 'Workbench server ready.'
+  fi ;;
  *get-command-invocation*StandardErrorContent*) echo 'Workbench unavailable.' ;;
  *get-command-invocation*) echo "${TEST_STATUS:-Success}" ;;
  *start-session*)
@@ -295,9 +307,45 @@ esac
     def test_capture_runs_the_helper_with_quoted_arguments(self):
         result = self.run_cli('capture', 'backend', '1:$2:3')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("capture backend '1:$2:3' 60", self.sent())
+        self.assertIn("capture backend '1:$2:3' 60 ", self.sent())
+        (self.home / 'calls').unlink()
         self.run_cli('capture', 'backend', '1:$2:3', '200')
-        self.assertIn("capture backend '1:$2:3' 200", self.sent())
+        self.assertIn("capture backend '1:$2:3' 200 ", self.sent())
+
+    def test_capture_decrypts_with_a_one_time_key(self):
+        scratch = self.home / 'scratch'
+        scratch.mkdir()
+        self.env['TMPDIR'] = str(scratch)
+        result = self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '{"text": "screen text"}')
+        calls = (self.home / 'calls').read_text()
+        self.assertNotIn('PRIVATE KEY', calls)
+        self.assertNotIn('PRIVATE KEY', base64.b64decode(self.recipient()).decode())
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def recipient(self):
+        sent = re.findall(r"capture backend '[^']*' \d+ ([A-Za-z0-9+/=]+)", self.sent())
+        self.assertEqual(len(sent), 1)
+        return sent[0]
+
+    def test_each_capture_uses_a_new_key(self):
+        self.run_cli('capture', 'backend', '1:$2:3')
+        first = self.recipient()
+        (self.home / 'calls').unlink()
+        self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertNotEqual(self.recipient(), first)
+
+    def test_capture_that_cannot_be_decrypted_fails(self):
+        self.env['TEST_BAD_CIPHER'] = '1'
+        scratch = self.home / 'scratch'
+        scratch.mkdir()
+        self.env['TMPDIR'] = str(scratch)
+        result = self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not be decrypted', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(list(scratch.iterdir()), [])
 
     def test_capture_rejects_bad_input_before_aws(self):
         for args in [('bad;name', '1:$2:3'), ('backend', '123;id'), ('backend',), ('backend', '1:$2:3', '0'),

@@ -17,7 +17,7 @@ valid_prompt_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]]; }
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( $mode == capture && $# -eq 4 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( $mode == capture && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
  new|attach|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
@@ -39,7 +39,10 @@ if [[ $mode == end || $mode == capture || ( $mode == attach && $# -eq 3 ) ]]; th
 fi
 if [[ $mode == capture ]]; then
  lines=${4:-}
+ recipient=${5:-}
  [[ $lines =~ ^[0-9]{1,3}$ ]] && (( lines >= 1 && lines <= 200 )) || fail 'Use a line count from 1 to 200.'
+ # Run Command keeps its output in the account, so screen text leaves this host only encrypted.
+ [[ $recipient =~ ^[A-Za-z0-9+/=]+$ && ${#recipient} -le 4000 ]] || fail 'A capture needs a recipient certificate. Nothing was read.'
 fi
 # -N prevents a failed connection from creating an unprotected server.
 tm show-options -s exit-empty >/dev/null 2>&1 || fail 'The workbench service is unavailable. No service was started. Run tokiwa status.'
@@ -114,14 +117,19 @@ ensure() {
 case "$mode" in
  capture)
   # Read only. The text is the last lines of the active pane, with its scrollback, without colour.
-  python3 - "$socket" "$name" "$extra" "$lines" <<'PY_CAPTURE'
+  # The output is encrypted to the one-time certificate of the caller. There is no plain output.
+  python3 - "$socket" "$name" "$extra" "$lines" "$recipient" <<'PY_CAPTURE'
+import base64
+import binascii
 import json
 import subprocess
 import sys
+import tempfile
 import time
 
-socket, name, identity, limit = sys.argv[1:5]
-LIMIT_BYTES = 20000
+socket, name, identity, limit, recipient = sys.argv[1:6]
+# The sealed output must fit the 24,000 characters that Run Command returns: base64 adds a third.
+LIMIT_BYTES = 15000
 
 def tmux(*args):
     # -u: without it, tmux replaces non-ASCII text for a client without a UTF-8 locale.
@@ -162,7 +170,18 @@ if truncated:
 output = {'name': name, 'identity': identity, 'pane': pane, 'command': command[:80],
           'clients': int(clients), 'dead': dead == '1', 'sampled_at': time.time(),
           'lines': text.count('\n') + 1 if text else 0, 'truncated': truncated, 'text': text}
-sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode() + b'\n')
+try:
+    certificate = base64.b64decode(recipient, validate=True)
+except binascii.Error:
+    raise SystemExit('The capture could not be encrypted. Nothing was read.')
+with tempfile.NamedTemporaryFile(suffix='.pem') as pem:
+    pem.write(certificate)
+    pem.flush()
+    sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
+                            input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
+if sealed.returncode or not sealed.stdout:
+    raise SystemExit('The capture could not be encrypted. Nothing was read.')
+print(base64.b64encode(sealed.stdout).decode())
 PY_CAPTURE
   exit ;;
  snapshot)

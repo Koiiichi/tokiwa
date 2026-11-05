@@ -55,7 +55,7 @@ check=${TOKIWA_INSTALL_CHECK_ROOT:-}
 say "Tokiwa host install on ${PRETTY_NAME:-Ubuntu}$( (( docker )) && printf ' with rootless Docker')$( (( dry )) && printf ' (dry run)')."
 
 # Packages.
-packages=(tmux python3 acl nftables)
+packages=(tmux python3 acl nftables openssl)
 (( docker )) && packages+=(docker.io docker-compose-v2 rootlesskit slirp4netns uidmap)
 missing=()
 for package in "${packages[@]}"; do

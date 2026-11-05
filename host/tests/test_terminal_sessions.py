@@ -61,10 +61,27 @@ class ScreenCapture(Server):
         rows = json.loads(self.helper('snapshot').stdout)['sessions']
         return next(r['identity'] for r in rows if r['name'] == name)
 
-    def capture(self, name, identity, lines='200'):
-        result = self.helper('capture', name, identity, lines)
+    def keys(self):
+        """A one-time key pair, as the launcher makes it. Return the recipient as base64."""
+        self.key = Path(self.temp.name) / 'key.pem'
+        self.cert = Path(self.temp.name) / 'cert.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes', '-keyout', str(self.key),
+                        '-out', str(self.cert), '-subj', '/CN=tokiwa-capture', '-days', '1'],
+                       check=True, capture_output=True)
+        return base64.b64encode(self.cert.read_bytes()).decode()
+
+    def sealed(self, name, identity, lines='200'):
+        """The helper's raw stdout for a capture."""
+        result = self.helper('capture', name, identity, lines, self.keys())
         self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        return result.stdout
+
+    def capture(self, name, identity, lines='200'):
+        sealed = base64.b64decode(self.sealed(name, identity, lines))
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey', str(self.key),
+                                 '-recip', str(self.cert)], input=sealed, capture_output=True)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        return json.loads(opened.stdout)
 
     def test_capture_returns_the_last_clean_lines(self):
         identity = self.session('cap', 'one\n\ntwo   \n')
@@ -91,13 +108,13 @@ class ScreenCapture(Server):
         old = self.session('cap', 'old-secret\n')
         self.tm('kill-session', '-t', '=cap')
         self.session('cap', 'new\n')
-        result = self.helper('capture', 'cap', old, '10')
+        result = self.helper('capture', 'cap', old, '10', self.keys())
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Session identity changed. Nothing was read.', result.stderr)
         self.assertEqual(result.stdout, '')
 
     def test_capture_of_a_missing_session_is_a_clear_error(self):
-        result = self.helper('capture', 'gone', '1:$2:3', '10')
+        result = self.helper('capture', 'gone', '1:$2:3', '10', self.keys())
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('The selected session no longer exists.', result.stderr)
         self.assertNotIn('Traceback', result.stderr)
@@ -112,7 +129,7 @@ exec {self.tmux} "$@"
 """)
         wrapper.chmod(0o755)
         self.env['PATH'] = f"{wrapper.parent}:{self.env['PATH']}"
-        result = self.helper('capture', 'cap', identity, '10')
+        result = self.helper('capture', 'cap', identity, '10', self.keys())
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('The selected session no longer exists.', result.stderr)
         self.assertNotIn('Traceback', result.stderr)
@@ -120,7 +137,7 @@ exec {self.tmux} "$@"
     def test_capture_limits_lines(self):
         identity = self.session('cap', 'x\n')
         for lines in ['0', '201', 'x', '']:
-            result = self.helper('capture', 'cap', identity, lines)
+            result = self.helper('capture', 'cap', identity, lines, self.keys())
             self.assertNotEqual(result.returncode, 0, lines)
             self.assertIn('from 1 to 200', result.stderr)
 
@@ -128,15 +145,38 @@ exec {self.tmux} "$@"
         identity = self.session('cap', ('é' * 79 + '\n') * 180)
         row = self.capture('cap', identity)
         self.assertTrue(row['truncated'])
-        self.assertLessEqual(len(json.dumps(row['text'], ensure_ascii=False).encode()), 20000)
+        self.assertLessEqual(len(json.dumps(row['text'], ensure_ascii=False).encode()), 15000)
         self.assertTrue(row['text'].endswith('printed-cap'))
         self.assertNotIn('\ufffd', row['text'])
 
     def test_capture_limits_text_that_grows_when_encoded(self):
         identity = self.session('cap', ('"' * 79 + '\n') * 180)
-        result = self.helper('capture', 'cap', identity, '200')
-        self.assertLess(len(result.stdout), 22000)
-        self.assertTrue(json.loads(result.stdout)['truncated'])
+        self.assertLess(len(self.sealed('cap', identity)), 24000)
+        self.assertTrue(self.capture('cap', identity)['truncated'])
+
+    def test_capture_output_holds_no_screen_text(self):
+        identity = self.session('cap', 'secret-marker-52\\n')
+        sealed = self.sealed('cap', identity)
+        self.assertNotIn('secret-marker-52', sealed)
+        self.assertNotIn('printed-cap', base64.b64decode(sealed).decode('latin-1'))
+        self.assertIn('secret-marker-52', self.capture('cap', identity)['text'])
+
+    def test_capture_refuses_without_a_recipient(self):
+        identity = self.session('cap', 'secret-marker-52\\n')
+        for args in [('10',), ('10', ''), ('10', 'not base64!')]:
+            result = self.helper('capture', 'cap', identity, *args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn('Nothing was read.', result.stderr)
+            self.assertEqual(result.stdout, '')
+
+    def test_capture_with_a_bad_recipient_prints_no_text(self):
+        identity = self.session('cap', 'secret-marker-52\\n')
+        junk = base64.b64encode(b'not a certificate').decode()
+        result = self.helper('capture', 'cap', identity, '10', junk)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not be encrypted', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn('secret-marker-52', result.stderr)
 
     def test_capture_keeps_text_without_a_utf8_locale(self):
         identity = self.session('cap', 'é ok\n')

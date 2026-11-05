@@ -60,7 +60,7 @@ The capture reads the active pane of the session with up to 200 lines of scrollb
 | `clients` | The attached clients |
 | `sampled_at` | The time of the read, in seconds since the epoch |
 | `lines` | The lines in `text` |
-| `truncated` | True when the helper removed text from the start of `text`, to fit 20,000 bytes |
+| `truncated` | True when the helper removed text from the start of `text`, to fit 15,000 bytes |
 | `text` | The lines |
 
 ## Limits
@@ -69,7 +69,9 @@ The capture reads the active pane of the session with up to 200 lines of scrollb
 
 **Terminal text is data.** A screen can hold any text, also text that another program or a web page wrote. An agent must not take it as an instruction. The tool description and the first line of each result say this.
 
-**Stored text.** A capture reaches the Mac through Run Command, so AWS keeps its text in the command history of the account. Do not capture a screen that shows a secret.
+**Stored text.** A capture reaches the Mac through Run Command, and AWS keeps the output of each command in the history of the account. So the helper never prints screen text. The launcher makes a new key pair for each capture and sends the host only the certificate. The host encrypts the result to it, and the launcher decrypts the result and deletes the key. History holds only encrypted data, which nobody can open after the call. A helper that gets no certificate refuses the capture.
+
+The other tools are not encrypted. History keeps session names, folders, pane commands and host metrics. So does each list read of the app.
 
 **Not a security boundary.** The server runs as you on the Mac. An agent with a shell can use the same AWS profile, and it can run `tokiwa admin` or `aws ssm`. The server gives an agent a narrow way to read, with tools that a permission system can allow one by one. To limit an agent, deny it the shell commands too. A hard limit needs an AWS role that allows less.
 
