@@ -90,7 +90,7 @@ A fresh attach also reopens the newest child of the session (a session made with
 | Every pane of the child is dead | Nothing opens |
 | A reconnect | Nothing opens |
 
-**Shell here** itself runs `tokiwa new NAME --from SOURCE` as a remote transport. The host creates the session and attaches it by name. The app then reads the snapshot every 2 s, up to six times, to learn the new session's identity. Without it, the view fails with `The new shell identity is unverified: NAME. No second shell was created.`
+**Shell here** itself runs `tokiwa new NAME --from SOURCE` as a remote transport. The host creates the session and attaches it by name. The app then reads the snapshot every 2 s, up to six times, to learn the new session's identity. Without it, the app closes the new view, and the footer shows `The new shell identity is unverified: NAME. No second shell was created.` The app closes the view of a new shell after any other failure before the shell opens beside its source, too.
 
 ## PTY settings
 

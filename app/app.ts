@@ -21,7 +21,6 @@ import { createConnection } from "node:net";
 import groups from "./projects.json";
 import { openGhosttyWindow, shellQuote } from "./ghostty";
 import { localShellCommand, PtyAdapter } from "./pty";
-import { confineSelection } from "./selection";
 import { themeRemoteStatus } from "./status-theme";
 import {
   BackendClient,
@@ -348,8 +347,6 @@ export class App {
   workspace!: BoxRenderable;
   sessionList!: BoxRenderable;
   sessionScroll!: ScrollBoxRenderable;
-  /** The session-name texts of the list. A text selection that starts on one stays inside it. */
-  listNames = new WeakSet<object>();
   /** The name of this Mac in the header. */
   device = "";
   /** The last tries to reach the AWS endpoint: the time of each, or null for a lost one. */
@@ -462,7 +459,6 @@ export class App {
     this.healthConfig = config.config;
     this.healthConfigError = config.error ?? "";
     renderer.setBackgroundColor(theme.bg);
-    confineSelection(renderer, (renderable) => this.listNames.has(renderable));
     this.root = this.box(renderer.root, "app", {
       width: "100%",
       height: "100%",
@@ -1298,8 +1294,8 @@ export class App {
     this.auxiliaryPending = true;
     const name = `shell-${crypto.randomUUID().slice(0, 8)}`;
     this.startPending(source, directory);
+    let shell: Shell | undefined;
     try {
-      let shell: Shell | undefined;
       if (source.remote) {
         if (directory) {
           const inspected = await this.backend.files(source.remote, directory);
@@ -1387,12 +1383,30 @@ export class App {
         pid: shell.child.pid,
       });
     } catch (e) {
+      // A shell that failed before the pair took it has no place in the workspace: close its view.
+      if (shell && this.pair?.[1] !== shell) this.discardView(shell);
       this.error = String(e);
       this.updateActivity();
     } finally {
       this.auxiliaryPending = false;
       this.endPending();
     }
+  }
+  /**
+   * Close the view of a shell that never joined the workspace. Only its local transport closes;
+   * the source view keeps the keyboard.
+   */
+  discardView(shell: Shell) {
+    if (!this.shells.includes(shell)) return;
+    const focused = this.shells[this.active];
+    shell.adapter.closeTransport();
+    shell.pane.destroyRecursively();
+    this.shells = this.shells.filter((s) => s !== shell);
+    this.active = Math.max(
+      0,
+      this.shells.indexOf(focused === shell ? this.shells[0] : focused),
+    );
+    this.show("shell");
   }
   /**
    * Hold the place of a new shell while it starts, so a press of `n` shows at once that the
@@ -1565,7 +1579,9 @@ export class App {
     this.text(
       panel,
       "files-path",
-      safeText(this.fileTarget.slice(filesRoot(this.explorerRef!).length) || "/"),
+      safeText(
+        this.fileTarget.slice(filesRoot(this.explorerRef!).length) || "/",
+      ),
       { height: 1, fg: theme.muted, truncate: true, wrapMode: "none" },
     );
     const scroll = new ScrollBoxRenderable(this.renderer, {

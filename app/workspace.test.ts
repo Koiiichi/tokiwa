@@ -332,6 +332,36 @@ test("in a single view the title of the source says that a shell is starting", a
   }
 });
 
+test("Shell here removes the view of a new shell that it could not verify", async () => {
+  const t = await createTestRenderer({ width: 120, height: 32 });
+  const app = new App(t.renderer, { spawn: false });
+  const source = app.startShell()!;
+  app.show("shell");
+  source.remote = ref;
+  app.backend.shellCommand = async () => ({
+    command: ["/bin/sh", "-c", "printf 'bash-5.2$ '; exec /bin/cat"],
+    source: ref,
+  });
+  app.backend.sessions = async () => {
+    throw new Error("The session list failed.");
+  };
+  let started: ReturnType<typeof app.startShell>;
+  const originalStart = app.startShell.bind(app);
+  app.startShell = (...args) => (started = originalStart(...args));
+  try {
+    await app.shellHere();
+    expect(started).toBeDefined();
+    expect(app.error).toContain("The session list failed.");
+    // Only the source view stays, and it keeps the keyboard.
+    expect(app.shells).toEqual([source]);
+    expect(app.shells[app.active]).toBe(source);
+    expect(app.pair).toBeUndefined();
+    expect(started!.pane.isDestroyed).toBe(true);
+  } finally {
+    await t.dispose();
+  }
+});
+
 test("Browse files opens the session's folder when its project is a name", async () => {
   const t = await createTestRenderer({ width: 120, height: 32 });
   const app = new App(t.renderer, { spawn: false });
