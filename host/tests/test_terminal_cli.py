@@ -287,6 +287,57 @@ esac
         self.assertIn('interactive terminal', result.stderr)
         self.assertFalse((self.home / 'calls').exists() and 'sso login' in (self.home / 'calls').read_text())
 
+    def sent(self):
+        """The remote command of the last send-command call."""
+        calls = (self.home / 'calls').read_text().splitlines()
+        return [c for c in calls if 'send-command' in c][-1]
+
+    def test_capture_runs_the_helper_with_quoted_arguments(self):
+        result = self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("capture backend '1:$2:3' 60", self.sent())
+        self.run_cli('capture', 'backend', '1:$2:3', '200')
+        self.assertIn("capture backend '1:$2:3' 200", self.sent())
+
+    def test_capture_rejects_bad_input_before_aws(self):
+        for args in [('bad;name', '1:$2:3'), ('backend', '123;id'), ('backend',), ('backend', '1:$2:3', '0'),
+                     ('backend', '1:$2:3', '201'), ('backend', '1:$2:3', 'x'), ('backend', '1:$2:3', '5', '6')]:
+            result = self.run_cli('capture', *args)
+            self.assertNotEqual(result.returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_capture_starts_no_service(self):
+        self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertIn('systemctl is-active', self.sent())
+        self.assertNotIn('systemctl start', self.sent())
+
+    def test_sessions_json_reads_the_snapshot(self):
+        self.assertEqual(self.run_cli('sessions', '--json').returncode, 0)
+        self.assertIn('terminal-session.sh snapshot', self.sent())
+
+    def test_plain_sessions_is_unchanged(self):
+        self.assertEqual(self.run_cli('sessions').returncode, 0)
+        self.assertIn('terminal-session.sh sessions', self.sent())
+        self.assertNotEqual(self.run_cli('sessions', '--other').returncode, 0)
+
+    def stub_app(self):
+        app = self.home / '.local/lib/tokiwa/opentui/run'
+        app.parent.mkdir(parents=True)
+        app.write_text('#!/bin/sh\nprintf "app %s" "$*"\n')
+        app.chmod(0o755)
+
+    def test_mcp_starts_without_host_settings(self):
+        self.stub_app()
+        (self.home / '.config/tokiwa/host.env').unlink()
+        result = self.run_cli('mcp')
+        self.assertEqual((result.returncode, result.stdout), (0, 'app mcp'), result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_mcp_needs_the_installed_app(self):
+        result = self.run_cli('mcp')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not installed', result.stderr)
+
     def test_valid_session_does_not_log_in(self):
         self.assertEqual(self.run_cli('--snapshot').returncode, 0)
         self.assertNotIn('sso login', (self.home / 'calls').read_text())

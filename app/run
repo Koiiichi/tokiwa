@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
+[ "${1:-}" != mcp ] || exec ./node_modules/bun/bin/bun.exe mcp.ts
 exec ./node_modules/bun/bin/bun.exe app.ts "$@"
