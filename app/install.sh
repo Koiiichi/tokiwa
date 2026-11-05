@@ -44,8 +44,8 @@ printf '%s\n' '#!/bin/sh' "exec \"\$(dirname \"\$0\")/${parent##*/}/run\" \"\$@\
 chmod 755 "$NEW/run"
 (cd "$UI" && npm ci --omit=dev --no-fund --no-audit) || { rm -rf "$NEW"; die 'npm ci failed.'; }
 
-# The start check loads the app and its native OpenTUI library without opening a screen.
-if ! (cd "$UI" && ./node_modules/bun/bin/bun.exe -e 'await import("./app.ts")') >/dev/null; then
+# The start check loads the app, its native OpenTUI library and the MCP server without opening a screen.
+if ! (cd "$UI" && ./node_modules/bun/bin/bun.exe -e 'await import("./app.ts"); await import("./mcp.ts")') >/dev/null; then
   rm -rf "$NEW"
   die 'The new copy did not pass its start check. The installed copy is unchanged.'
 fi

@@ -9,6 +9,9 @@ import { spendReading } from "./health-view";
 export function filesRoot(ref: SessionRef) {
   return ref.project.startsWith("/") ? ref.project : ref.cwd;
 }
+/** The launcher's message when a read fails because the AWS sign-in expired. */
+export const SIGN_IN_EXPIRED =
+  /AWS authentication failed|AWS login did not complete/;
 export interface SessionRef {
   name: string;
   identity: string;

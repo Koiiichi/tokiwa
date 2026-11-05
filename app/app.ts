@@ -24,6 +24,7 @@ import { localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
   BackendClient,
+  SIGN_IN_EXPIRED,
   filesRoot,
   projectName,
   type SessionRef,
@@ -115,8 +116,6 @@ const healthConfigPath = join(
 const SPEND_REFRESH_MS = 15 * 60 * 1000;
 // A local shell is the user's login shell and starts in the home directory.
 const localShell = localShellCommand(process.env);
-/** The launcher's message when a read fails because the AWS sign-in expired. */
-const SIGN_IN_EXPIRED = /AWS authentication failed|AWS login did not complete/;
 const localDirectory = process.env.HOME ?? import.meta.dir;
 if (
   !/^[a-zA-Z0-9 -]{1,30}$/.test(groups.name) ||
