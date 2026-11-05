@@ -76,6 +76,10 @@ class SocketVisibility(unittest.TestCase):
         # The base unit has no Docker; the drop-in of --with-docker adds only the read-only socket.
         self.assertNotIn('docker.sock:', source)
         self.assertIn('BindReadOnlyPaths=/run/user/2200/docker.sock:/run/cloud-workbench/docker.sock\n', docker)
+        # At boot the socket appears after the user manager starts: the service waits for it.
+        self.assertIn('After=user@2200.service cloud-workbench-docker-wait.service\n', docker)
+        wait = (ROOT / 'units/cloud-workbench-docker-wait.service').read_text()
+        self.assertIn('[ -S /run/user/2200/docker.sock ]', wait)
         self.assertIn('InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock', source)
         self.assertNotIn('BindPaths=', source)
         self.assertIn('Environment=DOCKER_HOST=unix:///run/cloud-workbench/docker.sock\n', docker)

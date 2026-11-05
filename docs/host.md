@@ -53,7 +53,7 @@ Other settings of the unit:
 
 | Setting | Value | Effect |
 | --- | --- | --- |
-| `Requires`, `After` (Docker drop-in) | `user@2200.service` | With `--with-docker`, `cloud-workbench.service.d/docker.conf` starts the user manager of the engine first and binds its socket read-only into the sandbox. |
+| `Requires`, `After` (Docker drop-in) | `user@2200.service`, `cloud-workbench-docker-wait.service` | With `--with-docker`, `cloud-workbench.service.d/docker.conf` starts the user manager of the engine first, waits until the engine's socket exists, and binds the socket read-only into the sandbox. |
 | `MemoryMax`, `MemorySwapMax`, `CPUQuota`, `TasksMax` | `8G`, `0`, `300%`, `512` | Limits for all sessions together. `agent-sessions.slice` and `agent.slice` add outer limits. |
 | `TemporaryFileSystem` | `/tmp` and `/var/tmp`, 256M each | Each is a private tmpfs. Its contents go when the service stops. |
 | `InaccessiblePaths` | `/run/docker.sock`, `/var/run/docker.sock`, `/var/lib/agent-platform` | Sessions cannot reach a root Docker engine or host records, when the host has them. |
@@ -101,6 +101,7 @@ systemctl start cloud-workbench.service
 | `units/user-2200.slice` | `/etc/systemd/system/user-2200.slice` | 0644 | Limits of the engine user: `8G` memory, `300%` CPU, 1024 tasks. |
 | `units/user-slice-limits.conf` | `/etc/systemd/system/user-2200.slice.d/50-tokiwa-limits.conf` | 0644 | Sets `TasksMax=1024` for this user only. |
 | `units/user-manager.conf` | `/etc/systemd/system/user@2200.service.d/cloud-containers.conf` | 0644 | Puts the user manager in `user-2200.slice`, binds it to `nftables.service` and delegates the cgroup controllers. |
+| `units/cloud-workbench-docker-wait.service` | `/etc/systemd/system/cloud-workbench-docker-wait.service` | 0644 | Waits up to 60 seconds for the engine's socket. At boot the socket appears a few seconds after the user manager starts, and the bind of a missing socket stops `cloud-workbench.service` from starting. |
 | `units/agent-containers.slice` | `/etc/systemd/system/agent-containers.slice` | 0644 | A slice with container limits. No unit in this repository runs in it. |
 | `units/docker.service` | `/srv/development/cache/rootless-home/.config/systemd/user/docker.service` | `cloud-containers`, 0644 | The user unit of the rootless engine. A link in `default.target.wants/` starts it with the user manager. |
 

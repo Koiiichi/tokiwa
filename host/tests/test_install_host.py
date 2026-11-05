@@ -22,7 +22,8 @@ esac''',
     'nft': '[ -n "$TEST_INSTALLED" ]',
     'systemctl': 'case "$1" in is-active) [ -n "$TEST_INSTALLED" ] ;; *) exit 0 ;; esac',
     'mountpoint': '[ -n "$TEST_INSTALLED" ]',
-    'df': 'printf "Avail\\n40000000000\\n"',
+    # Like df, fail for a path that does not exist.
+    'df': 'for a; do p=$a; done; [ -e "$p" ] || { echo "df: $p: No such file or directory" >&2; exit 1; }; printf "Avail\\n40000000000\\n"',
 }
 
 
@@ -67,6 +68,7 @@ class HostInstall(unittest.TestCase):
         self.assertIn('would run: useradd --uid 2200 --gid 2200', out)
         self.assertIn('would run: truncate -s 24G /srv/development/cache/rootless-engine.ext4', out)
         self.assertIn('/etc/systemd/system/cloud-workbench.service.d/docker.conf', out)
+        self.assertIn('/etc/systemd/system/cloud-workbench-docker-wait.service', out)
         self.assertIn('would run: loginctl enable-linger cloud-containers', out)
         self.assertIn('would run: systemctl start user@2200.service', out)
 

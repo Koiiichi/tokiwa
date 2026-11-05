@@ -76,10 +76,19 @@ fi
 
 # The session folders.
 # Make a missing folder. An existing folder keeps its owner and mode; a difference is reported.
+# The mode of a path. With an ACL, stat shows the ACL mask as the group digit, so read the group entry.
+mode() {
+ local m g d=0
+ m=$(stat -c %a "$1")
+ g=$(getfacl -cp "$1" 2>/dev/null | sed -n 's/^group::\([-rwx]\{3\}\).*/\1/p')
+ [[ -n $g ]] || { printf '%s' "$m"; return; }
+ [[ $g == r?? ]] && d=$((d + 4)); [[ $g == ?w? ]] && d=$((d + 2)); [[ $g == ??x ]] && d=$((d + 1))
+ printf '%s%s%s' "${m:0:${#m}-2}" "$d" "${m: -1}"
+}
 dir() {
  if [[ ! -d $4 ]]; then run install -d -o "$1" -g "$2" -m "$3" "$4"
- elif [[ $(stat -c '%U:%G %a' "$4") != "$1:$2 $3" ]]; then
-  say "note: $4 is $(stat -c '%U:%G %a' "$4"), not $1:$2 $3; it was left as it is."
+ elif [[ "$(stat -c '%U:%G' "$4") $(mode "$4")" != "$1:$2 $3" ]]; then
+  say "note: $4 is $(stat -c '%U:%G' "$4") $(mode "$4"), not $1:$2 $3; it was left as it is."
  fi
 }
 dir root root 755 /srv/development
@@ -130,11 +139,15 @@ PY
  # The engine's storage: a 24 GiB ext4 image, mounted at boot.
  image=/srv/development/cache/rootless-engine.ext4 mount=/srv/development/cache/rootless-engine
  if [[ ! -e $image ]]; then
-  (( $(df --output=avail -B1 /srv/development/cache | tail -1) > 30064771072 )) || fail 'The engine image needs 28 GiB free in /srv/development/cache.'
+  # In a dry run on a fresh host the folder does not exist yet: measure the nearest folder that does.
+  space=/srv/development/cache
+  while [[ ! -d $space ]]; do space=$(dirname "$space"); done
+  (( $(df --output=avail -B1 "$space" | tail -1) > 30064771072 )) || fail 'The engine image needs 28 GiB free in /srv/development/cache.'
   run truncate -s 24G "$image"
   run mkfs.ext4 -q -F "$image"
  fi
- dir root root 755 "$mount"
+ # Once mounted, the folder shows the engine's file system, which belongs to cloud-containers.
+ mountpoint -q "$mount" || dir root root 755 "$mount"
  append /etc/fstab "$image $mount ext4 loop,nosuid,nodev,noatime,nofail 0 0"
  mountpoint -q "$mount" || run mount "$mount"
  run chown cloud-containers:cloud-containers "$mount"
@@ -142,7 +155,7 @@ PY
  place 0755 dockerd-rootless.sh "$rootless/dockerd-rootless.sh"
  place 0644 daemon.json "$rootless/daemon.json"
  place 0644 rootless-metadata.nft "$rootless/rootless-metadata.nft"
- for unit in user-2200.slice agent-containers.slice; do place 0644 "units/$unit" "$units/$unit"; done
+ for unit in user-2200.slice agent-containers.slice cloud-workbench-docker-wait.service; do place 0644 "units/$unit" "$units/$unit"; done
  place 0644 units/user-slice-limits.conf "$units/user-2200.slice.d/50-tokiwa-limits.conf"
  place 0644 units/user-manager.conf "$units/user@2200.service.d/cloud-containers.conf"
  place 0644 units/cloud-workbench-docker.conf "$units/cloud-workbench.service.d/docker.conf"

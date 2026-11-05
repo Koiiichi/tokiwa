@@ -1,0 +1,11 @@
+# Installed by install.sh --with-docker. At boot the rootless engine creates its socket a few seconds after
+# user@2200.service starts. cloud-workbench.service binds that socket and fails to start when it is missing,
+# so the Docker drop-in orders the service after this wait.
+[Unit]
+Description=Wait for the socket of the rootless Docker engine
+Requires=user@2200.service
+After=user@2200.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for i in $(seq 60); do [ -S /run/user/2200/docker.sock ] && exit 0; sleep 1; done; echo "The rootless Docker socket did not appear in 60 seconds." >&2; exit 1'
