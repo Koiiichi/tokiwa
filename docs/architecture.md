@@ -59,7 +59,7 @@ The launcher picks the path from its command. `tokiwa --help` lists the commands
 
 | Path | AWS calls | Document | Launcher commands | Result |
 | --- | --- | --- | --- | --- |
-| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `--snapshot`, `health`, `--files`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `--end-confirmed` | The helper's stdout, after the status leaves `Pending` |
+| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `sessions --json`, `--snapshot`, `capture`, `health`, `--files`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `--end-confirmed` | The helper's stdout, after the status leaves `Pending` |
 | Interactive session | `ssm start-session` | `AWS-StartInteractiveCommand` | `attach`, `new`, `shell`, `admin` | A byte stream through the Session Manager plugin |
 | EC2 API | `ec2 describe-instances`, `describe-volumes`, `describe-addresses` | — | `spend`, and the host state check before every host command | JSON for the spend estimate; the instance state |
 
@@ -101,7 +101,7 @@ The helper validates each argument, runs tmux commands on the socket and exits. 
 
 `attach` with an identity, `rename` and `end` take the session identity, `#{pid}:#{session_id}:#{session_created}`. The helper compares it and acts in one tmux command queue (`if-shell -F`), so a session that took the same name is never attached, renamed or ended. [Transport](transport.md#session-identity) describes the attach check.
 
-`--snapshot` prints one JSON object. The app reads it through `BackendClient.sessions` in [`backend.ts`](../app/backend.ts).
+`--snapshot` and `sessions --json` print one JSON object. The app reads it through `BackendClient.sessions` in [`backend.ts`](../app/backend.ts).
 
 | Field | Content |
 | --- | --- |

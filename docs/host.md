@@ -90,7 +90,7 @@ systemctl start cloud-workbench.service
 | Source file | Installed path | Owner, mode | Purpose |
 | --- | --- | --- | --- |
 | `start-workbench.sh` | `/opt/agent-platform/rootless/start-workbench.sh` | 0755 | Sets the tmux options and creates the `workbench` session. |
-| `terminal-session.sh` | `/opt/agent-platform/rootless/terminal-session.sh` | 0755 | The helper: lists, creates, attaches, renames and ends sessions, and keeps `projects.json`. |
+| `terminal-session.sh` | `/opt/agent-platform/rootless/terminal-session.sh` | 0755 | The helper: lists, creates, attaches, reads, renames and ends sessions, and keeps `projects.json`. |
 | `tokiwa-open` | `/opt/agent-platform/rootless/tokiwa-open` | 0755 | The `BROWSER` program. Sends a link to the Mac. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |

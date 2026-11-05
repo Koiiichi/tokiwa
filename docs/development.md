@@ -6,7 +6,7 @@ This page tells how to work on the Tokiwa repository: where the code is, how to 
 
 | Folder or file | Contents |
 | --- | --- |
-| [`app/`](../app/) | The terminal app on the Mac (Bun, OpenTUI Core): `app.ts` (the interface), `backend.ts` (calls to the launcher), `pty.ts` (the transport process of each terminal view), `sessions.ts`, `health-view.ts`, `shortcuts.ts`, `search.ts` and the other modules, their `*.test.ts` files, `run`, `install.sh` and `test_install.py` |
+| [`app/`](../app/) | The terminal app on the Mac (Bun, OpenTUI Core): `app.ts` (the interface), `backend.ts` (calls to the launcher), `mcp.ts` (the MCP server for local agents), `pty.ts` (the transport process of each terminal view), `sessions.ts`, `health-view.ts`, `shortcuts.ts`, `search.ts` and the other modules, their `*.test.ts` files, `run`, `install.sh` and `test_install.py` |
 | [`bin/tokiwa`](../bin/tokiwa) | The launcher on the Mac: every AWS call and host command, and `tokiwa` without a command opens the app |
 | [`host/`](../host/) | The host side: `units/`, `start-workbench.sh`, `terminal-session.sh`, `workbench-health.py`, `workbench-files.py`, `tokiwa-open`, the rootless engine files, the host installer, `compose/` and `tests/` |
 | [`docs/`](./) | These pages, and `images/` |

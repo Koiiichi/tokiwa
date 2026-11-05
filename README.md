@@ -79,6 +79,7 @@ Health shows the host's CPU, memory, storage, network and workbench limits, samp
 - [Sessions and projects](docs/sessions-and-projects.md): the session model and what each action changes on the host.
 - [Transport](docs/transport.md): attach, session identity, reconnect, clipboard, links and the connection card.
 - [Health](docs/health.md): what Health shows, how it samples and `health.json`.
+- [Local agents](docs/agents.md): the read-only MCP server for Claude Code and Codex on the Mac.
 - [Configuration](docs/configuration.md): the host settings, environment variables, options and files.
 - [Host](docs/host.md): the service and its sandbox, installed files, Docker and the admin route.
 - [Development](docs/development.md): the repository layout, running the app from a checkout and the tests.
