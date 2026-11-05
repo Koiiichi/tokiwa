@@ -17,16 +17,16 @@ valid_prompt_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]]; }
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( $mode == capture && $# -eq 4 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|ensure|project|end|create|rename) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  files) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 12000 && -z $extra ]] || fail 'The file request is invalid.' ;;
  health|shell|sessions|status|snapshot) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == files ]]; then
  exec python3 "$(dirname "$0")/workbench-files.py" "$name"
@@ -34,8 +34,12 @@ fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
 fi
-if [[ $mode == end || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
+fi
+if [[ $mode == capture ]]; then
+ lines=${4:-}
+ [[ $lines =~ ^[0-9]{1,3}$ ]] && (( lines >= 1 && lines <= 200 )) || fail 'Use a line count from 1 to 200.'
 fi
 # -N prevents a failed connection from creating an unprotected server.
 tm show-options -s exit-empty >/dev/null 2>&1 || fail 'The workbench service is unavailable. No service was started. Run tokiwa status.'
@@ -108,6 +112,57 @@ ensure() {
  fi
 }
 case "$mode" in
+ capture)
+  # Read only. The text is the last lines of the active pane, with its scrollback, without colour.
+  python3 - "$socket" "$name" "$extra" "$lines" <<'PY_CAPTURE'
+import json
+import subprocess
+import sys
+import time
+
+socket, name, identity, limit = sys.argv[1:5]
+LIMIT_BYTES = 20000
+
+def tmux(*args):
+    # -u: without it, tmux replaces non-ASCII text for a client without a UTF-8 locale.
+    return subprocess.run(['tmux', '-N', '-u', '-S', socket, *args], capture_output=True,
+                          encoding='utf-8', errors='replace', timeout=10)
+
+def size(text):
+    return len(json.dumps(text, ensure_ascii=False).encode())
+
+target = '=' + name + ':'
+if tmux('has-session', '-t', '=' + name).returncode:
+    raise SystemExit('The selected session no longer exists.')
+fields = tmux('display-message', '-p', '-t', target,
+              '#{pid}:#{session_id}:#{session_created}\t#{pane_id}\t#{pane_dead}\t#{session_attached}\t#{pane_current_command}')
+current, pane, dead, clients, command = fields.stdout.rstrip('\n').split('\t', 4)
+if current != identity:
+    raise SystemExit('Session identity changed. Nothing was read.')
+# A pane ID is never reused on a server, so this reads the session that the check saw.
+screen = tmux('capture-pane', '-p', '-J', '-S', '-200', '-t', pane)
+if screen.returncode:
+    raise SystemExit('The selected session no longer exists.')
+rows = [row.rstrip() for row in screen.stdout.splitlines()]
+rows = [row for row in rows if row][-int(limit):]
+text = '\n'.join(rows)
+truncated = size(text) > LIMIT_BYTES
+if truncated:
+    # The smallest start that fits. Text is cut between characters, never inside one.
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high) // 2
+        if size(text[middle:]) > LIMIT_BYTES:
+            low = middle + 1
+        else:
+            high = middle
+    text = text[low:]
+output = {'name': name, 'identity': identity, 'pane': pane, 'command': command[:80],
+          'clients': int(clients), 'dead': dead == '1', 'sampled_at': time.time(),
+          'lines': text.count('\n') + 1 if text else 0, 'truncated': truncated, 'text': text}
+sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode() + b'\n')
+PY_CAPTURE
+  exit ;;
  snapshot)
   python3 - "$socket" "$state" <<'PY_SNAPSHOT'
 import json

@@ -42,6 +42,109 @@ class Server(unittest.TestCase):
                               capture_output=True, text=True, timeout=30)
 
 
+class ScreenCapture(Server):
+    """`capture` of a session that printed known text."""
+
+    def session(self, name, text):
+        """Start a session that shows text and stays open. Return its identity."""
+        path = Path(self.temp.name) / f'{name}.txt'
+        path.write_text(text, encoding='utf-8')
+        marker = f'printed-{name}'
+        self.tm('new-session', '-d', '-s', name, '-x', '80', '-y', '24', 'sh', '-c',
+                f'cat "{path}"; echo; echo {marker}; exec sleep 300')
+        for _ in range(200):
+            if marker in self.tm('capture-pane', '-p', '-t', f'={name}:').stdout:
+                break
+            time.sleep(.02)
+        else:
+            self.fail('The session did not print its text.')
+        rows = json.loads(self.helper('snapshot').stdout)['sessions']
+        return next(r['identity'] for r in rows if r['name'] == name)
+
+    def capture(self, name, identity, lines='200'):
+        result = self.helper('capture', name, identity, lines)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_capture_returns_the_last_clean_lines(self):
+        identity = self.session('cap', 'one\n\ntwo   \n')
+        row = self.capture('cap', identity, '2')
+        self.assertEqual(row['text'], 'two\nprinted-cap')
+        self.assertEqual(row['lines'], 2)
+        self.assertEqual(row['name'], 'cap')
+        self.assertEqual(row['identity'], identity)
+        self.assertFalse(row['truncated'])
+        self.assertFalse(row['dead'])
+        self.assertEqual(row['clients'], 0)
+        self.assertRegex(row['pane'], r'^%[0-9]+$')
+        self.assertTrue(row['command'])
+        self.assertGreater(row['sampled_at'], 0)
+
+    def test_capture_reads_scrollback(self):
+        identity = self.session('cap', ''.join(f'line-{i}\n' for i in range(300)))
+        row = self.capture('cap', identity)
+        lines = row['text'].split('\n')
+        self.assertEqual(len(lines), 200)
+        self.assertEqual(lines[-2:], ['line-299', 'printed-cap'])
+
+    def test_capture_refuses_a_replaced_session(self):
+        old = self.session('cap', 'old-secret\n')
+        self.tm('kill-session', '-t', '=cap')
+        self.session('cap', 'new\n')
+        result = self.helper('capture', 'cap', old, '10')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Session identity changed. Nothing was read.', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_capture_of_a_missing_session_is_a_clear_error(self):
+        result = self.helper('capture', 'gone', '1:$2:3', '10')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('The selected session no longer exists.', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_capture_limits_lines(self):
+        identity = self.session('cap', 'x\n')
+        for lines in ['0', '201', 'x', '']:
+            result = self.helper('capture', 'cap', identity, lines)
+            self.assertNotEqual(result.returncode, 0, lines)
+            self.assertIn('from 1 to 200', result.stderr)
+
+    def test_capture_cuts_at_a_character_boundary(self):
+        identity = self.session('cap', ('é' * 79 + '\n') * 180)
+        row = self.capture('cap', identity)
+        self.assertTrue(row['truncated'])
+        self.assertLessEqual(len(json.dumps(row['text'], ensure_ascii=False).encode()), 20000)
+        self.assertTrue(row['text'].endswith('printed-cap'))
+        self.assertNotIn('\ufffd', row['text'])
+
+    def test_capture_limits_text_that_grows_when_encoded(self):
+        identity = self.session('cap', ('"' * 79 + '\n') * 180)
+        result = self.helper('capture', 'cap', identity, '200')
+        self.assertLess(len(result.stdout), 22000)
+        self.assertTrue(json.loads(result.stdout)['truncated'])
+
+    def test_capture_keeps_text_without_a_utf8_locale(self):
+        identity = self.session('cap', 'é ok\n')
+        self.env.update(LC_ALL='C', LANG='C')
+        self.assertIn('é ok', self.capture('cap', identity)['text'])
+
+    def test_capture_output_is_json_with_control_characters(self):
+        identity = self.session('cap', 'a "quoted" \\ b\tc \x1b[31mred\x1b[0m\n')
+        self.assertIn('"quoted"', self.capture('cap', identity)['text'])
+
+    def test_capture_of_a_dead_pane_reports_it(self):
+        self.tm('set-option', '-g', 'remain-on-exit', 'on')
+        self.tm('new-session', '-d', '-s', 'cap', '-x', '80', '-y', '24', 'sh', '-c', 'echo finished')
+        for _ in range(200):
+            if self.tm('display-message', '-p', '-t', '=cap:', '#{pane_dead}').stdout.strip() == '1':
+                break
+            time.sleep(.02)
+        rows = json.loads(self.helper('snapshot').stdout)['sessions']
+        row = self.capture('cap', next(r['identity'] for r in rows if r['name'] == 'cap'))
+        self.assertTrue(row['dead'])
+        self.assertIn('finished', row['text'])
+
+
 class TerminalSessions(Server):
     def test_snapshot_reports_sessions_without_creating_one(self):
         self.assertEqual(json.loads(self.helper('snapshot').stdout), {'sessions': [], 'projects': {}})
