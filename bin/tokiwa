@@ -101,7 +101,7 @@ PY_CREATE
   [[ $lines =~ ^[0-9]{1,3}$ ]] && (( lines >= 1 && lines <= 200 )) || fail 'Use a line count from 1 to 200.'
   extra=$3 ;;
  sessions)
-  if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot
+  if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot; name=
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
  health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|mcp) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
  *) usage >&2; exit 2 ;;

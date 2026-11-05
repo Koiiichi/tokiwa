@@ -102,6 +102,21 @@ class ScreenCapture(Server):
         self.assertIn('The selected session no longer exists.', result.stderr)
         self.assertNotIn('Traceback', result.stderr)
 
+    def test_capture_of_a_session_that_ends_during_the_read_is_a_clear_error(self):
+        identity = self.session('cap', 'x\n')
+        wrapper = Path(self.temp.name) / 'bin/tmux'
+        wrapper.parent.mkdir()
+        wrapper.write_text(f"""#!/bin/sh
+case "$*" in *pane_dead*) exit 1 ;; esac
+exec {self.tmux} "$@"
+""")
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f"{wrapper.parent}:{self.env['PATH']}"
+        result = self.helper('capture', 'cap', identity, '10')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('The selected session no longer exists.', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_capture_limits_lines(self):
         identity = self.session('cap', 'x\n')
         for lines in ['0', '201', 'x', '']:

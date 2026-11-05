@@ -136,6 +136,8 @@ if tmux('has-session', '-t', '=' + name).returncode:
     raise SystemExit('The selected session no longer exists.')
 fields = tmux('display-message', '-p', '-t', target,
               '#{pid}:#{session_id}:#{session_created}\t#{pane_id}\t#{pane_dead}\t#{session_attached}\t#{pane_current_command}')
+if fields.returncode:
+    raise SystemExit('The selected session no longer exists.')
 current, pane, dead, clients, command = fields.stdout.rstrip('\n').split('\t', 4)
 if current != identity:
     raise SystemExit('Session identity changed. Nothing was read.')

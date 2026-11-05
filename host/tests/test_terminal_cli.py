@@ -314,6 +314,8 @@ esac
     def test_sessions_json_reads_the_snapshot(self):
         self.assertEqual(self.run_cli('sessions', '--json').returncode, 0)
         self.assertIn('terminal-session.sh snapshot', self.sent())
+        # The helper refuses an argument after snapshot.
+        self.assertNotIn('--json', self.sent())
 
     def test_plain_sessions_is_unchanged(self):
         self.assertEqual(self.run_cli('sessions').returncode, 0)
