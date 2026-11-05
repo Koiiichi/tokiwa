@@ -150,6 +150,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `h` | **Health**: show the Health view. |
 | `z` | **Focus**: hide the session list beside the terminal, or show it again. |
 | `u` | **Refresh sessions**: read the session snapshot again. |
+| `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser opens for the approval. After a success the view closes and the sessions are read again; after a failure the view stays open with the message. At other times the key does nothing. |
 | `t` | **New local shell**: start a local login shell in the home directory. |
 | `g` | **Local shell group**: start the shells that `projects.json` names. |
 | `?` | **Keyboard shortcuts**: open the shortcuts sheet. |

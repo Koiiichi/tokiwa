@@ -8,7 +8,7 @@ name=${2:-}
 extra=
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -28,6 +28,7 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   sessions      List terminals and attached clients
   status        Check AWS access, host state and the workbench server
   --check       Same as status
+  login         Sign in to AWS with the profile of the host settings
   shell         Open or select a terminal without the dashboard
   admin         Open the existing administrator shell
 
@@ -90,7 +91,7 @@ PY_CREATE
   [[ $# -le 2 ]] || fail 'Use name [NAME].'
   [[ -z $name || $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]] || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
 
- health|spend|dashboard|--snapshot|shell|admin|sessions|list|status|--check) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
+ health|spend|dashboard|--snapshot|shell|admin|sessions|list|status|--check|login) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
  *) usage >&2; exit 2 ;;
 esac
 # The host settings: KEY=VALUE lines. The file is read, never run. See docs/configuration.md.
@@ -119,6 +120,10 @@ if [[ $mode == dashboard ]]; then
  [[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command.'
  [[ -x $app ]] || fail 'The Tokiwa interface is not installed. Run app/install.sh, or use tokiwa attach NAME.'
  exec "$app"
+fi
+if [[ $mode == login ]]; then
+ [[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command.'
+ exec aws sso login --profile "$profile"
 fi
 note() { [[ ${TOKIWA_DASHBOARD:-0} == 1 ]] || printf "$@"; }
 aws_call() { aws --profile "$profile" --region "$region" --cli-connect-timeout 5 --cli-read-timeout 10 "$@"; }

@@ -62,7 +62,7 @@ The second shell starts in `backend`'s current directory, joins its project and 
 
 Sessions have no `sudo`; `tokiwa admin` opens a root shell on the host through Session Manager, outside the service sandbox. On a host installed with `--with-docker`, `docker compose` in a session runs against the rootless Docker engine. Its volumes stay on the host and are not off-host backups.
 
-If the connection drops, the session keeps running on the host. Run `tokiwa attach NAME`, or press **R** in the app, to reconnect. When the AWS sign-in has expired, `tokiwa` starts `aws sso login` in an interactive terminal and then continues.
+If the connection drops, the session keeps running on the host. Run `tokiwa attach NAME`, or press **R** in the app, to reconnect. When the AWS sign-in has expired, `tokiwa` starts `aws sso login` in an interactive terminal and then continues. In the app, press **l** to sign in.
 
 ## Watch, browse and end sessions
 

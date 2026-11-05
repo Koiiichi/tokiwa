@@ -274,6 +274,19 @@ esac
         self.assertIn('aws sso login --profile work', result.stderr)
         self.assertNotIn('sso login', (self.home / 'calls').read_text())
 
+    def test_login_runs_the_sign_in_of_the_configured_profile(self):
+        code, output, _ = self.run_cli_in_terminal('login')
+        self.assertEqual(code, 0, output)
+        calls = (self.home / 'calls').read_text().splitlines()
+        self.assertEqual([c for c in calls if 'sso login' in c], ['sso login --profile work'])
+        self.assertFalse(any('sts' in c or 'ssm' in c for c in calls), calls)
+
+    def test_login_needs_a_terminal(self):
+        result = self.run_cli('login')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('interactive terminal', result.stderr)
+        self.assertFalse((self.home / 'calls').exists() and 'sso login' in (self.home / 'calls').read_text())
+
     def test_valid_session_does_not_log_in(self):
         self.assertEqual(self.run_cli('--snapshot').returncode, 0)
         self.assertNotIn('sso login', (self.home / 'calls').read_text())

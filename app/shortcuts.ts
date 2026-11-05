@@ -34,6 +34,13 @@ export const KEYMAP: Binding[] = [
     direct: true,
   },
   {
+    id: "sign-in",
+    group: "Workspace",
+    key: "l",
+    label: "Sign in to AWS",
+    direct: true,
+  },
+  {
     id: "local-shell",
     group: "Workspace",
     key: "t",

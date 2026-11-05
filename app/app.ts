@@ -115,6 +115,8 @@ const healthConfigPath = join(
 const SPEND_REFRESH_MS = 15 * 60 * 1000;
 // A local shell is the user's login shell and starts in the home directory.
 const localShell = localShellCommand(process.env);
+/** The launcher's message when a read fails because the AWS sign-in expired. */
+const SIGN_IN_EXPIRED = /AWS authentication failed|AWS login did not complete/;
 const localDirectory = process.env.HOME ?? import.meta.dir;
 if (
   !/^[a-zA-Z0-9 -]{1,30}$/.test(groups.name) ||
@@ -316,6 +318,8 @@ export class App {
   pendingShell?: { source: Shell; where: string; since: number };
   pendingPane?: BoxRenderable;
   pendingText?: TextRenderable;
+  /** The view that runs the AWS sign-in. A failed sign-in stays open, so its message can be read. */
+  signInShell?: Shell;
   /** The search panel. The confirmation of End session and Project directory also uses it. */
   palette?: BoxRenderable;
   search?: InputRenderable;
@@ -733,6 +737,10 @@ export class App {
       health: { run: () => this.show("health") },
       focus: { run: () => this.toggleFocus() },
       refresh: { run: () => void this.refreshSessions() },
+      "sign-in": {
+        available: () => this.signInExpired(),
+        run: () => this.signIn(),
+      },
       "local-shell": {
         run: () => {
           const shell = this.startShell(undefined, false, localDirectory);
@@ -1762,6 +1770,47 @@ export class App {
     });
     return shell;
   }
+  signInExpired() {
+    return SIGN_IN_EXPIRED.test(this.sessionsError);
+  }
+  signingIn() {
+    return !!this.signInShell && !this.signInShell.exited;
+  }
+  /**
+   * Run the AWS sign-in in a local view. The browser opens on this Mac. After a success the view
+   * closes and the sessions are read again; after a failure the view stays.
+   */
+  signIn() {
+    if (this.signingIn()) {
+      this.active = this.shells.indexOf(this.signInShell!);
+      this.listFocused = false;
+      this.show("shell");
+      return;
+    }
+    if (this.signInShell) this.discardView(this.signInShell);
+    const shell = this.startShell(
+      "aws-sign-in",
+      false,
+      localDirectory,
+      this.backend.loginCommand(),
+    );
+    if (!shell) {
+      this.notify("Close a terminal view before you sign in.", true);
+      return;
+    }
+    this.signInShell = shell;
+    this.active = this.shells.indexOf(shell);
+    this.listFocused = false;
+    this.show("shell");
+    void shell.child.exited.then(async (code) => {
+      if (this.disposed || this.signInShell !== shell) return;
+      if (code !== 0) return this.drawSessions();
+      this.signInShell = undefined;
+      this.discardView(shell);
+      while (this.sessionsLoading && !this.disposed) await Bun.sleep(100);
+      await this.refreshSessions();
+    });
+  }
   /**
    * Read the session snapshot through the launcher. One read runs at a time. While the app runs
    * with its processes, the next read follows 5 seconds after the first and then every 30 seconds
@@ -2668,6 +2717,9 @@ export class App {
         ],
       };
     return keyFirst([
+      ...(this.signInExpired()
+        ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
+        : []),
       ...(this.sessionRows().length
         ? [
             hint("select", "↑↓", "select", 1),
@@ -3024,36 +3076,52 @@ export class App {
         content: styled(spans),
       });
     if (!rows.length) {
-      const reason = this.sessionsError
+      const reason = this.signInExpired()
         ? [
-            { text: "Sessions not available", tone: "warning" as const },
+            { text: "AWS sign-in expired", tone: "warning" as const },
             { text: "", tone: "dim" as const },
-            ...wrapText(this.sessionsError, inner).map((text) => ({
-              text,
-              tone: "dim" as const,
-            })),
-            { text: "", tone: "dim" as const },
+            { text: "l signs in", tone: "dim" as const },
             { text: "u reads them again", tone: "dim" as const },
           ]
-        : this.sessionsRead
+        : this.sessionsError
           ? [
-              { text: "No sessions on EC2", tone: "title" as const },
-              { text: "t opens a local shell", tone: "dim" as const },
-            ]
-          : [
-              {
-                text:
-                  this.options.spawn === false
-                    ? "No sessions read"
-                    : "Reading sessions…",
+              { text: "Sessions not available", tone: "warning" as const },
+              { text: "", tone: "dim" as const },
+              ...wrapText(this.sessionsError, inner).map((text) => ({
+                text,
                 tone: "dim" as const,
-              },
-            ];
+              })),
+              { text: "", tone: "dim" as const },
+              { text: "u reads them again", tone: "dim" as const },
+            ]
+          : this.sessionsRead
+            ? [
+                { text: "No sessions on EC2", tone: "title" as const },
+                { text: "t opens a local shell", tone: "dim" as const },
+              ]
+            : [
+                {
+                  text:
+                    this.options.spawn === false
+                      ? "No sessions read"
+                      : "Reading sessions…",
+                  tone: "dim" as const,
+                },
+              ];
       reason.forEach((span, i) => line(`list-status-${i}`, [span]));
       return;
     }
     if (this.sessionsError)
-      line("list-error", [{ text: "Last read failed", tone: "warning" }]);
+      line("list-error", [
+        {
+          text: !this.signInExpired()
+            ? "Last read failed"
+            : this.signingIn()
+              ? "Signing in…"
+              : "Sign-in expired · l signs in",
+          tone: "warning",
+        },
+      ]);
     const tree = this.sessionTree();
     const focus = this.listHasFocus();
     // The cells before a session's glyph: two per project level, two more for a child.
@@ -3493,7 +3561,12 @@ export class App {
         tone: "dim",
       },
       { text: "\n", tone: "value" },
-      { text: "t opens a local shell · ? shortcuts", tone: "dim" },
+      {
+        text: this.signInExpired()
+          ? "l signs in · t opens a local shell"
+          : "t opens a local shell · ? shortcuts",
+        tone: "dim",
+      },
     ]);
   }
   /** Attach the session of a row, or bring an attached view forward. */

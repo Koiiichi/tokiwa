@@ -208,6 +208,10 @@ export class BackendClient {
       source: current,
     };
   }
+  /** The command that signs in to AWS. It runs in a local view, because it needs a terminal. */
+  loginCommand() {
+    return [this.launcher, "login"];
+  }
   async files(ref: SessionRef, target?: string, offset = 0) {
     await this.resolve(ref.name, ref.identity);
     const base = filesRoot(ref);

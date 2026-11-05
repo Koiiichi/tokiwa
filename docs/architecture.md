@@ -175,6 +175,6 @@ The app keeps a small amount of state on the Mac.
 | The app quits | Remote sessions keep running; local shells end |
 | The service stops | Every session ends (`KillMode=control-group`). Nothing restarts the service |
 | The tmux server is down | Every helper call fails; no call starts a new server |
-| The AWS sign-in expired | App reads fail with `AWS authentication failed.` and the sign-in command to run |
+| The AWS sign-in expired | App reads fail with `AWS authentication failed.` The session list offers `l`, which runs `tokiwa login` in a local view. Attached sessions keep running on the host |
 | The host is stopped | Every host command fails; the launcher never starts the host |
 | A Run Command call takes longer than 15 polls | The call fails with the last status, for example `Pending` |
