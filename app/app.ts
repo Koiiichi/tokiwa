@@ -116,6 +116,19 @@ const healthConfigPath = join(
 const SPEND_REFRESH_MS = 15 * 60 * 1000;
 // A local shell is the user's login shell and starts in the home directory.
 const localShell = localShellCommand(process.env);
+/** How long a row says `disconnected` before it shows its session on the host again. */
+const DISCONNECT_NOTICE_MS = 60000;
+/** The last line of an attach that a detach ended, or that ended with the session. */
+const TRANSPORT_END =
+  /\[(detached \(from session [^\]]*\)|exited)\]\s*(Exiting session[^\n]*\s*)?$/;
+/** The way a transport ended on purpose, from the end of its output. */
+export function transportEnd(output: string) {
+  const match = TRANSPORT_END.exec(
+    output.replace(/\x1b[=>]|\x1b[()][0-9A-Z]/g, ""),
+  );
+  if (!match) return undefined;
+  return match[1] === "exited" ? "ended" : "detached";
+}
 const localDirectory = process.env.HOME ?? import.meta.dir;
 if (
   !/^[a-zA-Z0-9 -]{1,30}$/.test(groups.name) ||
@@ -237,6 +250,10 @@ export type Shell = {
   lastInput?: number;
   startupOutput?: string;
   exited: boolean;
+  /** When the transport ended. */
+  endedAt?: number;
+  /** True after this app asked tmux to detach the view. */
+  detaching?: boolean;
 };
 
 export class App {
@@ -770,7 +787,8 @@ export class App {
         available: () => Boolean(this.targetShell()?.remote),
         run: () => {
           const s = this.targetShell();
-          if (s?.remote) s.adapter.detach();
+          if (s?.exited) this.closeEndedView(s);
+          else if (s?.remote) this.detach(s);
         },
       },
       redraw: {
@@ -1409,11 +1427,31 @@ export class App {
     shell.adapter.closeTransport();
     shell.pane.destroyRecursively();
     this.shells = this.shells.filter((s) => s !== shell);
+    if (this.pair?.includes(shell)) this.pair = undefined;
     this.active = Math.max(
       0,
       this.shells.indexOf(focused === shell ? this.shells[0] : focused),
     );
     this.show("shell");
+  }
+  /** Close the view of a transport that ended, and return to the list from it. */
+  closeEndedView(shell: Shell, notice?: string) {
+    const name = shell.remote?.name ?? shell.name;
+    const front =
+      this.shells[this.active] === shell &&
+      this.view === "shell" &&
+      !this.palette &&
+      !this.explorer &&
+      !this.sheetOpen;
+    this.discardView(shell);
+    if (notice) this.notify(notice);
+    if (front) {
+      this.focusSessions();
+      const index = this.sessionRows().findIndex((r) => r.name === name);
+      if (index >= 0) this.listSelection = index;
+      this.drawSessions();
+    }
+    void this.refreshSessions();
   }
   /**
    * Hold the place of a new shell while it starts, so a press of `n` shows at once that the
@@ -1673,6 +1711,16 @@ export class App {
     await this.shellHere(directory);
   }
 
+  /** Keep the time and the plain end of a terminal's output. */
+  noteOutput(shell: Shell, bytes: Uint8Array) {
+    shell.lastOutput = Date.now();
+    shell.startupOutput = (
+      (shell.startupOutput ?? "") + Buffer.from(bytes).toString()
+    )
+      .slice(-4096)
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  }
+
   startShell(
     label?: string,
     remote = false,
@@ -1705,12 +1753,7 @@ export class App {
           terminal.write(bytes);
           const s = this.shells.find((s) => s.terminal === terminal);
           if (s) {
-            s.lastOutput = Date.now();
-            s.startupOutput = (
-              (s.startupOutput ?? "") + Buffer.from(bytes).toString()
-            )
-              .slice(-4096)
-              .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+            this.noteOutput(s, bytes);
           }
         },
         exit: (code) => {
@@ -2319,7 +2362,7 @@ export class App {
         {
           data: (bytes) => {
             terminal.write(bytes);
-            if (shell) shell.lastOutput = Date.now();
+            if (shell) this.noteOutput(shell, bytes);
           },
           exit: (code) => {
             if (shell?.adapter === adapter) shell.exited = true;
@@ -2342,6 +2385,8 @@ export class App {
         Object.assign(shell, {
           adapter,
           child: adapter.child,
+          detaching: false,
+          startupOutput: "",
           remote: ref,
           exited: false,
         });
@@ -2723,6 +2768,13 @@ export class App {
         ? [
             hint("select", "↑↓", "select", 1),
             hint("attach", "enter", "attach", 5, () => this.attachSelected()),
+            ...(this.targetShell()?.exited && this.targetShell()?.remote
+              ? [
+                  hint("detach", "d", "close view", 6, () =>
+                    this.runAction("detach"),
+                  ),
+                ]
+              : []),
           ]
         : [
             hint(
@@ -2754,7 +2806,11 @@ export class App {
   }
   /** Detach the remote session in the pane. Its process ends, and the keyboard goes to the list. */
   detachPane() {
-    if (this.remoteInPane()) this.shells[this.active].adapter.detach();
+    if (this.remoteInPane()) this.detach(this.shells[this.active]);
+  }
+  detach(shell: Shell) {
+    shell.detaching = true;
+    shell.adapter.detach();
   }
   /** Copy the current text selection, as Ctrl+Shift+C does. */
   copySelection() {
@@ -2886,6 +2942,21 @@ export class App {
    * workspace, the keyboard goes to the session list on its row, so the arrow keys work again.
    */
   afterExit(shell: Shell) {
+    shell.endedAt = this.now();
+    const remote = !!shell.remote || !!shell.remoteName;
+    const end = shell.detaching
+      ? "detached"
+      : transportEnd(shell.startupOutput ?? "");
+    if (remote && end && !this.disposed) {
+      const name = shell.remote?.name ?? shell.name;
+      this.closeEndedView(
+        shell,
+        end === "detached"
+          ? `detached ${name} · it keeps running`
+          : `${name} ended`,
+      );
+      return;
+    }
     this.updateActivity();
     if (
       this.disposed ||
@@ -2975,7 +3046,12 @@ export class App {
   }
   /** Observe one row: the transport of an attached view, else the snapshot screens. */
   rowActivity(row: SessionRow) {
-    if (row.shell) {
+    // A dropped view says so for a while. Then the row shows the session on the host.
+    const faded =
+      row.shell?.exited &&
+      !!row.ref &&
+      this.now() - (row.shell.endedAt ?? this.now()) > DISCONNECT_NOTICE_MS;
+    if (row.shell && !faded) {
       const state = activity(
         !!row.shell.remoteName || !!row.shell.remote,
         !row.shell.exited,

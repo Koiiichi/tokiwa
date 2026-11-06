@@ -120,6 +120,129 @@ test("a transport that ends shows the session as disconnected", async () => {
   }
 });
 
+const DETACHED = String.raw`printf 'Starting session\r\n[detached (from session setup)]\r\n\r\n\r\nExiting session with sessionId: x.\r\n\033[?1000l\033>\033[?25h'`;
+const ended = async (w: Awaited<ReturnType<typeof workspace>>) => {
+  for (let i = 0; i < 100 && w.app.shells.some((s) => !s.exited); i++)
+    await pause(20);
+  await pause(60);
+  w.app.updateActivity();
+  await w.t.renderOnce();
+};
+
+test("a dropped view's row returns to its session state after a minute", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", "exit 1"];
+  try {
+    await w.attach("setup");
+    await ended(w);
+    expect(w.row("setup")).toMatch(/○ setup +disconnected/);
+    w.app.shells[0].endedAt = w.app.now() - 61000;
+    w.app.updateActivity();
+    await w.t.renderOnce();
+    expect(w.row("setup")).not.toContain("disconnected");
+    expect(w.app.shells).toHaveLength(1);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a detach closes the view and returns to the list", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", `${DETACHED}; exit 0`];
+  try {
+    await w.attach("setup");
+    await ended(w);
+    expect(w.app.shells).toEqual([]);
+    expect(w.row("setup")).not.toContain("disconnected");
+    const frame = w.t.captureCharFrame();
+    expect(frame).toContain("No session attached");
+    expect(frame).toContain("detached setup · it keeps running");
+    expect(w.app.sessionRows()[w.app.listSelection].name).toBe("setup");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a session that ended closes its view", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", "printf '[exited]\\r\\n'; exit 0"];
+  try {
+    await w.attach("setup");
+    await ended(w);
+    expect(w.app.shells).toEqual([]);
+    expect(w.t.captureCharFrame()).toContain("setup ended");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the word detached in old output does not close the view", async () => {
+  const w = await workspace();
+  w.transports.setup = [
+    "/bin/sh",
+    "-c",
+    "printf '[detached (from session setup)]\\r\\nmore output\\r\\n'; exit 0",
+  ];
+  try {
+    await w.attach("setup");
+    await ended(w);
+    expect(w.app.shells).toHaveLength(1);
+    expect(w.row("setup")).toMatch(/○ setup +disconnected/);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("d closes the view of a dropped connection", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", "exit 1"];
+  try {
+    await w.attach("setup");
+    await ended(w);
+    expect(w.app.shells).toHaveLength(1);
+    expect(w.t.captureCharFrame()).toContain("close view");
+    await w.t.mockInput.typeText("d");
+    await pause();
+    await w.t.renderOnce();
+    expect(w.app.shells).toEqual([]);
+    expect(w.row("setup")).not.toContain("disconnected");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a detach from the app closes the view without the tmux message", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", "read x; exit 0"];
+  try {
+    await w.attach("setup");
+    w.app.detachPane();
+    w.app.shells[0].adapter.closeTransport();
+    await ended(w);
+    expect(w.app.shells).toEqual([]);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a detach leaves the other view open and in front", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", `sleep 0.4; ${DETACHED}; exit 0`];
+  w.transports.tools = ["/bin/sh", "-c", "exec cat"];
+  try {
+    await w.attach("setup");
+    await w.attach("tools");
+    for (let i = 0; i < 100 && w.app.shells.length > 1; i++) await pause(20);
+    await pause(60);
+    await w.t.renderOnce();
+    expect(w.app.shells.map((s) => s.name)).toEqual(["tools"]);
+    expect(w.app.shells[w.app.active].name).toBe("tools");
+    expect(w.app.pair).toBeUndefined();
+  } finally {
+    await w.dispose();
+  }
+});
+
 test("the output glyph throbs in colour, and reduced motion keeps it still", async () => {
   const w = await workspace();
   try {

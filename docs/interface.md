@@ -107,7 +107,7 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 | `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
 | `◈` | Amber | Needs you. A window of the session rang the bell while no client viewed it. |
-| `○` | Amber | Disconnected. The transport of this app's view ended: a detach, a dropped connection or an exit. Enter attaches it again. |
+| `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
 | (empty) | — | No reading yet, or the snapshot did not include the pane activity. |
 | `¹` | Dim | After the name: the number of clients attached elsewhere. |
@@ -164,7 +164,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `enter` | **Attach** the selected session, or bring its open view forward. |
 | `esc` | **Back to terminal**: give the keyboard back to the active view. |
 | `r` | **Reconnect**: close the transport, check the session identity and start a new transport. |
-| `d` | **Detach** the remote session. The keyboard goes to the list on its row. |
+| `d` | **Detach** the remote session. The view closes, and the keyboard goes to the list on its row. On the view of a dropped connection, `d` closes the view. |
 | `p` | **Move to project**: the search asks for a name path such as `team/api`. |
 | `x` | **End session**: the row asks first. See [Ending a session](#ending-a-session). |
 

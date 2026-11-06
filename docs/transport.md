@@ -162,7 +162,9 @@ The prefix rule keeps the redraw from completing a tmux command that the user st
 3. A new transport starts in the same view, and the view clears its screen.
 4. tmux draws the new client in full.
 
-A transport that ended by itself (a dropped connection, a detach, `exit`) shows its row as `○ disconnected`. When it was the active view, the keyboard returns to the session list on that row. Enter on the row attaches the session again with the identity of the last snapshot. The app never reconnects on its own.
+After a detach, or after the session itself ended, the app closes the view and reads the session list again. The footer says what happened, and when it was the active view, the keyboard returns to the list on that row. Any other view stays open.
+
+A transport that ended any other way, such as a dropped connection, keeps its view, so the connection log stays readable, and its row shows `○ disconnected`. After a minute the row shows the session on the host again; the view stays until `d` closes it. Enter on the row attaches the session again with the identity of the last snapshot. The app never reconnects on its own.
 
 ## Clipboard writes
 
