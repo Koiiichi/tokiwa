@@ -225,6 +225,44 @@ test("a detach from the app closes the view without the tmux message", async () 
   }
 });
 
+test("a detach that finishes late leaves the row that the owner moved to", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", `sleep 0.5; ${DETACHED}; exit 0`];
+  try {
+    await w.attach("setup");
+    w.app.focusSessions();
+    await w.t.renderOnce();
+    const start = w.app.listSelection;
+    w.t.mockInput.pressArrow("up");
+    await pause();
+    const moved = w.app.sessionRows()[w.app.listSelection].name;
+    expect(w.app.listSelection).not.toBe(start);
+    await ended(w);
+    expect(w.app.shells).toEqual([]);
+    expect(w.app.sessionRows()[w.app.listSelection].name).toBe(moved);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a dropped connection leaves the row that the owner moved to", async () => {
+  const w = await workspace();
+  w.transports.setup = ["/bin/sh", "-c", "sleep 0.5; exit 1"];
+  try {
+    await w.attach("setup");
+    w.app.focusSessions();
+    await w.t.renderOnce();
+    w.t.mockInput.pressArrow("up");
+    await pause();
+    const moved = w.app.sessionRows()[w.app.listSelection].name;
+    expect(moved).not.toBe("setup");
+    await ended(w);
+    expect(w.app.sessionRows()[w.app.listSelection].name).toBe(moved);
+  } finally {
+    await w.dispose();
+  }
+});
+
 test("a detach leaves the other view open and in front", async () => {
   const w = await workspace();
   w.transports.setup = ["/bin/sh", "-c", `sleep 0.4; ${DETACHED}; exit 0`];

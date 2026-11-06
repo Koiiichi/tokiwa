@@ -1438,18 +1438,22 @@ export class App {
   }
   /** Close the view of a transport that ended, and return to the list from it. */
   closeEndedView(shell: Shell, notice?: string) {
-    const name = shell.remote?.name ?? shell.name;
     const front =
       this.shells[this.active] === shell &&
       this.view === "shell" &&
       !this.palette &&
       !this.explorer &&
       !this.sheetOpen;
+    // A transport ends some seconds after a detach. A person who is in the list by then keeps
+    // their row; the keyboard moves to the row of this view only from its terminal.
+    const row = this.listFocused
+      ? this.sessionRows()[this.listSelection]?.name
+      : (shell.remote?.name ?? shell.name);
     this.discardView(shell);
     if (notice) this.notify(notice);
     if (front) {
       this.focusSessions();
-      const index = this.sessionRows().findIndex((r) => r.name === name);
+      const index = this.sessionRows().findIndex((r) => r.name === row);
       if (index >= 0) this.listSelection = index;
       this.drawSessions();
     }
@@ -2967,7 +2971,7 @@ export class App {
     )
       return;
     if (this.palette || this.explorer || this.sheetOpen) return;
-    this.focusSessions();
+    if (!this.listFocused) this.focusSessions();
   }
   /** Open the workspace with the keyboard in the session list, on the row of the active view. */
   focusSessions() {
