@@ -40,6 +40,8 @@ export function groupSessions<T extends { name: string; project?: string }>(
 /** A project in the session tree: a name path such as `studio/api`, or an old directory label. */
 export interface TreeProject {
   kind: "project";
+  /** The title of the group of background sessions: a click opens or closes it. */
+  background?: boolean;
   path: string;
   title: string;
   depth: number;

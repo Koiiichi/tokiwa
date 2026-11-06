@@ -146,7 +146,7 @@ test("+ on a project title starts a named session in its folder; + new project a
       old,
     ]);
     // Ending a project names its sessions and asks with one key.
-    p.app.askEndProject(old);
+    p.app.askEndProject("studio");
     await p.t.renderOnce();
     expect(p.lines().join("\n")).toContain("enter ends · esc keeps");
     p.t.mockInput.pressEscape();

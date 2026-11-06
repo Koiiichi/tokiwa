@@ -25,6 +25,7 @@ import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
   BackendClient,
+  isBackground,
   SIGN_IN_EXPIRED,
   projectName,
   type SessionRef,
@@ -379,6 +380,8 @@ export class App {
   rowClose = new Map<string, TextRenderable>();
   /** A session that asks "end it?" in its row and in its view's title, with the shells opened from it. */
   ending?: { ref: SessionRef; children: SessionRef[]; busy?: string };
+  /** True while the group of background sessions is open. */
+  backgroundOpen = false;
   /** A project that waits for the answer to "end it?". */
   endingProject?: { path: string; refs: SessionRef[]; busy?: string };
   /** A question about a local shell with a running program: close that shell, or quit the app. */
@@ -748,6 +751,10 @@ export class App {
       health: { run: () => this.show("health") },
       focus: { run: () => this.toggleFocus() },
       refresh: { run: () => void this.refreshSessions() },
+      background: {
+        available: () => this.remoteSessions.some(isBackground),
+        run: () => this.toggleBackground(),
+      },
       "sign-in": {
         available: () => this.signInExpired(),
         run: () => this.signIn(),
@@ -1217,6 +1224,14 @@ export class App {
             text: this.rowTitle(s) === s.name ? "" : `  ${this.rowTitle(s)}`,
             fg: RGBA.fromHex(theme.muted),
           },
+          {
+            __isChunk: true,
+            text:
+              s.remote && isBackground(s.remote)
+                ? "  view only · ctrl+k d leaves"
+                : "",
+            fg: RGBA.fromHex(theme.warning),
+          },
         ]);
       s.terminal.blur();
       s.shield.visible =
@@ -1679,7 +1694,7 @@ export class App {
       this.previousSessions = new Map(
         this.remoteSessions.map((r) => [r.name, r]),
       );
-      this.remoteSessions = rows.filter((r) => !groups.hidden.includes(r.name));
+      this.remoteSessions = rows;
       // A seen bell stays hidden until the host reports the session without a bell.
       for (const [name, identity] of this.acknowledged) {
         const ref = rows.find((r) => r.name === name);
@@ -1980,6 +1995,12 @@ export class App {
       { text: "esc keeps", tone: "value", run: () => this.answerClose(false) },
     ];
   }
+  toggleBackground() {
+    this.backgroundOpen = !this.backgroundOpen;
+    this.listFocused = true;
+    this.drawSessions();
+    this.drawFooter();
+  }
   /** Ask to end a project: its sessions end, and a named project is forgotten. */
   askEndProject(path: string) {
     this.endingProject = { path, refs: this.projectSessions(path) };
@@ -2259,7 +2280,9 @@ export class App {
       terminal.write("\x1b[2J\x1b[H");
       const adapter = new PtyAdapter(
         "remote",
-        this.backend.attachCommand(ref),
+        isBackground(ref)
+          ? this.backend.viewCommand(ref)
+          : this.backend.attachCommand(ref),
         {
           data: (bytes) => {
             terminal.write(bytes);
@@ -2904,8 +2927,9 @@ export class App {
         title: groups.name,
         shell,
       }));
+    const background = remote.filter((r) => r.ref && isBackground(r.ref));
     const tree = projectTree(
-      remote,
+      remote.filter((r) => !background.includes(r)),
       Object.keys(this.backend.projects),
       this.projectOrder,
     );
@@ -2919,6 +2943,23 @@ export class App {
           saved: false,
         },
         ...local.map((item) => ({
+          kind: "session" as const,
+          item,
+          depth: 0,
+          child: false,
+        })),
+      );
+    if (background.length)
+      tree.push(
+        {
+          kind: "project",
+          background: true,
+          path: "",
+          title: `${this.backgroundOpen ? "▾" : "▸"} background · ${background.length}`,
+          depth: 0,
+          saved: false,
+        },
+        ...(this.backgroundOpen ? background : []).map((item) => ({
           kind: "session" as const,
           item,
           depth: 0,
@@ -3115,27 +3156,32 @@ export class App {
           this.drawGap(`group-gap-${g}`, entry.path, inner);
         this.drawProjectTitle(entry, g);
         if (this.endingProject?.path === entry.path) {
-          const asking = this.box(this.sessionScroll, `project-ask-${g}`, {
-            height: 1,
-            flexShrink: 0,
-            flexDirection: "row",
-            paddingLeft: 2 + entry.depth * 2,
-          });
-          this.endingProjectSpans().forEach((span, k) =>
-            this.text(asking, `project-ask-${g}-${k}`, "", {
+          // The question and its answers take a line each: the list can be narrow.
+          const [question, ...answers] = this.endingProjectSpans();
+          [[question], answers].forEach((spans, l) => {
+            if (!spans.length) return;
+            const line = this.box(this.sessionScroll, `project-ask-${g}-${l}`, {
               height: 1,
               flexShrink: 0,
-              wrapMode: "none",
-              selectable: false,
-              content: styled([span]),
-              onMouseDown: span.run
-                ? (event: MouseEvent) => {
-                    event.stopPropagation();
-                    span.run!();
-                  }
-                : undefined,
-            }),
-          );
+              flexDirection: "row",
+              paddingLeft: 2 + entry.depth * 2,
+            });
+            spans.forEach((span, k) =>
+              this.text(line, `project-ask-${g}-${l}-${k}`, "", {
+                height: 1,
+                flexShrink: 0,
+                wrapMode: "none",
+                selectable: false,
+                content: styled([span]),
+                onMouseDown: span.run
+                  ? (event: MouseEvent) => {
+                      event.stopPropagation();
+                      span.run!();
+                    }
+                  : undefined,
+              }),
+            );
+          });
         }
         return;
       }
@@ -3325,6 +3371,11 @@ export class App {
       onMouseDown: (event: MouseEvent) => {
         event.stopPropagation();
         this.dropped = false;
+        if (entry.background) {
+          this.dropped = true;
+          this.toggleBackground();
+          return;
+        }
         // A second press on the same title within 400 ms renames the project.
         const now = Date.now();
         const twice =

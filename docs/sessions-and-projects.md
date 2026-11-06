@@ -14,6 +14,17 @@ A session without a project label belongs to the project of its directory. A lab
 
 `projects.json` is in `~/.tokiwa/` of the workbench user on the workstation (folder mode 700, file mode 600). Each entry holds the default folder of the project, where + starts a new session. The order of the top-level projects is display-only and kept on the Mac in `~/.local/state/tokiwa/project-order.json`.
 
+## Background sessions
+
+Programs can start tmux sessions of their own, for example a watcher or a bridge. Tokiwa sorts each session by how it started, so a program does not have to declare anything:
+
+| Session | Where it shows |
+| --- | --- |
+| Tokiwa made it, or Claude Code or Codex runs in it | In its project |
+| Anything else | In the closed `background` group at the end of the list |
+
+`b`, or a click on the group title, opens the group. Enter on a background session opens it view only: tmux keeps every key press from its program, so a stray Ctrl+C cannot stop it. `ctrl+k d` leaves the view. `x` ends the session, after a question. To type into one, run `tokiwa attach NAME`.
+
 ## What each action does
 
 | Action | In the interface | From the command line | Effect |

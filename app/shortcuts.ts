@@ -55,6 +55,13 @@ export const KEYMAP: Binding[] = [
     direct: true,
   },
   {
+    id: "background",
+    group: "Workspace",
+    key: "b",
+    label: "Background sessions",
+    direct: true,
+  },
+  {
     id: "shortcuts",
     group: "Workspace",
     key: "?",

@@ -20,6 +20,18 @@ export interface SessionRef {
   bell?: boolean;
   /** The tmux session id (for example `$4`) of the session that this one was opened from. */
   parent?: string;
+  /** True when Tokiwa made the session. A host helper without this field leaves it out. */
+  managed?: boolean;
+}
+/**
+ * A session that a program started for its own work, for example a watcher or a bridge. Tokiwa
+ * did not make it and no agent runs in it, so it stays out of the owner's list.
+ */
+export function isBackground(ref: SessionRef) {
+  return (
+    ref.managed === false &&
+    !ref.activity?.some((a) => /^(claude|codex)$/.test(a.command))
+  );
 }
 /** A project saved on the workstation, so it shows also without sessions. */
 export interface SavedProject {
@@ -186,10 +198,17 @@ export class BackendClient {
     return s;
   }
   attachCommand(ref: SessionRef) {
+    return this.sessionCommand("attach", ref);
+  }
+  /** The same attach, read only: a key press never reaches the program. */
+  viewCommand(ref: SessionRef) {
+    return this.sessionCommand("view", ref);
+  }
+  private sessionCommand(mode: string, ref: SessionRef) {
     // The launcher attaches only the session with this identity, in one tmux command.
     if (!/^\d+:\$\d+:\d+$/.test(ref.identity))
       throw new Error("The session identity is invalid.");
-    return [this.launcher, "attach", sessionName(ref.name), ref.identity];
+    return [this.launcher, mode, sessionName(ref.name), ref.identity];
   }
   async shellCommand(ref: SessionRef, name: string) {
     const current = await this.resolve(ref.name, ref.identity);

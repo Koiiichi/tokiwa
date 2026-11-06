@@ -281,6 +281,84 @@ test("a detach leaves the other view open and in front", async () => {
   }
 });
 
+const sorted = (names: string[]): SessionRef[] =>
+  landingSessions.map((s) => ({ ...s, managed: !names.includes(s.name) }));
+
+test("a session that a program made waits in a closed background group", async () => {
+  const w = await workspace();
+  w.snapshot.current = sorted(["tools"]);
+  try {
+    await w.app.refreshSessions();
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    let frame = w.t.captureCharFrame();
+    expect(frame).toContain("▸ background · 1");
+    expect(w.row("tools")).toBe("");
+    expect(w.app.sessionRows().map((r) => r.name)).not.toContain("tools");
+    await w.t.mockInput.typeText("b");
+    await pause();
+    await w.t.renderOnce();
+    frame = w.t.captureCharFrame();
+    expect(frame).toContain("▾ background · 1");
+    expect(w.row("tools")).toContain("tools");
+    await w.t.mockInput.typeText("b");
+    await pause();
+    await w.t.renderOnce();
+    expect(w.t.captureCharFrame()).toContain("▸ background · 1");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("an agent that a program started stays with the sessions", async () => {
+  const w = await workspace();
+  w.snapshot.current = landingSessions.map((s) => ({
+    ...s,
+    managed: false,
+    activity: [{ pane: "%1", dead: false, command: "claude", screen: "a" }],
+  }));
+  try {
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.t.captureCharFrame()).not.toContain("background ·");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a helper without the mark keeps every session in the list", async () => {
+  const w = await workspace();
+  try {
+    expect(w.t.captureCharFrame()).not.toContain("background ·");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a background session opens view only", async () => {
+  const w = await workspace();
+  w.snapshot.current = sorted(["tools"]);
+  const commands: string[][] = [];
+  const view = w.app.backend.viewCommand.bind(w.app.backend);
+  w.app.backend.viewCommand = (ref) => {
+    commands.push(view(ref));
+    return ["/bin/sleep", "30"];
+  };
+  try {
+    await w.app.refreshSessions();
+    await w.app.refreshSessions();
+    await w.t.mockInput.typeText("b");
+    await pause();
+    await w.attach("tools");
+    expect(commands).toHaveLength(1);
+    expect(commands[0].slice(1, 3)).toEqual(["view", "tools"]);
+    await w.t.renderOnce();
+    expect(w.t.captureCharFrame()).toContain("view only");
+  } finally {
+    await w.dispose();
+  }
+});
+
 test("the output glyph throbs in colour, and reduced motion keeps it still", async () => {
   const w = await workspace();
   try {

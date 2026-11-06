@@ -412,6 +412,15 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('not installed', result.stderr)
 
+    def test_view_needs_an_identity_and_a_terminal(self):
+        self.assertNotEqual(self.run_cli('view', 'backend').returncode, 0)
+        self.assertNotEqual(self.run_cli('view', 'backend', 'x;y').returncode, 0)
+        self.assertFalse((self.home / 'calls').exists())
+        code, output, _ = self.run_cli_in_terminal('view', 'backend', '1:$2:3')
+        self.assertEqual(code, 0, output)
+        calls = (self.home / 'calls').read_text()
+        self.assertIn("terminal-session.sh view backend '1:$2:3'", calls)
+
     def test_valid_session_does_not_log_in(self):
         self.assertEqual(self.run_cli('--snapshot').returncode, 0)
         self.assertNotIn('sso login', (self.home / 'calls').read_text())

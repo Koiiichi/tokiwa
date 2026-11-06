@@ -14,6 +14,8 @@ Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capt
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
   new NAME      Create an independent terminal and attach
+  view NAME IDENTITY
+                Watch a session read only: a key press never reaches its program
   attach NAME [IDENTITY]
                 Attach to an existing terminal; with IDENTITY, only that exact session
   new NAME --from SOURCE  Open a shell in SOURCE’s current directory
@@ -48,14 +50,16 @@ case "$mode" in
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'A confirmed session identity is required.'
   mode=end; extra=$3 ;;
  --help|-h) usage; exit 0 ;;
- new|attach|project)
+ new|attach|view|project)
   [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
   if [[ $mode == new && $# -eq 4 && $3 == --from ]]; then
    [[ $4 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'The source session name is invalid.'
    extra=$4
-  elif [[ $mode == attach && $# -eq 3 ]]; then
+  elif [[ ( $mode == attach || $mode == view ) && $# -eq 3 ]]; then
    [[ $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
    extra=$3
+  elif [[ $mode == view ]]; then
+   fail 'Use view NAME IDENTITY.'
   elif [[ $mode == project && $# -eq 3 ]]; then
    [[ $3 == /* || $3 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,47}){0,5}$ ]] || fail 'Use a project name path such as studio/api, or an absolute directory.'
    extra=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$3")
@@ -226,7 +230,7 @@ else
  remote="systemctl is-active --quiet cloud-workbench.service && $helper $mode"
  [[ -z $name ]] || remote="$remote $name"
  # The identity holds a dollar sign. Quote it so that the remote shell passes it unchanged.
- if [[ $mode == attach && -n $extra ]]; then remote="$remote '$extra'"
+ if [[ ( $mode == attach || $mode == view ) && -n $extra ]]; then remote="$remote '$extra'"
  elif [[ -n $extra ]]; then remote="$remote $extra"; fi
  # The helper also checks the socket and never starts a tmux server.
  remote="$remote || { printf 'The terminal connection ended with an error. Run tokiwa status.\\n' >&2; exit 1; }"

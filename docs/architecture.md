@@ -106,6 +106,7 @@ The helper validates each argument, runs tmux commands on the socket and exits. 
 | Field | Content |
 | --- | --- |
 | `sessions[].name`, `identity` | The tmux session name and its identity |
+| `sessions[].managed` | True when Tokiwa made the session: it has the tmux option `@tokiwa_session` |
 | `sessions[].clients`, `windows` | `#{session_attached}` and `#{session_windows}` |
 | `sessions[].cwd` | `#{pane_current_path}` of the current pane |
 | `sessions[].project` | `@tokiwa_project`, or `cwd` when the session has no label |

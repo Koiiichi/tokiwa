@@ -19,18 +19,18 @@ name=${2:-}
 extra=${3:-}
 [[ $# -le 3 || ( $mode == capture && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
 fi
-if [[ $mode == end || $mode == capture || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == capture ]]; then
@@ -50,7 +50,7 @@ prompt_name() {
 }
 # Start session $1 in directory $2 with a plain shell.
 start_shell() {
- tm new-session -d -s "$1" -c "$2" env "BROWSER=$browser" "PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --norc
+ tm new-session -d -s "$1" -c "$2" env "BROWSER=$browser" "PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --norc \; set-option @tokiwa_session 1
 }
 # Validate a project label from base64 $1: a name path such as studio/api, or an existing absolute directory.
 project_label() {
@@ -203,6 +203,7 @@ for line in output.splitlines():
     cwd = read('display-message', '-p', '-t', '=' + name + ':', '#{pane_current_path}')
     project = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_project') or cwd
     parent = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_parent')
+    managed = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_session') == '1'
     # One line per pane of every window. The window bell flag is set when a pane of the window
     # rang the bell while no client viewed that window; viewing the window clears it.
     panes = [pane.split('\t', 3) for pane in read('list-panes', '-s', '-t', '=' + name, '-F',
@@ -212,7 +213,7 @@ for line in output.splitlines():
     for pane_id, dead, _, command in panes[:16]:
         screen = read('capture-pane', '-p', '-t', pane_id, '-S', '-20')
         activity.append({'pane':pane_id, 'dead':dead == '1', 'command':command[:80], 'screen':hashlib.sha256(screen.encode()).hexdigest()})
-    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
+    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
 if len(sessions) > 100:
     raise SystemExit('The session list exceeds the dashboard limit of 100.')
 # Drop optional activity before it can prevent session navigation.
@@ -388,6 +389,14 @@ PY_CREATE
     "attach-session -t '$session_id'" \
     "display-message -p 'Session identity changed. No session was attached.' ; run-shell 'exit 1'"
   fi ;;
+ view)
+  # Read only: a key press never reaches the program. The identity check and the attachment run
+  # in the same tmux command queue.
+  tm has-session -t "=$name" 2>/dev/null || fail 'This session does not exist. Use tokiwa sessions or tokiwa new NAME.'
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  exec tmux -N -S "$socket" if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
+   "attach-session -r -t '$session_id'" \
+   "display-message -p 'Session identity changed. No session was attached.' ; run-shell 'exit 1'" ;;
  shell)
   names=()
   while IFS= read -r item; do [[ -z $item ]] || names+=("$item"); done < <(tm list-sessions -F '#{session_name}')

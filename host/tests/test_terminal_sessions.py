@@ -43,6 +43,47 @@ class Server(unittest.TestCase):
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
 
 
+class SessionKinds(Server):
+    """A session that Tokiwa made carries a mark. A session that a program made has none."""
+
+    def test_view_attaches_read_only_and_checks_the_identity(self):
+        self.helper('ensure', 'job')
+        identity = self.row('job')['identity']
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(self.env, TERM='xterm-256color')
+            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), 'view', 'job', identity)
+        try:
+            flag = ''
+            for _ in range(200):
+                if select.select([fd], [], [], 0.02)[0]:
+                    os.read(fd, 65536)
+                flag = self.tm('list-clients', '-F', '#{client_readonly}').stdout.strip()
+                if flag:
+                    break
+            self.assertEqual(flag, '1')
+            os.write(fd, b'typed-through\r')
+            time.sleep(0.2)
+            self.assertNotIn('typed-through', self.tm('capture-pane', '-p', '-t', '=job:').stdout)
+        finally:
+            # Close the terminal first: on macOS a process that writes to it cannot finish exiting.
+            os.close(fd)
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+
+    def row(self, name):
+        rows = json.loads(self.helper('snapshot').stdout)['sessions']
+        return next(r for r in rows if r['name'] == name)
+
+    def test_a_tokiwa_session_is_managed(self):
+        self.assertEqual(self.helper('ensure', 'mine').returncode, 0)
+        self.assertTrue(self.row('mine')['managed'])
+
+    def test_a_session_that_a_program_made_is_not_managed(self):
+        self.tm('new-session', '-d', '-s', 'job', 'sleep 300')
+        self.assertFalse(self.row('job')['managed'])
+
+
 class ScreenCapture(Server):
     """`capture` of a session that printed known text."""
 
@@ -320,13 +361,13 @@ class TerminalSessions(Server):
         rows = json.loads(self.helper('snapshot').stdout)['sessions']
         return next(r['identity'] for r in rows if r['name'] == name)
 
-    def attach_in_terminal(self, *args):
+    def attach_in_terminal(self, *args, mode='attach'):
         """Run the helper attach in a PTY. Return its exit code, output and the attached sessions."""
         pid, fd = pty.fork()
         if pid == 0:
             os.environ.update(self.env)
             os.environ['TERM'] = 'xterm-256color'
-            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), 'attach', *args)
+            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), mode, *args)
         output, attached, code = b'', '', None
         try:
             deadline = time.time() + 5
@@ -352,6 +393,12 @@ class TerminalSessions(Server):
                 code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
             os.close(fd)
         return code, output.decode(errors='replace'), attached
+
+    def test_view_refuses_a_replaced_session(self):
+        self.helper('ensure', 'target')
+        code, output, attached = self.attach_in_terminal('target', '1:$999:1', mode='view')
+        self.assertEqual(attached, '')
+        self.assertIn('Session identity changed. No session was attached.', output)
 
     def test_attach_with_identity_attaches_the_exact_session(self):
         self.helper('ensure', 'alpha')
