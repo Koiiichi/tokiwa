@@ -1828,7 +1828,7 @@ export class App {
       this.previousSessions = new Map(
         this.remoteSessions.map((r) => [r.name, r]),
       );
-      this.remoteSessions = rows;
+      this.remoteSessions = rows.filter((r) => !groups.hidden.includes(r.name));
       // A seen bell stays hidden until the host reports the session without a bell.
       for (const [name, identity] of this.acknowledged) {
         const ref = rows.find((r) => r.name === name);

@@ -1,1 +1,5 @@
-{ "name": "local", "shells": ["build", "inspect"] }
+{
+  "name": "local",
+  "shells": ["build", "inspect"],
+  "hidden": ["peermesh-bridge"]
+}

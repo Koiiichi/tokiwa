@@ -431,3 +431,31 @@ test("when the visible view's transport ends, the arrow keys move in the session
     await t.dispose();
   }
 }, 15000);
+
+test("a hidden session stays out of the list and the search", async () => {
+  const t = await createTestRenderer({ width: 100, height: 30 });
+  const bridge = {
+    ...landingSessions[0],
+    name: "peermesh-bridge",
+    identity: "9:$99:9",
+    project: "/var/hidden-project",
+    cwd: "/var/hidden-project",
+  };
+  const backend = new BackendClient("/fixture/tokiwa", async () =>
+    JSON.stringify({ sessions: [...landingSessions, bridge] }),
+  );
+  const app = new App(t.renderer, { backend });
+  try {
+    await pause();
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("web-lead");
+    expect(frame).not.toContain("peermesh-bridge");
+    expect(frame).not.toContain("hidden-project");
+    expect(app.remoteSessions.map((s) => s.name)).not.toContain(
+      "peermesh-bridge",
+    );
+  } finally {
+    await t.dispose();
+  }
+});
