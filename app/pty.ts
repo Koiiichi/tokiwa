@@ -22,6 +22,26 @@ export function localShellCommand(env: Environment): string[] {
   return ["/bin/zsh", "-l"];
 }
 /**
+ * The name of the program that holds the terminal of a local shell, or nothing while the shell
+ * waits at its prompt. A background job does not count, and neither does a helper of the prompt.
+ */
+export function foregroundProgram(pid: number): string | undefined {
+  const read = (fields: string[], target: number) =>
+    Bun.spawnSync([
+      "ps",
+      ...fields.flatMap((f) => ["-o", f]),
+      "-p",
+      `${target}`,
+    ])
+      .stdout.toString()
+      .trim();
+  const [group, foreground] = read(["pgid=", "tpgid="], pid)
+    .split(/\s+/)
+    .map(Number);
+  if (!(foreground > 0) || foreground === group) return undefined;
+  return read(["comm="], foreground).split("/").at(-1) || "a program";
+}
+/**
  * The variables that name the terminal around Tokiwa. A program in a local shell that saw them
  * would talk to that terminal, for example Ghostty or tmux, while its output goes to Tokiwa.
  */
@@ -33,7 +53,10 @@ const TERMINAL = { TERM: "xterm-256color", COLORTERM: "truecolor" };
  * terminal's variables. A remote transport gets a fixed environment, so the launcher and the
  * Session Manager plugin behave the same however Tokiwa was started.
  */
-function transportEnvironment(kind: TransportKind, env: Environment): Environment {
+function transportEnvironment(
+  kind: TransportKind,
+  env: Environment,
+): Environment {
   if (kind === "local") {
     const inherited = Object.fromEntries(
       Object.entries(env).filter(([key]) => !OUTER_TERMINAL.test(key)),

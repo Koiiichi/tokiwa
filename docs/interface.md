@@ -154,7 +154,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `t` | **New local shell**: start a local login shell in the home directory. |
 | `g` | **Local shell group**: start the shells that `projects.json` names. |
 | `?` | **Keyboard shortcuts**: open the shortcuts sheet. |
-| `q` | **Quit**: close the app. Remote sessions keep running on the host. Local shells end. |
+| `q` | **Quit**: close the app. Remote sessions keep running on the host. Local shells end, so when a program runs in one, the app asks first. |
 
 ### Session
 
@@ -166,7 +166,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `r` | **Reconnect**: close the transport, check the session identity and start a new transport. |
 | `d` | **Detach** the remote session. The view closes, and the keyboard goes to the list on its row. On the view of a dropped connection, `d` closes the view. |
 | `p` | **Move to project**: the search asks for a name path such as `team/api`. |
-| `x` | **End session**: the row asks first. See [Ending a session](#ending-a-session). |
+| `x` | **End session**: the row asks first. See [Ending a session](#ending-a-session). On a local shell, `x` closes it, and asks first only when a program runs in it. |
 
 ### Terminal
 

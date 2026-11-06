@@ -21,7 +21,7 @@ import { createConnection } from "node:net";
 import groups from "./projects.json";
 import { openGhosttyWindow, shellQuote } from "./ghostty";
 import { steadyCursor } from "./cursor";
-import { localShellCommand, PtyAdapter } from "./pty";
+import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
   BackendClient,
@@ -381,6 +381,8 @@ export class App {
   rowClose = new Map<string, TextRenderable>();
   /** A session that asks "end it?" in its row and in its view's title, with the shells opened from it. */
   ending?: { ref: SessionRef; children: SessionRef[]; busy?: string };
+  /** A question about a local shell with a running program: close that shell, or quit the app. */
+  closing?: { shell: Shell; program: string; quit: boolean };
   /** The order of the top-level projects, saved in `orderFile`. */
   projectOrder: string[] = [];
   orderFile?: string;
@@ -776,7 +778,7 @@ export class App {
         },
       },
       shortcuts: { run: () => this.openSheet() },
-      quit: { run: () => this.close() },
+      quit: { run: () => this.askQuit() },
       reconnect: {
         available: () => Boolean(this.targetShell()?.remote),
         run: () => {
@@ -808,10 +810,15 @@ export class App {
         },
       },
       end: {
-        available: () => Boolean(this.targetRef()),
+        available: () => {
+          const shell = this.targetShell();
+          return Boolean(this.targetRef() || (shell && this.isLocal(shell)));
+        },
         run: () => {
           const ref = this.targetRef();
+          const shell = this.targetShell();
           if (ref) this.askEnd(ref);
+          else if (shell) this.askClose(shell);
         },
       },
       copy: {
@@ -1127,13 +1134,17 @@ export class App {
       visible: false,
       onMouseDown: (event: MouseEvent) => {
         event.stopPropagation();
-        const ref = this.shells.find((s) => s.pane === pane)?.remote;
-        if (ref) this.askEnd(ref);
+        const shell = this.shells.find((s) => s.pane === pane);
+        if (shell?.remote) this.askEnd(shell.remote);
+        else if (shell && this.isLocal(shell)) this.askClose(shell);
       },
     });
     this.hoverable(pane, `pane:${name}`, (on) => {
       const shell = this.shells.find((s) => s.pane === pane);
-      close.visible = on && !!shell?.remote && !shell.exited;
+      close.visible =
+        on &&
+        !!shell &&
+        (this.isLocal(shell) || (!!shell.remote && !shell.exited));
     });
     // While the terminal lacks the keyboard, this layer takes the click, so a click that only
     // focuses never reaches the program (for example an option in a Claude Code menu).
@@ -1211,6 +1222,8 @@ export class App {
       s.pane.flexGrow = 1;
       if (this.ending && s.remote?.name === this.ending.ref.name)
         s.title.content = styled(this.endingSpans());
+      else if (this.closing?.shell === s)
+        s.title.content = styled(this.closingSpans());
       else
         s.title.content = new StyledText([
           {
@@ -2116,6 +2129,68 @@ export class App {
     await this.refreshSessions();
     this.redrawEnding();
   }
+  isLocal(shell: Shell) {
+    return !shell.remote && !shell.remoteName;
+  }
+  /** Close a local shell. While a program runs in it, ask first. */
+  askClose(shell: Shell) {
+    const program = shell.exited
+      ? undefined
+      : foregroundProgram(shell.child.pid);
+    if (program) {
+      this.closing = { shell, program, quit: false };
+      this.redrawEnding();
+    } else this.closeLocal(shell);
+  }
+  closeLocal(shell: Shell) {
+    this.closing = undefined;
+    this.closeEndedView(shell, `closed ${shell.name}`);
+    this.redrawEnding();
+  }
+  /** Quit. While a program runs in a local shell, ask first: quitting ends the local shells. */
+  askQuit() {
+    const busy = this.shells
+      .filter((s) => this.isLocal(s) && !s.exited)
+      .flatMap((shell) => {
+        const program = foregroundProgram(shell.child.pid);
+        return program ? [{ shell, program }] : [];
+      });
+    if (!busy.length) return this.close();
+    const more = busy.length > 1 ? ` and ${busy.length - 1} more` : "";
+    this.closing = {
+      shell: busy[0].shell,
+      program: `${busy[0].program}${more}`,
+      quit: true,
+    };
+    this.redrawEnding();
+  }
+  answerClose(yes: boolean) {
+    const asked = this.closing;
+    this.closing = undefined;
+    if (asked && yes) {
+      if (asked.quit) return this.close();
+      this.closeLocal(asked.shell);
+    }
+    this.redrawEnding();
+  }
+  /** The question of a local shell as spans, with each answer a control. */
+  closingSpans(): { text: string; tone: Tone; run?: () => void }[] {
+    const c = this.closing!;
+    const plural = /\d more$/.test(c.program) ? "are" : "is";
+    return [
+      {
+        text: `${c.quit ? "quit" : "close"}? ${c.program} ${plural} still running  `,
+        tone: "warning",
+      },
+      {
+        text: c.quit ? "enter quits" : "enter closes",
+        tone: "value",
+        run: () => this.answerClose(true),
+      },
+      { text: " · ", tone: "dim" },
+      { text: "esc keeps", tone: "value", run: () => this.answerClose(false) },
+    ];
+  }
   /** The question of an ending session as spans, with each answer a control. */
   endingSpans(): { text: string; tone: Tone; run?: () => void }[] {
     const e = this.ending!;
@@ -2774,6 +2849,9 @@ export class App {
         ? [
             hint("select", "↑↓", "select", 1),
             hint("attach", "enter", "attach", 5, () => this.attachSelected()),
+            ...(this.targetShell() && this.isLocal(this.targetShell()!)
+              ? [hint("end", "x", "close", 6, () => this.runAction("end"))]
+              : []),
             ...(this.targetShell()?.exited && this.targetShell()?.remote
               ? [
                   hint("detach", "d", "close view", 6, () =>
@@ -3331,9 +3409,15 @@ export class App {
           },
         );
         this.listGlyphs.push({ text: glyph, state });
-        if (this.ending && row.ref && this.ending.ref.name === row.ref.name) {
+        const asking =
+          this.ending && row.ref && this.ending.ref.name === row.ref.name
+            ? this.endingSpans()
+            : row.shell && this.closing?.shell === row.shell
+              ? this.closingSpans()
+              : undefined;
+        if (asking) {
           // The row asks "end it?"; each answer is a control.
-          this.endingSpans().forEach((span, k) =>
+          asking.forEach((span, k) =>
             this.text(item, `list-${i}-end-${k}`, "", {
               height: 1,
               flexShrink: 0,
@@ -3354,7 +3438,7 @@ export class App {
         // A name takes no text selection, so a drag that starts on it moves the session.
         part("name", [{ text: text.name, tone: current ? "accent" : "value" }]);
         part("detail", detail);
-        if (row.ref) {
+        if (row.ref || (row.shell && this.isLocal(row.shell))) {
           // × at the end of the row, under the pointer: ask to end the session.
           this.box(item, `list-${i}-space`, { flexGrow: 1, height: 1 });
           const close = this.text(item, `list-${i}-end`, " × ", {
@@ -3366,7 +3450,8 @@ export class App {
             onMouseDown: (event: MouseEvent) => {
               event.stopPropagation();
               this.dropped = true;
-              this.askEnd(row.ref!);
+              if (row.ref) this.askEnd(row.ref);
+              else this.askClose(row.shell!);
             },
           });
           this.rowClose.set(row.name, close);
@@ -4031,6 +4116,15 @@ export class App {
       key.preventDefault();
       key.stopPropagation();
     };
+    // A local shell waits for an answer: enter closes it, or quits; esc keeps it.
+    if (this.closing) {
+      if (key.name === "return" || key.name === "escape") {
+        stop();
+        this.answerClose(key.name === "return");
+        return;
+      }
+      this.answerClose(false);
+    }
     // A session waits for the answer to "end it?": enter ends, s keeps its shells, esc keeps it.
     if (this.ending) {
       // While it ends, keys wait: a second enter does not end it twice.
