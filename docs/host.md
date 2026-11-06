@@ -129,7 +129,7 @@ sudo bash install.sh --with-docker  # the core and the rootless Docker engine
 
 | Part | What it installs |
 | --- | --- |
-| Core | `tmux`, `python3`, `acl` and `nftables`; the user `agent-workspace` (UID 2100); the folders under `/srv/development`; the helpers in `/opt/agent-platform/rootless`; `agent.slice`, `agent-sessions.slice` and `cloud-workbench.service`; the `cloud_workspace` firewall table, which keeps sessions away from the instance metadata service. It enables the service and starts it when it is not running. |
+| Core | `tmux`, `python3`, `acl`, `nftables` and `openssl`; the user `agent-workspace` (UID 2100); the folders under `/srv/development`; the helpers in `/opt/agent-platform/rootless`; `agent.slice`, `agent-sessions.slice` and `cloud-workbench.service`; the `cloud_workspace` firewall table, which keeps sessions away from the instance metadata service. It enables the service and starts it when it is not running. |
 | `--with-docker` | `docker.io`, `docker-compose-v2`, `rootlesskit`, `slirp4netns` and `uidmap`; the user `cloud-containers` (UID 2200) with the subordinate IDs 1048576–1114111; a 24 GiB ext4 image for the engine, mounted at boot; the engine's user unit, slices and drop-ins; the `rootless_workspace` firewall table; and `cloud-workbench.service.d/docker.conf`, which gives sessions the engine's socket. It needs 28 GiB free in `/srv/development/cache`. |
 
 Each step reads the host first and changes only what is missing, so a second run changes nothing. A folder that exists keeps its owner and mode; the installer reports a difference. It stops before any change when the host is not Ubuntu, when systemd does not run, when cgroup v2 is missing, or when `agent-workspace` or `cloud-containers` exists with another UID.

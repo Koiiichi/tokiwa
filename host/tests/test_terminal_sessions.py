@@ -7,6 +7,7 @@ import pty
 import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -39,7 +40,7 @@ class Server(unittest.TestCase):
 
     def helper(self, *args):
         return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), *args], env=self.env,
-                              capture_output=True, text=True, timeout=30)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
 
 
 class ScreenCapture(Server):
@@ -155,14 +156,14 @@ exec {self.tmux} "$@"
         self.assertTrue(self.capture('cap', identity)['truncated'])
 
     def test_capture_output_holds_no_screen_text(self):
-        identity = self.session('cap', 'secret-marker-52\\n')
+        identity = self.session('cap', 'secret-marker-52\n')
         sealed = self.sealed('cap', identity)
         self.assertNotIn('secret-marker-52', sealed)
         self.assertNotIn('printed-cap', base64.b64decode(sealed).decode('latin-1'))
         self.assertIn('secret-marker-52', self.capture('cap', identity)['text'])
 
     def test_capture_refuses_without_a_recipient(self):
-        identity = self.session('cap', 'secret-marker-52\\n')
+        identity = self.session('cap', 'secret-marker-52\n')
         for args in [('10',), ('10', ''), ('10', 'not base64!')]:
             result = self.helper('capture', 'cap', identity, *args)
             self.assertNotEqual(result.returncode, 0, args)
@@ -170,7 +171,7 @@ exec {self.tmux} "$@"
             self.assertEqual(result.stdout, '')
 
     def test_capture_with_a_bad_recipient_prints_no_text(self):
-        identity = self.session('cap', 'secret-marker-52\\n')
+        identity = self.session('cap', 'secret-marker-52\n')
         junk = base64.b64encode(b'not a certificate').decode()
         result = self.helper('capture', 'cap', identity, '10', junk)
         self.assertNotEqual(result.returncode, 0)
@@ -182,6 +183,20 @@ exec {self.tmux} "$@"
         identity = self.session('cap', 'é ok\n')
         self.env.update(LC_ALL='C', LANG='C')
         self.assertIn('é ok', self.capture('cap', identity)['text'])
+
+    def test_capture_without_openssl_is_a_clear_error(self):
+        identity = self.session('cap', 'secret-marker-52\n')
+        tools = Path(self.temp.name) / 'tools'
+        tools.mkdir()
+        for name, program in {'bash': shutil.which('bash'), 'tmux': self.tmux, 'dirname': shutil.which('dirname'),
+                              'python3': sys.executable}.items():
+            (tools / name).symlink_to(program)
+        self.env['PATH'] = str(tools)
+        result = self.helper('capture', 'cap', identity, '10', self.keys())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not be encrypted', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(result.stdout, '')
 
     def test_capture_output_is_json_with_control_characters(self):
         identity = self.session('cap', 'a "quoted" \\ b\tc \x1b[31mred\x1b[0m\n')

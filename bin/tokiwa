@@ -188,7 +188,8 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  # exists only on this Mac and only for this call.
  if [[ $mode == capture ]]; then
   command -v openssl >/dev/null || fail 'A capture needs openssl.'
-  work=$(umask 077; mktemp -d) || fail 'A capture needs a temporary folder.'
+  umask 077
+  work=$(mktemp -d "${TMPDIR:-/tmp}/tokiwa-capture.XXXXXX") || fail 'A capture needs a temporary folder.'
   trap 'rm -rf "$work"' EXIT
   openssl req -x509 -newkey rsa:3072 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -subj /CN=tokiwa-capture -days 1 >/dev/null 2>&1 \
    || fail 'The capture key could not be made.'
@@ -206,12 +207,13 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text > "$work/sealed" \
    || fail 'The capture could not be read.'
   python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(open(sys.argv[1]).read()))' "$work/sealed" > "$work/sealed.der" 2>/dev/null \
-   && openssl smime -decrypt -binary -inform DER -inkey "$work/key.pem" -recip "$work/cert.pem" -in "$work/sealed.der" -out "$work/open" 2>/dev/null \
    || fail 'The capture could not be decrypted.'
-  cat "$work/open"
+  # To stdout, so that the decrypted text is never in a file.
+  openssl smime -decrypt -binary -inform DER -inkey "$work/key.pem" -recip "$work/cert.pem" -in "$work/sealed.der" 2>/dev/null \
+   || fail 'The capture could not be decrypted.'
   exit 0
  fi
- aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
+ [[ $mode == capture ]] || aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
  if [[ $status != Success ]]; then
   aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text >&2 || true
   fail "The workbench check returned $status. No service was started."

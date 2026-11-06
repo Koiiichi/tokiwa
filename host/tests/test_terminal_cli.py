@@ -1,8 +1,9 @@
 """Check CLI routing without AWS calls or provider requests."""
 import base64
 import os
-import re
 import pty
+import re
+import shutil
 import subprocess
 import tempfile
 import termios
@@ -35,6 +36,7 @@ case "$*" in
  *send-command*) echo test-command ;;
  *get-command-invocation*StandardOutputContent*)
   if grep -q 'terminal-session.sh capture' "$HOME/calls"; then
+   ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
    # Act as the host: encrypt to the certificate that the launcher sent.
    cert=$(grep -o "capture [^ ]* '[^']*' [0-9]* [A-Za-z0-9+/=]*" "$HOME/calls" | tail -1 | awk '{print $NF}')
    printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
@@ -323,6 +325,40 @@ esac
         self.assertNotIn('PRIVATE KEY', calls)
         self.assertNotIn('PRIVATE KEY', base64.b64decode(self.recipient()).decode())
         self.assertEqual(list(scratch.iterdir()), [])
+
+    def scratch(self):
+        folder = self.home / 'scratch'
+        folder.mkdir()
+        self.env['TMPDIR'] = str(folder)
+
+    def test_capture_files_are_private_under_any_umask(self):
+        self.scratch()
+        result = subprocess.run(['bash', '-c', 'umask 022; exec bash "$@"', 'bash', str(CLI), 'capture', 'backend', '1:$2:3'],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        modes = (self.home / 'modes').read_text()
+        self.assertIn('key.pem', modes)
+        self.assertNotRegex(modes, r'(?m)^-r[w-]-r')
+
+    def test_capture_writes_no_decrypted_file(self):
+        self.scratch()
+        real = shutil.which('openssl')
+        wrapper = self.home / '.local/lib/cloud-access/openssl'
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/openssl-calls"\nexec {real} "$@"\n')
+        wrapper.chmod(0o755)
+        result = self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertEqual(result.stdout.strip(), '{"text": "screen text"}', result.stderr)
+        calls = (self.home / 'openssl-calls').read_text().splitlines()
+        decrypt = [c for c in calls if '-decrypt' in c]
+        self.assertEqual(len(decrypt), 1)
+        self.assertNotIn('-out', decrypt[0])
+
+    def test_failed_capture_prints_no_sealed_output(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('capture', 'backend', '1:$2:3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
 
     def recipient(self):
         sent = re.findall(r"capture backend '[^']*' \d+ ([A-Za-z0-9+/=]+)", self.sent())

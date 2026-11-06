@@ -174,12 +174,16 @@ try:
     certificate = base64.b64decode(recipient, validate=True)
 except binascii.Error:
     raise SystemExit('The capture could not be encrypted. Nothing was read.')
-with tempfile.NamedTemporaryFile(suffix='.pem') as pem:
-    pem.write(certificate)
-    pem.flush()
-    sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
-                            input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
-if sealed.returncode or not sealed.stdout:
+sealed = None
+try:
+    with tempfile.NamedTemporaryFile(suffix='.pem') as pem:
+        pem.write(certificate)
+        pem.flush()
+        sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
+                                input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
+except (OSError, subprocess.TimeoutExpired):
+    pass
+if sealed is None or sealed.returncode or not sealed.stdout:
     raise SystemExit('The capture could not be encrypted. Nothing was read.')
 print(base64.b64encode(sealed.stdout).decode())
 PY_CAPTURE
