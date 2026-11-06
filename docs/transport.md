@@ -231,6 +231,7 @@ The card measures the path to the AWS endpoint. It does not measure an open tran
 | The drawing is stale, not the emulator | **Repaint view** draws the view again from the emulator and sends nothing to tmux |
 | The source of a wrong screen is unknown | **Save screen** writes the emulator's text, size and cursor and the pane size to `~/.local/state/tokiwa/captures/` (or `TOKIWA_CAPTURE_DIR`); compare it with `tmux capture-pane` on the host |
 | A stream to replay | With `TOKIWA_RECORD_DIR` set, each remote transport appends its raw output to `<dir>/<time>-<pid>.bytes` and each size change to `.sizes` as `<byte offset> <cols> <rows>`. The folder has mode 0700, the files 0600. Nothing is recorded without the variable |
+| tmux redraws with the cursor visible, and output arrives in 1,024-byte pieces | [`cursor.ts`](../app/cursor.ts) keeps the cursor on its row until a new row has held still for 64 ms. A move along one row shows at once |
 | A transport ends | The launcher turns off mouse, focus, paste and keyboard modes in the view and shows the cursor; after a failure it also leaves the alternate screen |
 
 The recorded bytes are the raw PTY output, before `beforeTmux`. They hold the session text.

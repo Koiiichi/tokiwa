@@ -20,6 +20,7 @@ import { homedir, hostname } from "node:os";
 import { createConnection } from "node:net";
 import groups from "./projects.json";
 import { openGhosttyWindow, shellQuote } from "./ghostty";
+import { steadyCursor } from "./cursor";
 import { localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
@@ -479,6 +480,7 @@ export class App {
     this.healthConfig = config.config;
     this.healthConfigError = config.error ?? "";
     renderer.setBackgroundColor(theme.bg);
+    steadyCursor(renderer);
     this.root = this.box(renderer.root, "app", {
       width: "100%",
       height: "100%",
