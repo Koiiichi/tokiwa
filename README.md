@@ -64,11 +64,11 @@ Sessions have no `sudo`; `tokiwa admin` opens a root shell on the host through S
 
 If the connection drops, the session keeps running on the host. Run `tokiwa attach NAME`, or press **R** in the app, to reconnect. When the AWS sign-in has expired, `tokiwa` starts `aws sso login` in an interactive terminal and then continues. In the app, press **l** to sign in.
 
-## Watch, browse and end sessions
+## Watch and end sessions
 
 The status glyph before each session shows recent output, a quiet screen, a bell that nobody has seen ("needs you"), a dropped transport or ended panes. It reports what the screen did, not whether an agent is idle, blocked or done.
 
-Health shows the host's CPU, memory, storage, network and workbench limits, sampled every 30 seconds while the app is open, with a spend estimate. **Browse files** in **Ctrl+K** opens a read-only view of the session's project. It does not follow links and does not open special files or common private configuration names such as `.env` and `.ssh`, although a listing can show their names.
+Health shows the host's CPU, memory, storage, network and workbench limits, sampled every 30 seconds while the app is open, with a spend estimate. To read the files of a session, press **n**: it opens a shell in the folder of the session.
 
 **x**, or × on a session's row or view title, asks in the row before it ends the session: enter ends it, with the shells opened from it unless you press **s**, and esc keeps it. Ending a session can lose unsaved work; detach when the program should keep running.
 

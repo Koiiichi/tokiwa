@@ -24,7 +24,12 @@ function table(doc: string, heading: string): string[][] {
       if (rows.length) break;
       continue;
     }
-    rows.push(line.split("|").slice(1, -1).map((c) => c.trim()));
+    rows.push(
+      line
+        .split("|")
+        .slice(1, -1)
+        .map((c) => c.trim()),
+    );
   }
   // Drop the header row and the --- row.
   return rows.slice(2);
@@ -34,7 +39,7 @@ const plain = (key: string) => key.replace(/[`\s]/g, "");
 
 test("the key tables of docs/interface.md match the key map", () => {
   const doc = read("docs/interface.md");
-  const groups: Group[] = ["Workspace", "Session", "Terminal", "Health", "Files"];
+  const groups: Group[] = ["Workspace", "Session", "Terminal", "Health"];
   for (const group of groups) {
     const rows = table(doc, `### ${group}`);
     const bindings = KEYMAP.filter((b) => b.group === group);
@@ -58,19 +63,21 @@ test("the quick key table of docs/interface.md matches the quick keys", () => {
 });
 
 test("docs/configuration.md lists each TOKIWA_ variable that the app or the launcher reads", () => {
-  const sources = [
-    ...new Bun.Glob("*.ts").scanSync(import.meta.dir),
-  ]
+  const sources = [...new Bun.Glob("*.ts").scanSync(import.meta.dir)]
     .filter((f) => !f.endsWith(".test.ts") && f !== "test-guard.ts")
     .map((f) => `app/${f}`)
     .concat(["app/run", "app/install.sh", "bin/tokiwa"]);
   // A read in TypeScript (`process.env.X`, or `env.X` on an environment passed in) or in a shell
   // script (`${X`).
-  const read_ = /\benv\.(TOKIWA_\w+)|process\.env\["(TOKIWA_\w+)"\]|\$\{(TOKIWA_\w+)/g;
+  const read_ =
+    /\benv\.(TOKIWA_\w+)|process\.env\["(TOKIWA_\w+)"\]|\$\{(TOKIWA_\w+)/g;
   const used = new Set<string>();
   for (const file of sources)
     for (const m of read(file).matchAll(read_)) used.add(m[1] ?? m[2] ?? m[3]);
-  const listed = table(read("docs/configuration.md"), "## Environment variables")
+  const listed = table(
+    read("docs/configuration.md"),
+    "## Environment variables",
+  )
     .map((r) => r[0].replace(/`/g, ""))
     .filter((v) => v.startsWith("TOKIWA_"));
   expect(listed.sort()).toEqual([...used].sort());
@@ -80,9 +87,11 @@ test("docs/configuration.md lists each option of run", () => {
   const app = read("app/app.ts");
   const body = app.slice(app.indexOf("export function runOptions"));
   const parsed = new Set(
-    [...body.slice(0, body.indexOf("\n}\n")).matchAll(/value\("(--[a-z-]+)"\)/g)].map(
-      (m) => m[1],
-    ),
+    [
+      ...body
+        .slice(0, body.indexOf("\n}\n"))
+        .matchAll(/value\("(--[a-z-]+)"\)/g),
+    ].map((m) => m[1]),
   );
   const listed = new Set(
     table(read("docs/configuration.md"), "## Command-line options").map(

@@ -22,15 +22,11 @@ case "$mode" in
  new|attach|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
- files) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 12000 && -z $extra ]] || fail 'The file request is invalid.' ;;
  health|shell|sessions|status|snapshot) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
 [[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
-if [[ $mode == files ]]; then
- exec python3 "$(dirname "$0")/workbench-files.py" "$name"
-fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
 fi

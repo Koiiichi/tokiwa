@@ -28,7 +28,6 @@ The app lists the sessions in a tree of projects, attaches them in embedded term
 It reads the session snapshot every 30 seconds while the workspace is in view.
 Health samples the host every 30 seconds while the app is open and keeps at most 120 readings in memory.
 Health does not change workloads or service limits.
-Browse files reads directories and text previews without changing files. It does not follow links or open common private configuration names.
 Status glyphs compare hashes of pane screens. They report observed output, a quiet screen, a bell, a dropped transport or ended panes.
 They do not infer agent intent, stalls or success.
 Ending a session asks in its row and checks the session identity, so an old selection cannot end a replacement with the same name.

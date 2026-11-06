@@ -191,18 +191,6 @@ esac
         self.assertNotEqual(self.run_cli('--end-confirmed','backend','123;echo bad').returncode,0)
         self.assertFalse((self.home/'calls').exists())
 
-    def test_file_request_uses_encoded_noninteractive_helper(self):
-        import base64
-        payload=base64.b64encode(b'{"path":"workbench"}').decode()
-        result=self.run_cli('--files',payload)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('terminal-session.sh files', (self.home/'calls').read_text())
-        self.assertNotIn('start-session',(self.home/'calls').read_text())
-
-    def test_file_request_rejects_shell_text_before_aws(self):
-        self.assertNotEqual(self.run_cli('--files','bad; command').returncode,0)
-        self.assertFalse((self.home/'calls').exists())
-
     def test_source_name_and_argument_count_fail_before_aws(self):
         for args in [('new','shell','--from','a;b'), ('new','shell','bad'), ('attach','shell','extra'), ('project','shell','bad label!'), ('project','shell','a//b')]:
             self.assertNotEqual(self.run_cli(*args).returncode, 0)

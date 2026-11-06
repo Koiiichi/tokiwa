@@ -128,7 +128,6 @@ The footer is one line of controls for the current context. A control highlights
 | Health | `↑↓ scroll · w sessions · ? shortcuts` (`↑↓ scroll` only when the view does not fit) |
 | Search | `↑↓ select · enter open · esc close`; for a prompt, `enter confirm · esc cancel` |
 | Shortcuts sheet | `↑↓ scroll · esc close` (`↑↓ scroll` only when the sheet does not fit) |
-| Files | `↑↓ browse · enter open · ← parent · n shell here · esc close` |
 
 Inside a terminal a control is its label then its chord. Elsewhere it is its key then its label. When the line is too long, the hints that are not controls go first, then the key labels, then the least important controls. One control always stays.
 
@@ -179,10 +178,9 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `ctrl+k z` | **Focus**: a quick key of the search. |
 | `ctrl+k w` | **Sessions**: a quick key of the search. |
 | `ctrl+k ?` | **Shortcuts**: a quick key of the search. |
-| `n` | **Shell here**: open a second shell beside the active view. |
+| `n` | **Shell here**: open a second shell beside the active view, in the folder of the session. |
 | `]` | **Other pane**: move the keyboard to the other of two views. |
 | `c` | **Close pane**: close the second view. Its remote shell keeps running. |
-| `f` | **Browse files** of the active remote session. |
 | `o` | **Open in Ghostty**: open a new shell of the active session in a Ghostty window (macOS). |
 
 ### Health
@@ -191,16 +189,6 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | --- | --- |
 | `↑` `↓` | **Scroll** one line, when the view does not fit. |
 | `pgup` `pgdn` | **Scroll a page** of 10 rows. |
-
-### Files
-
-| Key | Action |
-| --- | --- |
-| `enter` | **Open** the selected directory or file. |
-| `←` | **Parent directory**. `backspace` does the same. |
-| `[` `]` | **Page**: the previous or the next 40 entries. |
-| `n` | **Shell here**: open a shell in the selected directory. |
-| `esc` | **Close files**. |
 
 ### Other keys
 
@@ -236,7 +224,6 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | Footer control | Click | Run the control. |
 | Shortcuts sheet row | Click | Close the sheet and run the action, when it applies now. |
 | Search result | Click | Run the result. |
-| Files entry | Click | Open it. |
 
 When a terminal does not have the keyboard, the first click on it only moves the keyboard. The program in the terminal does not receive that click, so it cannot select a menu option by accident. The next click goes to the program.
 
@@ -288,9 +275,8 @@ While the terminal is in view, the navigation row shows the sessions that no vie
 
 | Condition | Layout |
 | --- | --- |
-| 100 columns or wider, `--layout workspace`, focus mode off, Files closed | The list stands beside the views. It is 28 % of the width, from 36 to 44 cells. |
+| 100 columns or wider, `--layout workspace`, focus mode off | The list stands beside the views. It is 28 % of the width, from 36 to 44 cells. |
 | Narrower than 100 columns, `--layout terminal`, or focus mode | The list and the active view take the full width in turn. The list shows while it has the keyboard. |
-| Files open | The list hides. The file panel takes 45 % of the width beside the view, or the full width below 90 columns. |
 | Two views, 110 columns or wider | The views stand side by side. |
 | Two views, 76 to 109 columns and 28 rows or more | The views stack. A rule parts them. |
 | Two views, smaller | Only the active view shows. `]` switches to the other. |
@@ -338,19 +324,6 @@ See [Configuration](configuration.md) for the variables and the file.
 Each answer is also a control. Any other key withdraws the question and goes on to where you typed it, for example the terminal. A click on a terminal or in the list also withdraws it. While the session ends, the row says `ending NAME…`, and a second enter does nothing. The footer then says `ended NAME`, with the number of shells that ended.
 
 The app ends a session through the launcher with its identity, so an old row cannot end a new session of the same name. The child shells are the sessions opened from it with **Shell here**. The effects on the host are in [Sessions and projects](sessions-and-projects.md).
-
-## Browse files
-
-`f` opens a file panel for the active remote session. It starts at the session's folder (the project directory, for a project labelled with a directory) and does not go above it.
-
-| Element | Form |
-| --- | --- |
-| Title | `Files`, then the path below the project directory. |
-| Entry | `▸` marks the selection. A directory ends with `/` and a link with ` @`. |
-| File | A text preview. `First 3 KB` follows a preview that the host cut short. |
-| Page | 40 entries. `]` and `[` move between pages. |
-
-Links and special files do not open. `n` opens a shell in the selected directory, the directory of the open file, or the current directory. When the new shell starts in another directory, the app sends it one `cd` command, then checks its directory. The panel reads and does not change files.
 
 ## Copy and selection
 

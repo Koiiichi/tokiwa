@@ -19,14 +19,13 @@ import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { createConnection } from "node:net";
 import groups from "./projects.json";
-import { openGhosttyWindow, shellQuote } from "./ghostty";
+import { openGhosttyWindow } from "./ghostty";
 import { steadyCursor } from "./cursor";
 import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
   BackendClient,
   SIGN_IN_EXPIRED,
-  filesRoot,
   projectName,
   type SessionRef,
 } from "./backend";
@@ -38,7 +37,7 @@ import {
   type SpendReading,
   type Tone,
 } from "./health-view";
-import { paneLayout, safeText, throbColor, type FileResult } from "./workspace";
+import { paneLayout, throbColor } from "./workspace";
 import {
   focusStrip,
   projectTree,
@@ -428,15 +427,6 @@ export class App {
   timer: ReturnType<typeof setInterval>;
   pair?: [Shell, Shell];
   auxiliaryPending = false;
-  explorer?: BoxRenderable;
-  explorerRef?: SessionRef;
-  fileData?: FileResult;
-  fileTarget = "";
-  fileSelection = 0;
-  fileBusy = false;
-  fileOffset = 0;
-  fileError = "";
-  fileRequest = 0;
   animate = process.env.TOKIWA_REDUCED_MOTION !== "1";
   constructor(
     public renderer: CliRenderer,
@@ -841,10 +831,6 @@ export class App {
         available: () => !!this.pair,
         run: () => this.closeAuxiliary(),
       },
-      files: {
-        available: () => !!active()?.remote,
-        run: () => void this.openFiles(),
-      },
       ghostty: {
         available: () =>
           process.platform === "darwin" &&
@@ -1208,7 +1194,6 @@ export class App {
     const focusing =
       this.view === "shell" &&
       !this.palette &&
-      !this.explorer &&
       !this.sheetOpen &&
       !this.listFocused &&
       !active?.exited;
@@ -1297,7 +1282,6 @@ export class App {
     if (
       this.view === "shell" &&
       !this.palette &&
-      !this.explorer &&
       !this.sheetOpen &&
       !this.listFocused &&
       !active?.exited
@@ -1313,10 +1297,10 @@ export class App {
     this.show("shell");
     this.record("pane-focus", { name: this.shells[this.active]?.name });
   }
-  async shellHere(directory?: string) {
+  async shellHere() {
     const source = this.shells[this.active];
     if (!source || this.auxiliaryPending || this.disposed) return;
-    if (!directory && this.pair?.includes(source)) {
+    if (this.pair?.includes(source)) {
       this.focusOther();
       return;
     }
@@ -1333,21 +1317,16 @@ export class App {
     }
     this.auxiliaryPending = true;
     const name = `shell-${crypto.randomUUID().slice(0, 8)}`;
-    this.startPending(source, directory);
+    this.startPending(source);
     let shell: Shell | undefined;
     try {
       if (source.remote) {
-        if (directory) {
-          const inspected = await this.backend.files(source.remote, directory);
-          if (!inspected.entries)
-            throw new Error("Select a directory for the new shell.");
-        }
         const prepared = await this.backend.shellCommand(source.remote, name);
         if (this.disposed) return;
         shell = this.startShell(name, true, import.meta.dir, prepared.command);
         if (!shell) return;
         shell.cwd = prepared.source.cwd;
-        // Keep the new shell unfocused until its identity and directory are verified.
+        // Keep the new shell unfocused until its identity is verified.
         // Observe the newly created session. Do not retry the creation command.
         for (
           let attempt = 0;
@@ -1368,36 +1347,6 @@ export class App {
           throw new Error(
             `The new shell identity is unverified: ${name}. No second shell was created.`,
           );
-        if (directory && shell.remote && shell.cwd !== directory) {
-          // Only this freshly created shell receives a visible, quoted cd command.
-          // Existing agent sessions never receive directory-change input.
-          for (
-            let attempt = 0;
-            attempt < 30 && !/bash-[\d.]+\$ /.test(shell.startupOutput ?? "");
-            attempt++
-          ) {
-            if (this.disposed || shell.exited || !this.shells.includes(shell))
-              return;
-            await Bun.sleep(500);
-          }
-          if (this.disposed || shell.exited || !this.shells.includes(shell))
-            return;
-          if (!/bash-[\d.]+\$ /.test(shell.startupOutput ?? ""))
-            throw new Error(
-              "The new shell did not reach its prompt. No directory command was sent.",
-            );
-          shell.adapter.write(`\x15cd -- ${shellQuote(directory)}\r`);
-          const verified = await this.backend.resolve(
-            name,
-            shell.remote.identity,
-          );
-          shell.remote = verified;
-          shell.cwd = verified.cwd;
-          if (verified.cwd !== directory)
-            throw new Error(
-              "The new shell directory did not match. The source session was not changed.",
-            );
-        }
       } else {
         shell = this.startShell(name, false, source.cwd);
         if (!shell) return;
@@ -1407,11 +1356,7 @@ export class App {
       }
       if (this.disposed) return;
       this.pair = [source, shell];
-      if (
-        this.shells[this.active] === source &&
-        !this.palette &&
-        !this.explorer
-      ) {
+      if (this.shells[this.active] === source && !this.palette) {
         this.active = this.shells.indexOf(shell);
         this.show("shell");
       }
@@ -1455,7 +1400,6 @@ export class App {
       this.shells[this.active] === shell &&
       this.view === "shell" &&
       !this.palette &&
-      !this.explorer &&
       !this.sheetOpen;
     // A transport ends some seconds after a detach. A person who is in the list by then keeps
     // their row; the keyboard moves to the row of this view only from its terminal.
@@ -1477,10 +1421,10 @@ export class App {
    * shell is coming. A remote shell takes some seconds: the host creates the session and the
    * app verifies its identity before the view shows it.
    */
-  startPending(source: Shell, directory?: string) {
+  startPending(source: Shell) {
     this.pendingShell = {
       source,
-      where: directory ? projectTitle(directory) : this.rowTitle(source),
+      where: this.rowTitle(source),
       since: Date.now(),
     };
     this.pendingPane = this.box(this.shellPane, "pending-pane", {
@@ -1579,155 +1523,6 @@ export class App {
     } finally {
       this.auxiliaryPending = false;
     }
-  }
-  async openFiles() {
-    const ref = this.shells[this.active]?.remote;
-    if (!ref) return;
-    this.explorerRef = ref;
-    this.fileTarget = filesRoot(ref);
-    this.explorer = this.box(this.workspace, "explorer", {
-      width: "45%",
-      minWidth: 24,
-      flexDirection: "column",
-      border: ["left"],
-      borderColor: theme.line,
-      paddingLeft: 1,
-    });
-    this.show("shell");
-    await this.loadFiles(filesRoot(ref));
-  }
-  closeFiles() {
-    this.fileRequest++;
-    this.explorer?.destroyRecursively();
-    this.explorer = undefined;
-    this.fileBusy = false;
-    this.shellPane.visible = true;
-    this.show(this.view);
-  }
-  async loadFiles(target: string, offset = 0) {
-    const ref = this.explorerRef;
-    if (!ref || !this.explorer) return;
-    const request = ++this.fileRequest;
-    this.fileBusy = true;
-    this.fileError = "";
-    this.fileSelection = 0;
-    this.fileData = undefined;
-    this.fileTarget = target;
-    this.fileOffset = offset;
-    this.drawFiles();
-    try {
-      const result = await this.backend.files(ref, target, offset);
-      if (request !== this.fileRequest || !this.explorer) return;
-      this.fileData = result;
-    } catch (e) {
-      if (request === this.fileRequest) this.fileError = String(e);
-    } finally {
-      if (request === this.fileRequest && this.explorer) {
-        this.fileBusy = false;
-        this.drawFiles();
-      }
-    }
-  }
-  drawFiles() {
-    const panel = this.explorer;
-    if (!panel) return;
-    for (const c of panel.getChildren()) c.destroyRecursively();
-    const narrow = this.renderer.width < 90;
-    this.shellPane.visible = !narrow;
-    this.sessionList.visible = false;
-    panel.width = narrow ? "100%" : "45%";
-    this.text(panel, "files-title", "Files", {
-      height: 1,
-      attributes: TextAttributes.BOLD,
-    });
-    this.text(
-      panel,
-      "files-path",
-      safeText(
-        this.fileTarget.slice(filesRoot(this.explorerRef!).length) || "/",
-      ),
-      { height: 1, fg: theme.muted, truncate: true, wrapMode: "none" },
-    );
-    const scroll = new ScrollBoxRenderable(this.renderer, {
-      id: "file-scroll",
-      flexGrow: 1,
-      minHeight: 1,
-    });
-    panel.add(scroll);
-    if (this.fileError || this.fileBusy)
-      this.text(scroll, "file-status", this.fileError || "…", {
-        fg: theme.muted,
-      });
-    else if (this.fileData?.text !== undefined) {
-      this.text(scroll, "preview", this.fileData.text, {
-        fg: theme.fg,
-        wrapMode: "word",
-      });
-      if (this.fileData.truncated)
-        this.text(panel, "truncated", "First 3 KB", {
-          height: 1,
-          fg: theme.muted,
-        });
-    } else {
-      for (const [i, entry] of (this.fileData?.entries ?? []).entries()) {
-        this.text(
-          scroll,
-          `file-${i}`,
-          `${i === this.fileSelection ? "▸" : " "} ${entry.name}${entry.kind === "directory" ? "/" : entry.kind === "link" ? " @" : ""}`,
-          {
-            height: 1,
-            truncate: true,
-            wrapMode: "none",
-            fg: i === this.fileSelection ? theme.cpu : theme.fg,
-            onMouseDown: () => {
-              this.fileSelection = i;
-              void this.openFileEntry();
-            },
-          },
-        );
-      }
-      if (this.fileData?.entries?.length === 0)
-        this.text(scroll, "file-empty", "Empty directory", { fg: theme.muted });
-      scroll.scrollChildIntoView(`file-${this.fileSelection}`);
-    }
-    this.text(panel, "files-actions", "← parent   N shell here", {
-      height: 1,
-      fg: theme.muted,
-      wrapMode: "none",
-      truncate: true,
-    });
-    this.layoutPanes();
-    this.drawFooter();
-  }
-  async openFileEntry() {
-    const entry = this.fileData?.entries?.[this.fileSelection];
-    if (!entry) return;
-    if (entry.kind !== "file" && entry.kind !== "directory") {
-      this.fileError = "Links and special files cannot be opened.";
-      this.drawFiles();
-      return;
-    }
-    await this.loadFiles(`${this.fileTarget}/${entry.name}`);
-  }
-  async parentFiles() {
-    if (!this.explorerRef || this.fileTarget === filesRoot(this.explorerRef))
-      return;
-    await this.loadFiles(
-      this.fileTarget.slice(0, this.fileTarget.lastIndexOf("/")),
-    );
-  }
-  async shellFromFiles() {
-    const source = this.shells[this.active];
-    const entry = this.fileData?.entries?.[this.fileSelection];
-    const directory =
-      entry?.kind === "directory"
-        ? `${this.fileTarget}/${entry.name}`
-        : this.fileData?.text !== undefined
-          ? this.fileTarget.slice(0, this.fileTarget.lastIndexOf("/"))
-          : this.fileTarget;
-    if (!source?.remote) return;
-    this.closeFiles();
-    await this.shellHere(directory);
   }
 
   /** Keep the time and the plain end of a terminal's output. */
@@ -2759,7 +2554,6 @@ export class App {
       this.view === "shell" &&
       !this.palette &&
       !this.sheetOpen &&
-      !this.explorer &&
       this.sessionList.visible
     );
   }
@@ -2806,20 +2600,6 @@ export class App {
               hint("close", "esc", "close", 9, () => this.dismiss()),
             ],
       );
-    if (this.explorer)
-      return keyFirst([
-        hint("browse", "↑↓", "browse", 1),
-        hint("open", "enter", "open", 5, () => void this.openFileEntry()),
-        hint("parent", "←", "parent", 4, () => void this.parentFiles()),
-        hint(
-          "shell-here",
-          "n",
-          "shell here",
-          3,
-          () => void this.shellFromFiles(),
-        ),
-        hint("close", "esc", "close", 9, () => this.closeFiles()),
-      ]);
     if (this.view === "health")
       return keyFirst([
         ...(this.healthOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
@@ -3011,7 +2791,6 @@ export class App {
     return (
       this.view === "shell" &&
       !this.palette &&
-      !this.explorer &&
       !this.sheetOpen &&
       (this.listFocused ||
         !this.shells[this.active] ||
@@ -3048,7 +2827,7 @@ export class App {
       this.view !== "shell"
     )
       return;
-    if (this.palette || this.explorer || this.sheetOpen) return;
+    if (this.palette || this.sheetOpen) return;
     if (!this.listFocused) this.focusSessions();
   }
   /** Open the workspace with the keyboard in the session list, on the row of the active view. */
@@ -3184,26 +2963,23 @@ export class App {
   }
   /**
    * The list stands beside the terminal at 100 columns and wider in the workspace layout. It
-   * fills the width in turn with the terminal when it is narrow, in the terminal layout, in
-   * focus mode and while the file browser is open.
+   * fills the width in turn with the terminal when it is narrow, in the terminal layout and in
+   * focus mode.
    */
   splitLayout() {
     return (
       this.options.layout !== "terminal" &&
       this.renderer.width >= 100 &&
-      !this.explorer &&
       !this.focusMode
     );
   }
   drawSessions() {
     if (!this.sessionList || this.disposed) return;
     const split = this.splitLayout();
-    const listView = this.view === "shell" && !this.explorer;
-    const showList = listView && (split || this.listHasFocus());
+    const showList = this.view === "shell" && (split || this.listHasFocus());
     this.sessionList.visible = showList;
     this.shellPane.visible =
-      this.view === "shell" &&
-      (split || !this.listHasFocus() || !!this.explorer);
+      this.view === "shell" && (split || !this.listHasFocus());
     const listWidth = split
       ? Math.min(44, Math.max(36, Math.round(this.renderer.width * 0.28)))
       : this.renderer.width - 2 * (this.renderer.width < 70 ? 1 : 2);
@@ -3770,7 +3546,6 @@ export class App {
     this.drawLocation();
     this.layoutPanes();
     this.drawSessions();
-    if (this.explorer) this.drawFiles();
     this.drawFooter();
     (this.root.findDescendantById("health-nav") as TextRenderable).fg =
       view === "health" ? theme.cpu : theme.muted;
@@ -3782,7 +3557,6 @@ export class App {
   /** Show the keyboard shortcuts sheet in place of the body. A focused terminal never opens it. */
   openSheet() {
     if (this.palette) this.dismiss();
-    if (this.explorer) this.closeFiles();
     this.sheetOpen = true;
     this.shells.forEach((s) => s.terminal.blur());
     this.body.visible = false;
@@ -3852,7 +3626,6 @@ export class App {
   }
   openPalette() {
     this.listFocused = this.listHasFocus();
-    if (this.explorer) this.closeFiles();
     if (this.palette) {
       this.dismiss();
       return;
@@ -4175,41 +3948,6 @@ export class App {
       }
       return;
     }
-    if (this.explorer && !this.palette) {
-      stop();
-      if (key.name === "escape") this.closeFiles();
-      else if (!this.fileBusy) {
-        if (key.name === "down" || key.name === "up") {
-          if (this.fileData?.entries) {
-            this.fileSelection = Math.max(
-              0,
-              Math.min(
-                this.fileData.entries.length - 1,
-                this.fileSelection + (key.name === "down" ? 1 : -1),
-              ),
-            );
-            this.drawFiles();
-          } else
-            (
-              this.explorer.findDescendantById(
-                "file-scroll",
-              ) as ScrollBoxRenderable
-            )?.scrollBy(key.name === "down" ? 1 : -1);
-        }
-        if (key.name === "return") void this.openFileEntry();
-        if (key.name === "backspace" || key.name === "left")
-          void this.parentFiles();
-        if (key.name === "n") void this.shellFromFiles();
-        if (key.sequence === "]" && this.fileData?.more)
-          void this.loadFiles(this.fileTarget, this.fileOffset + 40);
-        if (key.sequence === "[" && this.fileOffset)
-          void this.loadFiles(
-            this.fileTarget,
-            Math.max(0, this.fileOffset - 40),
-          );
-      }
-      return;
-    }
     if (this.palette) {
       // On an empty input the first keystroke runs a quick key at once; any other key ends the
       // quick keys, and from then on every key is search text.
@@ -4300,7 +4038,6 @@ export class App {
       this.body.maxWidth = this.view === "health" ? 116 : this.renderer.width;
       this.drawSessions();
       this.layoutPanes();
-      if (this.explorer) this.drawFiles();
     }
     if (this.palette && this.choices) {
       this.choices.maxHeight = Math.max(3, this.renderer.height - 9);

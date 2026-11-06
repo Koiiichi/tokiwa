@@ -2,7 +2,7 @@
 import type { Span, Tone } from "./health-view";
 import { LEGEND } from "./sessions";
 
-export type Group = "Workspace" | "Session" | "Terminal" | "Health" | "Files";
+export type Group = "Workspace" | "Session" | "Terminal" | "Health";
 export interface Binding {
   /** The action that app.ts runs for this binding, or a name for a navigation key. */
   id: string;
@@ -132,13 +132,6 @@ export const KEYMAP: Binding[] = [
     direct: true,
   },
   {
-    id: "files",
-    group: "Terminal",
-    key: "f",
-    label: "Browse files",
-    direct: true,
-  },
-  {
     id: "ghostty",
     group: "Terminal",
     key: "o",
@@ -147,11 +140,6 @@ export const KEYMAP: Binding[] = [
   },
   { id: "scroll", group: "Health", key: "↑ ↓", label: "Scroll" },
   { id: "page", group: "Health", key: "pgup pgdn", label: "Scroll a page" },
-  { id: "file-open", group: "Files", key: "enter", label: "Open" },
-  { id: "file-parent", group: "Files", key: "←", label: "Parent directory" },
-  { id: "file-page", group: "Files", key: "[ ]", label: "Page" },
-  { id: "file-shell", group: "Files", key: "n", label: "Shell here" },
-  { id: "file-close", group: "Files", key: "esc", label: "Close files" },
 ];
 
 /**

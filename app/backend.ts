@@ -1,14 +1,6 @@
 /** Delegate operational authority to the installed launcher. Never call AWS or tmux here. */
 import { join } from "node:path";
-import { projectPath, fileResult } from "./workspace";
 import { spendReading } from "./health-view";
-/**
- * The folder that Browse files opens and never leaves: a directory label itself, or the
- * session's folder when the project is a name such as `shop/api`.
- */
-export function filesRoot(ref: SessionRef) {
-  return ref.project.startsWith("/") ? ref.project : ref.cwd;
-}
 /** The launcher's message when a read fails because the AWS sign-in expired. */
 export const SIGN_IN_EXPIRED =
   /AWS authentication failed|AWS login did not complete/;
@@ -214,17 +206,6 @@ export class BackendClient {
   /** The command that signs in to AWS. It runs in a local view, because it needs a terminal. */
   loginCommand() {
     return [this.launcher, "login"];
-  }
-  async files(ref: SessionRef, target?: string, offset = 0) {
-    await this.resolve(ref.name, ref.identity);
-    const base = filesRoot(ref);
-    const path = projectPath(base, target ?? base);
-    if (!Number.isInteger(offset) || offset < 0 || offset > 100000)
-      throw new Error("The directory page is invalid.");
-    const payload = Buffer.from(JSON.stringify({ path, offset })).toString(
-      "base64",
-    );
-    return fileResult(JSON.parse(await this.call(["--files", payload])), path);
   }
   async health() {
     return healthSample(JSON.parse(await this.call(["health"])));

@@ -39,11 +39,6 @@ const timer = setInterval(
         active: app.shells[app.active]?.name,
         error: app.error,
         view: app.view,
-        explorer: !!app.explorer,
-        fileBusy: app.fileBusy,
-        fileError: app.fileError,
-        fileTarget: app.fileTarget,
-        fileData: app.fileData,
         shells: app.shells.map((s) => ({
           name: s.name,
           remote: s.remote,

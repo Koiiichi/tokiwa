@@ -10,7 +10,7 @@ The host is the EC2 instance with Ubuntu 24.04 that keeps the sessions: one syst
 │  amazon-ssm-agent  (Run Command, interactive sessions)                   │
 │    │ sudo -n runuser -u agent-workspace -- terminal-session.sh MODE      │
 │    ▼                                                                     │
-│  terminal-session.sh  → workbench-health.py, workbench-files.py          │
+│  terminal-session.sh  → workbench-health.py                              │
 │    │ tmux -N -S /run/cloud-workbench/tmux.sock                           │
 │    ▼                                                                     │
 │  ╔═ cloud-workbench.service ═══════════════════════════════════════════╗ │
@@ -94,7 +94,6 @@ systemctl start cloud-workbench.service
 | `tokiwa-open` | `/opt/agent-platform/rootless/tokiwa-open` | 0755 | The `BROWSER` program. Sends a link to the Mac. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
-| `workbench-files.py` | `/opt/agent-platform/rootless/workbench-files.py` | 0644 | Reads directory listings and text previews for **Browse files**. |
 | `daemon.json` | `/opt/agent-platform/rootless/daemon.json` | 0644 | The configuration of the rootless engine. |
 | `rootless-metadata.nft` | `/opt/agent-platform/rootless/rootless-metadata.nft` | 0644 | Blocks the instance metadata addresses for the engine user. `/etc/nftables.conf` includes it. |
 | `units/cloud-workbench.service` | `/etc/systemd/system/cloud-workbench.service` | 0644 | The service of the tmux server. |

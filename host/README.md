@@ -7,7 +7,7 @@ The host side of Tokiwa: the systemd units, the scripts that start the tmux serv
 | `units/` | `cloud-workbench.service`, its slices, and the units and drop-ins of the rootless engine. |
 | `start-workbench.sh` | Sets the tmux options and starts the first session after the server starts. |
 | `terminal-session.sh` | The helper that the launcher runs: snapshot, create, attach, rename, end, projects. |
-| `workbench-health.py`, `workbench-files.py` | Health readings and Browse files. |
+| `workbench-health.py` | Health readings. |
 | `tokiwa-open` | Sends a link from a program on the host to the Mac's browser. |
 | `install.sh` | The host installer: the core, and rootless Docker with `--with-docker`. |
 | `compose/` | Checks and export and restore scripts for Docker Compose projects. |

@@ -3,7 +3,7 @@ import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { App, theme } from "./app";
 import { BackendClient } from "./backend";
-import { paneLayout, projectPath, fileResult, throbColor } from "./workspace";
+import { paneLayout, throbColor } from "./workspace";
 import { STATUS_GLYPH } from "./sessions";
 const pause = () => Bun.sleep(120);
 const ref = {
@@ -49,37 +49,6 @@ test("remote shell creation uses existing launcher and rejects collisions", asyn
   await expect(backend.shellCommand(ref, "other")).rejects.toThrow(
     "identity changed",
   );
-});
-test("file reads use protected launcher with exact project containment", async () => {
-  const calls: string[][] = [];
-  const backend = new BackendClient("/launcher", async (args) => {
-    calls.push(args);
-    return args[0] === "--snapshot"
-      ? JSON.stringify({ sessions: [ref] })
-      : JSON.stringify({
-          path: "project/src",
-          entries: [{ name: "main.ts", kind: "file" }],
-        });
-  });
-  await backend.files(ref, ref.project + "/src");
-  expect(
-    JSON.parse(Buffer.from(calls.at(-1)![1], "base64").toString()),
-  ).toEqual({ path: "project/src", offset: 0 });
-  expect(() => projectPath(ref.project, ref.project + "-other")).toThrow();
-  expect(() => projectPath(ref.project, ref.project + "/../private")).toThrow();
-  expect(() =>
-    fileResult({ path: "other", text: "secret" }, "project"),
-  ).toThrow();
-  expect(() =>
-    fileResult(
-      { path: "project", entries: [{ name: "../secret", kind: "file" }] },
-      "project",
-    ),
-  ).toThrow();
-  expect(
-    fileResult({ path: "project", text: "hello\x1b]52;secret" }, "project")
-      .text,
-  ).not.toContain("\x1b");
 });
 test("auxiliary PTY preserves source, focus, input and narrow layout", async () => {
   const t = await createTestRenderer({ width: 140, height: 38 });
@@ -132,45 +101,6 @@ test("auxiliary PTY preserves source, focus, input and narrow layout", async () 
     await t.dispose();
   }
 });
-test("explorer keeps the source alive and restores focus after close", async () => {
-  const t = await createTestRenderer({ width: 120, height: 32 });
-  const app = new App(t.renderer, { spawn: false });
-  app.startShell();
-  app.show("shell");
-  app.shells[0].remote = ref;
-  app.backend = new BackendClient("/fixture", async (args) =>
-    args[0] === "--snapshot"
-      ? JSON.stringify({ sessions: [ref] })
-      : JSON.stringify({
-          path: "project",
-          entries: [
-            { name: "main.ts", kind: "file" },
-            { name: "linked", kind: "link" },
-          ],
-        }),
-  );
-  try {
-    await app.openFiles();
-    await t.renderOnce();
-    expect(t.captureCharFrame()).toContain("main.ts");
-    expect(app.shells[0].terminal.focused).toBe(false);
-    app.fileSelection = 1;
-    await app.openFileEntry();
-    expect(app.fileError).toContain("Links");
-    t.resize(48, 18);
-    await t.renderOnce();
-    expect(app.shellPane.visible).toBe(false);
-    t.mockInput.pressEscape();
-    await pause();
-    await t.renderOnce();
-    expect(app.explorer).toBeUndefined();
-    expect(app.shells[0].terminal.focused).toBe(true);
-    expect(app.shells[0].exited).toBe(false);
-  } finally {
-    await t.dispose();
-  }
-});
-
 test("Ghostty command quoting preserves literal shell metacharacters", async () => {
   const { shellQuote } = await import("./ghostty");
   const value = "space ' quote $(printf injected); $HOME";
@@ -182,7 +112,7 @@ test("Ghostty command quoting preserves literal shell metacharacters", async () 
   expect(await child.exited).toBe(0);
 });
 
-test("directory Shell here changes only the newly created shell after identity verification", async () => {
+test("Shell here opens a verified shell in the folder of the session and sends no input", async () => {
   const t = await createTestRenderer({ width: 120, height: 32 });
   const app = new App(t.renderer, { spawn: false });
   const source = app.startShell()!;
@@ -190,11 +120,6 @@ test("directory Shell here changes only the newly created shell after identity v
   source.remote = ref;
   let newName = "";
   let newShell: any;
-  const calls: string[] = [];
-  app.backend.files = async (_ref, target) => {
-    calls.push("inspect");
-    return { path: "project/src", entries: [] };
-  };
   app.backend.shellCommand = async (_ref, name) => {
     newName = name;
     return {
@@ -205,12 +130,6 @@ test("directory Shell here changes only the newly created shell after identity v
   app.backend.sessions = async () => [
     { ...ref, name: newName, identity: "1:$8:9" },
   ];
-  app.backend.resolve = async (name, identity) => {
-    calls.push("verify-directory");
-    expect(name).toBe(newName);
-    expect(identity).toBe("1:$8:9");
-    return { ...ref, name, identity: "1:$8:9", cwd: ref.project + "/src" };
-  };
   const originalStart = app.startShell.bind(app);
   let sent = "";
   app.startShell = (...args) => {
@@ -218,19 +137,16 @@ test("directory Shell here changes only the newly created shell after identity v
     newShell = shell;
     shell.adapter.write = (value) => {
       sent += String(value);
-      calls.push("directory-command");
     };
     return shell;
   };
   try {
-    await app.shellHere(ref.project + "/src");
-    expect(sent).toBe(
-      "\x15cd -- '/srv/development/state/workspaces/project/src'\r",
-    );
-    expect(calls).toEqual(["inspect", "directory-command", "verify-directory"]);
+    await app.shellHere();
+    expect(sent).toBe("");
     expect(source.remote.cwd).toBe(ref.cwd);
     expect(app.shells[app.active]).toBe(newShell);
-    expect(newShell.cwd).toBe(ref.project + "/src");
+    expect(newShell.remote.identity).toBe("1:$8:9");
+    expect(newShell.cwd).toBe(ref.cwd);
     expect(source.terminal.screen().text).not.toContain("cd --");
   } finally {
     await t.dispose();
@@ -357,42 +273,6 @@ test("Shell here removes the view of a new shell that it could not verify", asyn
     expect(app.shells[app.active]).toBe(source);
     expect(app.pair).toBeUndefined();
     expect(started!.pane.isDestroyed).toBe(true);
-  } finally {
-    await t.dispose();
-  }
-});
-
-test("Browse files opens the session's folder when its project is a name", async () => {
-  const t = await createTestRenderer({ width: 120, height: 32 });
-  const app = new App(t.renderer, { spawn: false });
-  const named = {
-    ...ref,
-    project: "shop/api",
-    cwd: "/srv/development/state/workspaces/workbench/shop-api",
-  };
-  app.startShell();
-  app.show("shell");
-  app.shells[0].remote = named;
-  const asked: string[] = [];
-  app.backend = new BackendClient("/fixture", async (args) => {
-    if (args[0] === "--snapshot") return JSON.stringify({ sessions: [named] });
-    const { path } = JSON.parse(Buffer.from(args[1], "base64").toString());
-    asked.push(path);
-    return JSON.stringify({
-      path,
-      entries: [{ name: "src", kind: "directory" }],
-    });
-  });
-  try {
-    await app.openFiles();
-    expect(app.fileError).toBe("");
-    await app.openFileEntry();
-    expect(app.fileError).toBe("");
-    expect(asked).toEqual(["workbench/shop-api", "workbench/shop-api/src"]);
-    // Left goes back to the session's folder and no further.
-    await app.parentFiles();
-    await app.parentFiles();
-    expect(asked.at(-1)).toBe("workbench/shop-api");
   } finally {
     await t.dispose();
   }

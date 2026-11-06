@@ -25,7 +25,6 @@ export const ACTION_CATEGORY: Record<string, Category> = {
   end: "Session",
   sessions: "Go to",
   health: "Go to",
-  files: "Go to",
   "other-pane": "Go to",
   copy: "Terminal",
   redraw: "Terminal",
