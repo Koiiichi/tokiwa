@@ -145,28 +145,43 @@ test("+ on a project title starts a named session in its folder; + new project a
       "--project",
       old,
     ]);
-    // Ending it asks for the name that the list shows.
-    p.app.askOperation({ operation: "end-project", path: old, refs: [] });
-    expect(p.app.search!.placeholder).toBe(
-      "End workspaces/workbench: type its name",
+    // Ending a project names its sessions and asks with one key.
+    p.app.askEndProject(old);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).toContain("enter ends · esc keeps");
+    p.t.mockInput.pressEscape();
+    await Bun.sleep(40);
+    expect(p.app.endingProject).toBeUndefined();
+    // A project without sessions is only forgotten.
+    p.app.askEndProject("empty");
+    expect(p.app.endingProjectSpans()[0].text).toContain(
+      "forget this project?",
     );
+    p.t.mockInput.pressEscape();
+    await Bun.sleep(40);
+    expect(p.app.endingProject).toBeUndefined();
   } finally {
     await p.t.dispose();
   }
 });
 
-test("ending a project asks for its name and ends its sessions; a session asks in its row and can keep its shells", async () => {
+test("ending a project asks with one key and ends its sessions; a session asks in its row and can keep its shells", async () => {
   const p = await projects();
   try {
     const studio = p.at("studio");
     await p.t.mockMouse.moveTo(studio.x, studio.y);
     await p.t.renderOnce();
     await p.t.mockMouse.click(p.lines()[studio.y].lastIndexOf("×"), studio.y);
-    expect(p.app.confirm?.operation).toBe("end-project");
-    await p.type("wrong");
-    expect(p.app.confirmStatus?.failed).toBe(true);
-    p.app.search!.value = "";
-    await p.type("studio");
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).toContain("end claude-a, shell-1?");
+    const asked = p.launched().length;
+    p.t.mockInput.pressEscape();
+    await Bun.sleep(40);
+    expect(p.app.endingProject).toBeUndefined();
+    expect(p.launched().length).toBe(asked);
+    p.app.askEndProject("studio");
+    p.t.mockInput.pressEnter();
+    for (let i = 0; i < 50 && p.app.endingProject; i++) await Bun.sleep(10);
     expect(p.launched().slice(-3)).toEqual([
       ["--end-confirmed", "claude-a", "1:$1:1"],
       ["--end-confirmed", "shell-1", "1:$2:1"],

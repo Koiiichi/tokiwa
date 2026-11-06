@@ -261,7 +261,7 @@ These actions have no key.
 | New project | Session | Ask for a project name, then make its folder and a first session. |
 | New session in project | Session | Ask for a session name in the project of the selected row. |
 | Rename session | Session | Ask for a new name. |
-| End project | Session | Ask for the exact project name, then end its sessions and forget it. |
+| End project | Session | Name its sessions and ask, then end them and forget the project. |
 
 The search box also holds the prompts of these actions and of **Move to project**. Enter confirms and esc cancels. A failure shows under the input.
 

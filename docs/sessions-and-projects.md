@@ -26,7 +26,7 @@ A session without a project label belongs to the project of its directory. A lab
 | Rename a project | Double-click its title | `tokiwa move-project OLD NEW` | Rewrites the labels; sessions, folders and history stay |
 | Rename a session | Double-click its row (a single click attaches it), or Ctrl+K → Rename session | `tokiwa rename NAME NEW IDENTITY` | Renames only the session with that identity; its project, child shells and open view stay |
 | End a session | `x`, × on its row, or × on its view's title; the row asks, enter ends, `s` keeps its shells, esc or any other key keeps it | `tokiwa` `--end-confirmed NAME IDENTITY` | Ends the session and the programs in its panes; a process that detached from them keeps running until the service stops. In the app, it also ends the session's child sessions unless `s` keeps them; `--end-confirmed` ends one session |
-| End a project | × on the project title, or Ctrl+K → End project, then type its name | `tokiwa forget-project PROJECT` (after its sessions end) | Ends its sessions and forgets the project; its folders and the tools' history stay |
+| End a project | × on the project title, or Ctrl+K → End project, then Enter | `tokiwa forget-project PROJECT` (after its sessions end) | Ends its sessions and forgets the project; its folders and the tools' history stay |
 | Prompt name | — | `tokiwa name NAME` | New shells show `NAME:directory$`; `tokiwa` by default |
 
 ## What Tokiwa does not do

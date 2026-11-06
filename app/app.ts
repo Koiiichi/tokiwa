@@ -155,7 +155,6 @@ export type Operation =
   | { operation: "project"; ref: SessionRef }
   | { operation: "new-session"; path: string; dir: string }
   | { operation: "new-project" }
-  | { operation: "end-project"; path: string; refs: SessionRef[] }
   | { operation: "rename-project"; path: string }
   | { operation: "rename-session"; ref: SessionRef };
 /** The left edge of a view; `vertical` is set per view, see `layoutPanes`. */
@@ -380,6 +379,8 @@ export class App {
   rowClose = new Map<string, TextRenderable>();
   /** A session that asks "end it?" in its row and in its view's title, with the shells opened from it. */
   ending?: { ref: SessionRef; children: SessionRef[]; busy?: string };
+  /** A project that waits for the answer to "end it?". */
+  endingProject?: { path: string; refs: SessionRef[]; busy?: string };
   /** A question about a local shell with a running program: close that shell, or quit the app. */
   closing?: { shell: Shell; program: string; quit: boolean };
   /** The order of the top-level projects, saved in `orderFile`. */
@@ -910,14 +911,7 @@ export class App {
         id: "end-project",
         label: "End project",
         available: () => !!selected(),
-        run: () => {
-          const path = selected()!.project;
-          this.askOperation({
-            operation: "end-project",
-            path,
-            refs: this.projectSessions(path),
-          });
-        },
+        run: () => this.askEndProject(selected()!.project),
       },
     ];
   }
@@ -1986,6 +1980,53 @@ export class App {
       { text: "esc keeps", tone: "value", run: () => this.answerClose(false) },
     ];
   }
+  /** Ask to end a project: its sessions end, and a named project is forgotten. */
+  askEndProject(path: string) {
+    this.endingProject = { path, refs: this.projectSessions(path) };
+    this.redrawEnding();
+  }
+  cancelEndProject() {
+    this.endingProject = undefined;
+    this.redrawEnding();
+  }
+  async endProject() {
+    const pending = this.endingProject;
+    if (!pending || pending.busy) return;
+    pending.busy = `ending ${pending.refs.length} session${pending.refs.length === 1 ? "" : "s"}…`;
+    this.redrawEnding();
+    try {
+      for (const ref of pending.refs) await this.backend.end(ref, ref.name);
+      if (!pending.path.startsWith("/"))
+        await this.backend.forgetProject(pending.path);
+      this.record("remote-operation", { operation: "end-project" });
+      this.notify(`ended ${projectTitle(pending.path)}`);
+    } catch (e) {
+      this.notify(String(e).replace(/^Error: /, ""), true);
+    }
+    if (this.endingProject === pending) this.endingProject = undefined;
+    await this.refreshSessions();
+    this.redrawEnding();
+  }
+  /** The question of an ending project as spans, with each answer a control. */
+  endingProjectSpans(): { text: string; tone: Tone; run?: () => void }[] {
+    const e = this.endingProject!;
+    if (e.busy) return [{ text: e.busy, tone: "dim" }];
+    const names = e.refs.slice(0, 3).map((r) => r.name);
+    const more = e.refs.length - names.length;
+    const what = !e.refs.length
+      ? "forget this project?"
+      : `end ${names.join(", ")}${more ? ` and ${more} more` : ""}?`;
+    return [
+      { text: `${what}  `, tone: "warning" },
+      {
+        text: e.refs.length ? "enter ends" : "enter forgets",
+        tone: "value",
+        run: () => void this.endProject(),
+      },
+      { text: " · ", tone: "dim" },
+      { text: "esc keeps", tone: "value", run: () => this.cancelEndProject() },
+    ];
+  }
   /** The question of an ending session as spans, with each answer a control. */
   endingSpans(): { text: string; tone: Tone; run?: () => void }[] {
     const e = this.ending!;
@@ -2055,13 +2096,6 @@ export class App {
         return {
           placeholder: `Rename ${projectTitle(op.path)}`,
           hint: "Press enter to rename; sessions, folders and history stay",
-        };
-      case "end-project":
-        return {
-          placeholder: `End ${projectTitle(op.path)}: type its name`,
-          hint: op.refs.length
-            ? `Ends ${op.refs.map((r) => r.name).join(", ")}; folders and history stay`
-            : "Forgets the empty project; its folders stay",
         };
     }
   }
@@ -2134,15 +2168,6 @@ export class App {
           if (at >= 0) this.placeProject(to, this.projectOrder[at + 1] ?? null);
           break;
         }
-        case "end-project":
-          // The name as the list shows it; an old directory label shows its last two parts.
-          if (value !== projectTitle(pending.path) && value !== pending.path)
-            throw new Error("Enter the exact project name.");
-          working(`Ending ${pending.path}… this takes a few seconds each`);
-          for (const ref of pending.refs) await this.backend.end(ref, ref.name);
-          if (!pending.path.startsWith("/"))
-            await this.backend.forgetProject(pending.path);
-          break;
       }
       this.dismiss();
       this.error = "";
@@ -3089,6 +3114,29 @@ export class App {
         if (entry.depth === 0 && top++)
           this.drawGap(`group-gap-${g}`, entry.path, inner);
         this.drawProjectTitle(entry, g);
+        if (this.endingProject?.path === entry.path) {
+          const asking = this.box(this.sessionScroll, `project-ask-${g}`, {
+            height: 1,
+            flexShrink: 0,
+            flexDirection: "row",
+            paddingLeft: 2 + entry.depth * 2,
+          });
+          this.endingProjectSpans().forEach((span, k) =>
+            this.text(asking, `project-ask-${g}-${k}`, "", {
+              height: 1,
+              flexShrink: 0,
+              wrapMode: "none",
+              selectable: false,
+              content: styled([span]),
+              onMouseDown: span.run
+                ? (event: MouseEvent) => {
+                    event.stopPropagation();
+                    span.run!();
+                  }
+                : undefined,
+            }),
+          );
+        }
         return;
       }
       const row = entry.item;
@@ -3337,13 +3385,7 @@ export class App {
         dir: this.projectDir(entry.path),
       }),
     );
-    const end = control("end", "×", () =>
-      this.askOperation({
-        operation: "end-project",
-        path: entry.path,
-        refs: this.projectSessions(entry.path),
-      }),
-    );
+    const end = control("end", "×", () => this.askEndProject(entry.path));
     this.hoverable(box, `project:${entry.path}`, (on) => {
       add.visible = on;
       end.visible = on;
@@ -3889,6 +3931,17 @@ export class App {
       key.preventDefault();
       key.stopPropagation();
     };
+    // A project waits for the answer to "end it?": enter ends it, esc keeps it.
+    if (this.endingProject) {
+      if (this.endingProject.busy) return stop();
+      if (key.name === "return" || key.name === "escape") {
+        stop();
+        if (key.name === "return") void this.endProject();
+        else this.cancelEndProject();
+        return;
+      }
+      this.cancelEndProject();
+    }
     // A local shell waits for an answer: enter closes it, or quits; esc keeps it.
     if (this.closing) {
       if (key.name === "return" || key.name === "escape") {
