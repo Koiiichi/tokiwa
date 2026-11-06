@@ -179,6 +179,9 @@ PY
  run loginctl enable-linger cloud-containers
 fi
 
+# needrestart runs after each package change, also an automatic update.
+place 0644 needrestart.conf /etc/needrestart/conf.d/tokiwa.conf
+
 run systemctl daemon-reload
 if (( docker )); then
  systemctl is-active --quiet user@2200.service || run systemctl start user@2200.service

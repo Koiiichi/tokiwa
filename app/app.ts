@@ -4143,5 +4143,7 @@ if (import.meta.main) {
     useMouse: true,
   });
   const app = new App(renderer, options);
+  // A launcher call in progress keeps a pipe open, and the app must not wait for it to quit.
+  renderer.on("destroy", () => setTimeout(() => process.exit(0), 0));
   launch(app, options.deadline);
 }

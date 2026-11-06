@@ -59,8 +59,13 @@ class HostInstall(unittest.TestCase):
         self.assertIn('/etc/systemd/system/cloud-workbench.service', out)
         self.assertIn('include "/opt/agent-platform/rootless/workspace-metadata.nft"', out)
         self.assertIn('would run: systemctl start cloud-workbench.service', out)
+        self.assertIn('/etc/needrestart/conf.d/tokiwa.conf', out)
         self.assertNotIn('docker', out.lower().replace('dry run', ''))
         self.assertIn('nothing changed', out)
+
+    def test_package_changes_never_restart_the_service(self):
+        rule = (ROOT / 'needrestart.conf').read_text()
+        self.assertIn('$nrconf{override_rc}{qr(^cloud-workbench)} = 0;', rule)
 
     def test_with_docker_adds_the_engine_and_the_socket_drop_in(self):
         out = self.install('--with-docker').stdout
@@ -78,7 +83,7 @@ class HostInstall(unittest.TestCase):
         self.assertNotIn('useradd', out)
         self.assertNotIn('include "', out)
         self.assertNotIn('systemctl start cloud-workbench.service', out)
-        self.assertNotIn('restart', out.replace('was not restarted', ''))
+        self.assertNotIn('restart', out.replace('was not restarted', '').replace('needrestart', ''))
         self.assertIn('is running and was not restarted', out)
 
     def test_refuses_a_conflicting_user_and_other_systems(self):

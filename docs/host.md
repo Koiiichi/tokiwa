@@ -95,6 +95,7 @@ systemctl start cloud-workbench.service
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
 | `daemon.json` | `/opt/agent-platform/rootless/daemon.json` | 0644 | The configuration of the rootless engine. |
+| `needrestart.conf` | `/etc/needrestart/conf.d/tokiwa.conf` | 0644 | Stops `needrestart` restarting `cloud-workbench.service`. Ubuntu runs `needrestart` after each package change, also an automatic update, and a restart of the service ends every session. |
 | `rootless-metadata.nft` | `/opt/agent-platform/rootless/rootless-metadata.nft` | 0644 | Blocks the instance metadata addresses for the engine user. `/etc/nftables.conf` includes it. |
 | `units/cloud-workbench.service` | `/etc/systemd/system/cloud-workbench.service` | 0644 | The service of the tmux server. |
 | `units/user-2200.slice` | `/etc/systemd/system/user-2200.slice` | 0644 | Limits of the engine user: `8G` memory, `300%` CPU, 1024 tasks. |
