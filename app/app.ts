@@ -73,6 +73,7 @@ import {
 } from "./search";
 import {
   fitHints,
+  hint,
   hintText,
   SEPARATOR,
   type Hint,
@@ -380,8 +381,8 @@ export class App {
   rowClose = new Map<string, TextRenderable>();
   /** A session that asks "end it?" in its row and in its view's title, with the shells opened from it. */
   ending?: { ref: SessionRef; children: SessionRef[]; busy?: string };
-  /** True while the group of background sessions is open. */
-  backgroundOpen = false;
+  /** True while the search panel lists the background sessions in place of the search. */
+  picker = false;
   /** A project that waits for the answer to "end it?". */
   endingProject?: { path: string; refs: SessionRef[]; busy?: string };
   /** A question about a local shell with a running program: close that shell, or quit the app. */
@@ -753,7 +754,7 @@ export class App {
       refresh: { run: () => void this.refreshSessions() },
       background: {
         available: () => this.remoteSessions.some(isBackground),
-        run: () => this.toggleBackground(),
+        run: () => this.openBackground(),
       },
       "sign-in": {
         available: () => this.signInExpired(),
@@ -1910,6 +1911,7 @@ export class App {
     this.drawSessions();
     this.layoutPanes();
     this.drawFooter();
+    if (this.palette) this.drawActions();
   }
   /** End the asked session, and its shells unless `keepShells`. Folders and history stay. */
   async endSession(keepShells: boolean) {
@@ -1995,11 +1997,28 @@ export class App {
       { text: "esc keeps", tone: "value", run: () => this.answerClose(false) },
     ];
   }
-  toggleBackground() {
-    this.backgroundOpen = !this.backgroundOpen;
-    this.listFocused = true;
-    this.drawSessions();
-    this.drawFooter();
+  /** Open the list of background sessions. */
+  openBackground() {
+    if (this.palette) this.dismiss();
+    this.picker = true;
+    this.openPalette();
+  }
+  /** The background list as search rows: a session and the program that runs in it. */
+  backgroundChoices() {
+    const items = this.backgroundRows().map((row): SearchItem => ({
+      label: row.name,
+      detail: row.ref?.activity?.[0]?.command ?? "",
+      category: "Sessions",
+      run: () => this.openRow(row, "keyboard"),
+    }));
+    return {
+      items,
+      rows: items.map((item, index): SearchRow => ({
+        kind: "item",
+        item,
+        index,
+      })),
+    };
   }
   /** Ask to end a project: its sessions end, and a named project is forgotten. */
   askEndProject(path: string) {
@@ -2498,7 +2517,12 @@ export class App {
     const signature = JSON.stringify(
       row
         ? [room, row.name, status]
-        : [room, context.order, fit.keys, fit.hints.map((h) => [h.id, h.key])],
+        : [
+            room,
+            context.order,
+            fit.keys,
+            fit.hints.map((h) => [h.id, h.key, h.label]),
+          ],
     );
     if (signature === this.footerSignature) return;
     this.footerSignature = signature;
@@ -2554,15 +2578,18 @@ export class App {
       return;
     }
     fit.hints.forEach((hint, i) => {
-      if (i)
+      if (hint.end)
+        this.box(this.footer, "footer-spacer", { height: 1, flexGrow: 1 });
+      else if (i)
         part(this.footer, `footer-gap-${i}`, [
           { text: SEPARATOR, tone: "dim" },
         ]);
       const key = fit.keys ? hint.key : "";
+      const order = hint.end ? "label-first" : context.order;
       // A control shows its label in the text colour and its key dim; other hints are dim.
       const spans: Span[] = !hint.run
-        ? [{ text: hintText(hint, fit.keys, context.order), tone: "dim" }]
-        : context.order === "key-first"
+        ? [{ text: hintText(hint, fit.keys, order), tone: "dim" }]
+        : order === "key-first"
           ? [
               { text: key && `${key} `, tone: "dim" },
               { text: hint.label, tone: "value" },
@@ -2610,13 +2637,6 @@ export class App {
    * the app, so the label comes first and its key follows, dim.
    */
   footerContext(): { order: HintOrder; hints: Hint[] } {
-    const hint = (
-      id: string,
-      key: string,
-      label: string,
-      rank: number,
-      run?: () => void,
-    ): Hint => ({ id, key, label, rank, run });
     const keyFirst = (hints: Hint[]) => ({
       order: "key-first" as const,
       hints,
@@ -2629,6 +2649,7 @@ export class App {
         ...(this.sheetOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
         hint("close", "esc", "close", 9, () => this.closeSheet()),
       ]);
+    if (this.picker) return keyFirst(this.pickerHints());
     if (this.palette)
       return keyFirst(
         this.confirm
@@ -2655,6 +2676,7 @@ export class App {
         shortcuts,
       ]);
     const active = this.shells[this.active];
+    const background = this.backgroundRows().length;
     if (!this.listHasFocus())
       return {
         order: "label-first",
@@ -2709,7 +2731,52 @@ export class App {
           ]
         : []),
       shortcuts,
+      ...(background
+        ? [
+            {
+              ...hint("background", "b", `${background} background`, 10, () =>
+                this.openBackground(),
+              ),
+              end: true,
+            },
+          ]
+        : []),
     ]);
+  }
+  /** The footer of the background list. While a session waits for an answer, the answers. */
+  pickerHints() {
+    if (this.ending?.busy) return [];
+    if (this.ending)
+      return [
+        hint("end", "enter", "end", 5, () => void this.endSession(false)),
+        ...(this.ending.children.length
+          ? [
+              hint(
+                "keep-shells",
+                "s",
+                "keep the shells",
+                4,
+                () => void this.endSession(true),
+              ),
+            ]
+          : []),
+        hint("keep", "esc", "keep", 9, () => this.cancelEnd()),
+      ];
+    return [
+      ...(this.filtered.length
+        ? [
+            hint("select", "↑↓", "select", 1),
+            hint("view", "enter", "view", 5, () => this.choose()),
+            hint("end", "x", "end", 4, () => this.endPicked()),
+          ]
+        : []),
+      hint("close", "esc", "close", 9, () => this.dismiss()),
+    ];
+  }
+  /** Ask to end the session under the selection of the background list. */
+  endPicked() {
+    const ref = this.backgroundRows()[this.selection]?.ref;
+    if (ref) this.askEnd(ref);
   }
   /** True when the view in the pane is a remote session whose transport is open. */
   remoteInPane() {
@@ -2894,12 +2961,8 @@ export class App {
     if (shell.remote) return projectTitle(shell.remote.project);
     return shell.remoteName ? projectTitle(shell.cwd) : groups.name;
   }
-  /**
-   * List the session list in display order: a tree of projects with their sessions and attached
-   * views (see `projectTree`), then the local shells. A new remote shell joins its project
-   * before the next snapshot lists it.
-   */
-  sessionTree(): TreeEntry<SessionRow>[] {
+  /** The remote sessions and their views. A new remote shell is here before the next snapshot. */
+  remoteRows(): SessionRow[] {
     const named = (s: Shell) => s.remote?.name ?? s.remoteName;
     const remote: SessionRow[] = this.remoteSessions.map((ref) => ({
       name: ref.name,
@@ -2919,6 +2982,22 @@ export class App {
           ref: shell.remote,
           shell,
         });
+    return remote;
+  }
+  /** The sessions of the background list. */
+  backgroundRows() {
+    return this.remoteRows().filter((r) => r.ref && isBackground(r.ref));
+  }
+  /**
+   * List the session list in display order: a tree of projects with their sessions and attached
+   * views (see `projectTree`), then the local shells. A background session has a row only while
+   * a view of it is open, so that the list shows what the pane shows.
+   */
+  sessionTree(): TreeEntry<SessionRow>[] {
+    const named = (s: Shell) => s.remote?.name ?? s.remoteName;
+    const remote = this.remoteRows().filter(
+      (r) => r.shell || !r.ref || !isBackground(r.ref),
+    );
     const local = this.shells
       .filter((s) => !named(s))
       .map((shell): SessionRow => ({
@@ -2927,9 +3006,8 @@ export class App {
         title: groups.name,
         shell,
       }));
-    const background = remote.filter((r) => r.ref && isBackground(r.ref));
     const tree = projectTree(
-      remote.filter((r) => !background.includes(r)),
+      remote,
       Object.keys(this.backend.projects),
       this.projectOrder,
     );
@@ -2943,23 +3021,6 @@ export class App {
           saved: false,
         },
         ...local.map((item) => ({
-          kind: "session" as const,
-          item,
-          depth: 0,
-          child: false,
-        })),
-      );
-    if (background.length)
-      tree.push(
-        {
-          kind: "project",
-          background: true,
-          path: "",
-          title: `${this.backgroundOpen ? "▾" : "▸"} background · ${background.length}`,
-          depth: 0,
-          saved: false,
-        },
-        ...(this.backgroundOpen ? background : []).map((item) => ({
           kind: "session" as const,
           item,
           depth: 0,
@@ -3371,11 +3432,6 @@ export class App {
       onMouseDown: (event: MouseEvent) => {
         event.stopPropagation();
         this.dropped = false;
-        if (entry.background) {
-          this.dropped = true;
-          this.toggleBackground();
-          return;
-        }
         // A second press on the same title within 400 ms renames the project.
         const now = Date.now();
         const twice =
@@ -3754,28 +3810,36 @@ export class App {
       paddingLeft: 2,
       paddingRight: 2,
     });
-    const inputRow = this.box(searchArea, "search-row", {
-      height: 1,
-      flexDirection: "row",
-    });
-    this.text(inputRow, "search-prompt", "› ", {
-      fg: theme.cpu,
-      width: 2,
-      flexShrink: 0,
-      selectable: false,
-    });
-    this.search = new InputRenderable(this.renderer, {
-      id: "search",
-      placeholder: "Search sessions and actions",
-      flexGrow: 1,
-      backgroundColor: theme.surface,
-      focusedBackgroundColor: theme.surface,
-      textColor: theme.fg,
-      placeholderColor: theme.muted,
-    });
-    inputRow.add(this.search);
+    if (this.picker)
+      this.text(searchArea, "picker-title", "Background sessions", {
+        height: 1,
+        fg: theme.muted,
+        selectable: false,
+      });
+    else {
+      const inputRow = this.box(searchArea, "search-row", {
+        height: 1,
+        flexDirection: "row",
+      });
+      this.text(inputRow, "search-prompt", "› ", {
+        fg: theme.cpu,
+        width: 2,
+        flexShrink: 0,
+        selectable: false,
+      });
+      this.search = new InputRenderable(this.renderer, {
+        id: "search",
+        placeholder: "Search sessions and actions",
+        flexGrow: 1,
+        backgroundColor: theme.surface,
+        focusedBackgroundColor: theme.surface,
+        textColor: theme.fg,
+        placeholderColor: theme.muted,
+      });
+      inputRow.add(this.search);
+    }
     // Until the first keystroke, a quick key runs at once; any other key starts a search.
-    this.quickArmed = !this.confirm;
+    this.quickArmed = !this.confirm && !this.picker;
     this.choices = new ScrollBoxRenderable(this.renderer, {
       id: "choices",
       maxHeight: Math.max(3, this.renderer.height - 9),
@@ -3783,12 +3847,12 @@ export class App {
     });
     panel.add(this.choices);
     this.selection = 0;
-    this.search.on(InputRenderableEvents.INPUT, () => {
+    this.search?.on(InputRenderableEvents.INPUT, () => {
       this.selection = 0;
       this.drawActions();
     });
     this.drawActions();
-    this.search.focus();
+    this.search?.focus();
     this.drawFooter();
     this.updateActivity();
     this.record("palette-open");
@@ -3817,7 +3881,11 @@ export class App {
   }
   /** List what the search can reach: the sessions and the actions that apply now. */
   searchItems(): { sessions: SearchItem[]; actions: SearchItem[] } {
-    const sessions = this.sessionRows().map((row): SearchItem => ({
+    const rows = this.sessionRows();
+    const hidden = this.backgroundRows().filter(
+      (row) => !rows.some((r) => r.name === row.name),
+    );
+    const sessions = [...rows, ...hidden].map((row): SearchItem => ({
       label: row.name,
       detail: row.title,
       category: "Sessions",
@@ -3840,13 +3908,15 @@ export class App {
    * sessions and actions, with each action's key outside a terminal.
    */
   drawActions() {
-    if (!this.choices || !this.palette) return;
+    if (!this.choices || !this.palette || this.disposed) return;
     for (const child of this.choices.getChildren()) child.destroyRecursively();
     const query = this.search?.value ?? "";
     const { sessions, actions } = this.searchItems();
-    const result = this.confirm
-      ? { items: [], rows: [] }
-      : searchRows(query, sessions, actions);
+    const result = this.picker
+      ? this.backgroundChoices()
+      : this.confirm
+        ? { items: [], rows: [] }
+        : searchRows(query, sessions, actions);
     this.filtered = result.items;
     this.searchList = result.rows;
     this.selection = Math.min(
@@ -3866,8 +3936,9 @@ export class App {
     ) as BoxRenderable;
     area.border = titled ? [] : ["bottom"];
     area.height = 1 + (titled ? 0 : 1);
+    const question = this.picker && !!this.ending;
     this.choices.height = Math.min(
-      this.searchList.length || 1,
+      (this.searchList.length || 1) + (question ? 1 : 0),
       Math.max(3, this.renderer.height - 9),
     );
     this.choices.flexGrow = 0;
@@ -3948,7 +4019,9 @@ export class App {
           ? this.confirmStatus.text
           : this.confirm
             ? this.operationText(this.confirm).hint
-            : "No matching session or action",
+            : this.picker
+              ? "No background sessions"
+              : "No matching session or action",
         {
           fg: this.confirmStatus?.failed ? theme.critical : theme.muted,
           height: 1,
@@ -3957,6 +4030,14 @@ export class App {
           truncate: true,
         },
       );
+    if (question)
+      this.text(this.choices, "picker-question", "", {
+        height: 1,
+        wrapMode: "none",
+        truncate: true,
+        selectable: false,
+        content: styled([{ text: "  ", tone: "dim" }, ...this.endingSpans()]),
+      });
   }
   choose(index = this.selection) {
     const action = this.filtered[index];
@@ -3968,6 +4049,7 @@ export class App {
   }
   dismiss() {
     this.palette?.destroyRecursively();
+    this.picker = false;
     this.confirm = undefined;
     this.confirmStatus = undefined;
     this.palette = undefined;
@@ -4068,6 +4150,17 @@ export class App {
       if (key.ctrl && key.name === "c") {
         stop();
         this.dismiss();
+        return;
+      }
+      if (
+        this.picker &&
+        !key.ctrl &&
+        !key.meta &&
+        ["b", "x"].includes(key.name)
+      ) {
+        stop();
+        if (key.name === "b") this.dismiss();
+        else this.endPicked();
         return;
       }
       if (["escape", "up", "down", "return"].includes(key.name)) {

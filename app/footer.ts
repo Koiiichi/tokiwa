@@ -9,6 +9,8 @@ export interface Hint {
   /** When the line is too long, the controls with the lowest rank go first. */
   rank: number;
   run?: () => void;
+  /** The hint sits at the right end of the line, label first. */
+  end?: boolean;
 }
 /**
  * `key-first` writes `enter attach`, for keys that act directly. `label-first` writes
@@ -16,6 +18,14 @@ export interface Hint {
  */
 export type HintOrder = "key-first" | "label-first";
 export const SEPARATOR = " · ";
+
+export const hint = (
+  id: string,
+  key: string,
+  label: string,
+  rank: number,
+  run?: () => void,
+): Hint => ({ id, key, label, rank, run });
 
 export function hintText(hint: Hint, keys: boolean, order: HintOrder) {
   if (!keys || !hint.key) return hint.label;

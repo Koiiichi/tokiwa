@@ -284,27 +284,162 @@ test("a detach leaves the other view open and in front", async () => {
 const sorted = (names: string[]): SessionRef[] =>
   landingSessions.map((s) => ({ ...s, managed: !names.includes(s.name) }));
 
-test("a session that a program made waits in a closed background group", async () => {
-  const w = await workspace();
-  w.snapshot.current = sorted(["tools"]);
+const COUNT = /\d+ background/;
+const running = (name: string, command: string): SessionRef => ({
+  ...sorted([name]).find((s) => s.name === name)!,
+  activity: [{ pane: "%1", dead: false, command, screen: "" }],
+});
+/** A workspace whose snapshot marks `names` as sessions that a program made. */
+async function withBackground(names: string[], width = 120) {
+  const w = await workspace(width);
+  w.snapshot.current = sorted(names);
+  await w.app.refreshSessions();
+  await w.app.refreshSessions();
+  await w.t.renderOnce();
+  return w;
+}
+const press = async (
+  w: Awaited<ReturnType<typeof workspace>>,
+  text: string,
+) => {
+  await w.t.mockInput.typeText(text);
+  await pause();
+  await w.t.renderOnce();
+};
+
+test("a session that a program made has no row, and the footer counts it", async () => {
+  const w = await withBackground(["tools"]);
   try {
-    await w.app.refreshSessions();
-    await w.app.refreshSessions();
-    await w.t.renderOnce();
-    let frame = w.t.captureCharFrame();
-    expect(frame).toContain("▸ background · 1");
+    const frame = w.t.captureCharFrame();
+    expect(frame).toContain("1 background b");
     expect(w.row("tools")).toBe("");
     expect(w.app.sessionRows().map((r) => r.name)).not.toContain("tools");
-    await w.t.mockInput.typeText("b");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the footer count follows the sessions, and leaves with the last one", async () => {
+  const w = await withBackground(["tools"]);
+  try {
+    w.snapshot.current = sorted(["tools", "setup"]);
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.t.captureCharFrame()).toContain("2 background b");
+    w.snapshot.current = sorted([]);
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.t.captureCharFrame()).not.toMatch(COUNT);
+    await press(w, "b");
+    expect(w.app.palette).toBeUndefined();
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a narrow footer keeps the background count", async () => {
+  const w = await withBackground(["tools"], 34);
+  try {
+    expect(w.t.captureCharFrame()).toMatch(COUNT);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("b opens the background list, and b or esc closes it", async () => {
+  const w = await withBackground(["tools"]);
+  w.snapshot.current = [
+    running("tools", "python3"),
+    ...w.snapshot.current.filter((s) => s.name !== "tools"),
+  ];
+  try {
+    await w.app.refreshSessions();
+    await press(w, "b");
+    const frame = w.t.captureCharFrame();
+    expect(frame).toContain("Background sessions");
+    expect(frame).toMatch(/tools +python3/);
+    expect(frame).toContain("enter view");
+    expect(frame).toContain("x end");
+    expect(frame).toContain("esc close");
+    await press(w, "b");
+    expect(w.app.palette).toBeUndefined();
+    await press(w, "b");
+    w.t.mockInput.pressEscape();
+    await pause();
+    expect(w.app.palette).toBeUndefined();
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("x in the background list asks first, and esc keeps the session", async () => {
+  const w = await withBackground(["tools"]);
+  const finished: string[] = [];
+  w.app.backend.end = async (ref) => {
+    finished.push(ref.name);
+    return "";
+  };
+  try {
+    await press(w, "b");
+    await press(w, "x");
+    expect(w.t.captureCharFrame()).toContain("end tools?");
+    expect(finished).toEqual([]);
+    w.t.mockInput.pressEscape();
     await pause();
     await w.t.renderOnce();
-    frame = w.t.captureCharFrame();
-    expect(frame).toContain("▾ background · 1");
-    expect(w.row("tools")).toContain("tools");
-    await w.t.mockInput.typeText("b");
+    expect(finished).toEqual([]);
+    expect(w.app.ending).toBeUndefined();
+    expect(w.app.palette).toBeDefined();
+    expect(w.t.captureCharFrame()).not.toContain("end tools?");
+    await press(w, "x");
+    w.t.mockInput.pressEnter();
+    for (let i = 0; i < 50 && w.app.ending; i++) await pause(5);
+    expect(finished).toEqual(["tools"]);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("x ends the selected session of the background list", async () => {
+  const w = await withBackground(["tools", "setup"]);
+  const finished: string[] = [];
+  w.app.backend.end = async (ref) => {
+    finished.push(ref.name);
+    return "";
+  };
+  try {
+    await press(w, "b");
+    const names = w.app.filtered.map((item) => item.label);
+    expect(names).toHaveLength(2);
+    w.t.mockInput.pressArrow("down");
     await pause();
+    await press(w, "x");
+    expect(w.t.captureCharFrame()).toContain(`end ${names[1]}?`);
+    w.t.mockInput.pressEnter();
+    for (let i = 0; i < 50 && w.app.ending; i++) await pause(5);
+    expect(finished).toEqual([names[1]]);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the list shows that no background session is left", async () => {
+  const w = await withBackground(["tools"]);
+  try {
+    await press(w, "b");
+    w.snapshot.current = sorted([]);
+    await w.app.refreshSessions();
     await w.t.renderOnce();
-    expect(w.t.captureCharFrame()).toContain("▸ background · 1");
+    expect(w.t.captureCharFrame()).toContain("No background sessions");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the search reaches a background session", async () => {
+  const w = await withBackground(["tools"]);
+  try {
+    expect(w.app.searchItems().sessions.map((s) => s.label)).toContain("tools");
   } finally {
     await w.dispose();
   }
@@ -320,7 +455,7 @@ test("an agent that a program started stays with the sessions", async () => {
   try {
     await w.app.refreshSessions();
     await w.t.renderOnce();
-    expect(w.t.captureCharFrame()).not.toContain("background ·");
+    expect(w.t.captureCharFrame()).not.toMatch(COUNT);
   } finally {
     await w.dispose();
   }
@@ -329,31 +464,40 @@ test("an agent that a program started stays with the sessions", async () => {
 test("a helper without the mark keeps every session in the list", async () => {
   const w = await workspace();
   try {
-    expect(w.t.captureCharFrame()).not.toContain("background ·");
+    expect(w.t.captureCharFrame()).not.toMatch(COUNT);
   } finally {
     await w.dispose();
   }
 });
 
-test("a background session opens view only", async () => {
-  const w = await workspace();
-  w.snapshot.current = sorted(["tools"]);
+test("a background session opens view only, and keeps a row while its view is open", async () => {
+  const w = await withBackground(["tools"]);
   const commands: string[][] = [];
   const view = w.app.backend.viewCommand.bind(w.app.backend);
   w.app.backend.viewCommand = (ref) => {
     commands.push(view(ref));
-    return ["/bin/sleep", "30"];
+    return ["/bin/sh", "-c", "read x; exit 0"];
   };
   try {
-    await w.app.refreshSessions();
-    await w.app.refreshSessions();
-    await w.t.mockInput.typeText("b");
+    await press(w, "b");
+    w.t.mockInput.pressEnter();
+    for (let i = 0; i < 50 && !w.app.shells.length; i++) await pause(5);
+    for (let i = 0; i < 50 && w.app.remotePending.size; i++) await pause(20);
     await pause();
-    await w.attach("tools");
+    await w.t.renderOnce();
     expect(commands).toHaveLength(1);
     expect(commands[0].slice(1, 3)).toEqual(["view", "tools"]);
-    await w.t.renderOnce();
     expect(w.t.captureCharFrame()).toContain("view only");
+    expect(w.app.sessionRows().map((r) => r.name)).toContain("tools");
+    expect(w.row("tools")).toContain("tools");
+    w.app.detachPane();
+    w.app.shells[0].adapter.closeTransport();
+    await ended(w);
+    await w.t.renderOnce();
+    expect(w.app.sessionRows().map((r) => r.name)).not.toContain("tools");
+    expect(w.app.footerContext().hints.map((h) => h.label)).toContain(
+      "1 background",
+    );
   } finally {
     await w.dispose();
   }

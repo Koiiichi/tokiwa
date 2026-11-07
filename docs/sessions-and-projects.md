@@ -21,9 +21,9 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 | Session | Where it shows |
 | --- | --- |
 | Tokiwa made it, or Claude Code or Codex runs in it | In its project |
-| Anything else | In the closed `background` group at the end of the list |
+| Anything else | In the background list, with a count at the right of the footer |
 
-`b`, or a click on the group title, opens the group. Enter on a background session opens it view only: tmux keeps every key press from its program, so a stray Ctrl+C cannot stop it. `ctrl+k d` leaves the view. `x` ends the session, after a question. To type into one, run `tokiwa attach NAME`.
+`b`, or a click on the count, opens the background list. The search finds these sessions too. Enter on a session opens it view only: tmux keeps every key press from its program, so a stray Ctrl+C cannot stop it. While the view is open, the session has a row in the list. `ctrl+k d` leaves the view. `x` in the background list ends the selected session, after a question. To type into one, run `tokiwa attach NAME`.
 
 ## What each action does
 

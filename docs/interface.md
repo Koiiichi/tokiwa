@@ -152,7 +152,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser opens for the approval. After a success the view closes and the sessions are read again; after a failure the view stays open with the message. At other times the key does nothing. |
 | `t` | **New local shell**: start a local login shell in the home directory. |
 | `g` | **Local shell group**: start the shells that `projects.json` names. |
-| `b` | **Background sessions**: open or close the background group of the list. |
+| `b` | **Background sessions**: open or close the background list. In the list, `enter` opens the selected session view only and `x` ends it, after a question. With no background session, the key does nothing. |
 | `?` | **Keyboard shortcuts**: open the shortcuts sheet. |
 | `q` | **Quit**: close the app. Remote sessions keep running on the host. Local shells end, so when a program runs in one, the app asks first. |
 
