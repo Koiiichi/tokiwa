@@ -3240,7 +3240,9 @@ export class App {
     const bell = !!ref.bell && this.acknowledged.get(ref.name) !== ref.identity;
     const asked =
       !!ref.attention && this.attentionSeen.get(ref.name) !== ref.attention;
-    return bell || asked;
+    // An agent that waits on a question or an approval needs you until it moves on.
+    const waiting = ref.agent?.state === "waiting" && !ref.frozen;
+    return bell || asked || waiting;
   }
   /**
    * The status of one row: its glyph state, the word of a state that needs an action (or
@@ -3258,14 +3260,22 @@ export class App {
       word:
         row.ref && this.remotePending.has(row.name)
           ? "attaching"
-          : STATUS_WORD[state] ||
-            (row.ref?.frozen
-              ? "frozen"
-              : row.ref && runsOnlyShell(row.ref)
-                ? "shell"
-                : ""),
+          : this.rowWord(row, state),
       others: Math.max(0, (row.ref?.clients ?? 0) - own),
     };
+  }
+  /**
+   * The word after a row's name: a state that needs an action, else frozen, else the state that
+   * its agent reported, else shell for a session that runs only a shell.
+   */
+  rowWord(row: SessionRow, state: RowState) {
+    const ref = row.ref;
+    if (state === "needs-you" && ref?.agent?.state === "waiting" && !ref.frozen)
+      return "waiting";
+    if (STATUS_WORD[state]) return STATUS_WORD[state];
+    if (ref?.frozen) return "frozen";
+    if (ref?.agent) return ref.agent.state;
+    return ref && runsOnlyShell(ref) ? "shell" : "";
   }
   rowSignature() {
     return JSON.stringify([
@@ -3456,7 +3466,11 @@ export class App {
         const detail: Span[] = [
           { text: text.count, tone: "dim" },
           { text: " ".repeat(pad + (word ? 2 : 0)), tone: "value" },
-          { text: text.word, tone: "dim" },
+          // A limit or an error stops an agent, so its word stands out.
+          {
+            text: text.word,
+            tone: word === "limited" || word === "error" ? "warning" : "dim",
+          },
         ];
         const weight = selected || current ? TextAttributes.BOLD : 0;
         const item = this.box(this.sessionScroll, `list-${i}`, {

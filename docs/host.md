@@ -93,6 +93,8 @@ systemctl start cloud-workbench.service
 | `terminal-session.sh` | `/opt/agent-platform/rootless/terminal-session.sh` | 0755 | The helper: lists, creates, attaches, reads, renames and ends sessions, and keeps `projects.json`. |
 | `tokiwa-open` | `/opt/agent-platform/rootless/tokiwa-open` | 0755 | The `BROWSER` program. Sends a link to the Mac. |
 | `tokiwa-bashrc` | `/opt/agent-platform/rootless/tokiwa-bashrc` | 0644 | The startup file of each shell: the owner's `~/.bashrc`, then Tokiwa's prompt and `BROWSER`. |
+| `tokiwa-state` | `/usr/local/bin/tokiwa-state` | 0755 | Records the state that an agent's hook reports, for the session list. See [Agent state](#agent-state). |
+| `agent-hooks.py` | `/opt/agent-platform/rootless/agent-hooks.py` | 0644 | Adds Tokiwa's state hooks to the Claude Code and Codex settings of the workbench user, or removes them. |
 | `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
@@ -241,6 +243,26 @@ tokiwa secret --remove OPENAI_API_KEY
 The prompt runs on the host, in a Session Manager session, so the value goes from your keyboard to the host through that encrypted connection. It is never stored on the Mac, and it never goes through Run Command, which keeps its parameters and output in the AWS account. The host does not print the value, so a Session Manager log of the session would not hold it either. Type the command instead of pasting it, so that the clipboard still holds the value. When a paste holds several lines, the host keeps the first line, reads the rest so that no shell runs it, and says how many lines it dropped.
 
 The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/development/private/homes/workbench`), mode 600, one `export NAME='value'` line each. `tokiwa-bashrc` loads the file after `~/.bashrc`, so the newest saved value wins. Every program in a session runs as that user and can read the values; that includes the agents. Names that shells and Tokiwa rely on are refused: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `PWD`, `BROWSER`, `PS1`, and names that start with `TOKIWA_` or `TMUX`.
+
+## Agent state
+
+The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE`. The command records the state and the time on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show.
+
+| State | Claude Code events | Codex events |
+| --- | --- | --- |
+| `working` | `UserPromptSubmit`, `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit`, `PostToolUse` |
+| `waiting` | `PreToolUse` of `AskUserQuestion`, `Elicitation`, Notification `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog` | `PermissionRequest` |
+| `idle` | `Stop`, Notification `idle_prompt` | `Stop`, `Interrupt` |
+| `limited` | `StopFailure` `rate_limit`, Notification `quota_auto_resume_stale` | none: Codex has no hook for a limit |
+| `error` | `StopFailure` with any other error | none |
+
+The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and they run without holding the agent. Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
+
+What the states cannot tell:
+
+- Claude Code reports a permission prompt about six seconds after it appears.
+- Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself; after an Esc that you type, the state changes at the next turn or after a minute of no input.
+- Whether a usage limit of a Claude plan arrives as `rate_limit` is not documented.
 
 ## Audit log
 

@@ -339,3 +339,34 @@ test("a frozen session says frozen, also when it runs only a shell", async () =>
     w.dispose();
   }
 });
+
+test("each row shows its agent's state, and a waiting agent needs you", async () => {
+  const w = await workspace();
+  const with_ = (name: string, id: number, state: string): SessionRef => ({
+    ...session(name, "inbox", id, "claude"),
+    agent: { state, at: 1 },
+  });
+  try {
+    w.sessions.push(
+      with_("busy", 11, "working"),
+      with_("asking", 12, "waiting"),
+      with_("done", 13, "idle"),
+      with_("capped", 14, "limited"),
+      { ...with_("held", 15, "working"), frozen: true },
+    );
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.row("busy")).toContain("working");
+    expect(w.row("asking")).toMatch(/◈ asking +waiting/);
+    expect(w.row("done")).toContain("idle");
+    expect(w.row("capped")).toContain("limited");
+    // A frozen agent's last state is stale, so frozen shows.
+    expect(w.row("held")).toContain("frozen");
+    const row = (name: string) =>
+      w.app.sessionRows().find((r) => r.name === name)!;
+    expect(w.app.needsYou(row("asking"))).toBe(true);
+    expect(w.app.needsYou(row("busy"))).toBe(false);
+  } finally {
+    w.dispose();
+  }
+});

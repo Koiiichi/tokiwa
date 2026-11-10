@@ -916,6 +916,69 @@ class Control(ModelHelpers, Server):
         self.assertNotIn('secret-looking-text', json.dumps(self.audit()))
 
 
+class AgentState(ModelHelpers, Server):
+    """tokiwa-state records the state that an agent's hook reports, and the snapshot shows it."""
+
+    def agent(self, name, program):
+        """A Tokiwa session whose pane runs a program named `program`, as an agent would."""
+        tools = Path(self.temp.name) / 'tools'
+        tools.mkdir(exist_ok=True)
+        # tmux names a pane by its program. A small compiled program, because macOS stops a copied
+        # system binary and a script shows the name of its interpreter.
+        if not shutil.which('cc'):
+            self.skipTest('the stand-in agent needs a C compiler')
+        (tools / 'agent.c').write_text('#include <unistd.h>\nint main(void){sleep(300);return 0;}\n')
+        subprocess.run(['cc', '-o', str(tools / program), str(tools / 'agent.c')], check=True)
+        self.assertEqual(self.helper('ensure', name).returncode, 0)
+        self.tm('send-keys', '-t', f'={name}:', f'{tools / program} 300', 'Enter')
+        for _ in range(100):
+            if self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_current_command}').stdout.strip() == program:
+                return
+            time.sleep(.05)
+        self.fail(f'{program} did not start')
+
+    def report(self, name, state, inside=True):
+        pane = self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_id}').stdout.strip()
+        env = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE')}
+        if inside:
+            env.update(TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        # A hook sends its event as JSON on stdin; tokiwa-state reads and ignores it.
+        return subprocess.run(['bash', str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
+                              capture_output=True, text=True, timeout=10)
+
+    def test_a_reported_state_shows_while_the_agent_runs(self):
+        self.agent('lead', 'claude')
+        for state in ['working', 'waiting', 'idle', 'limited', 'error']:
+            self.assertEqual(self.report('lead', state).returncode, 0)
+            agent = self.rows()['lead']['agent']
+            self.assertEqual(agent['state'], state)
+            self.assertIsInstance(agent['at'], int)
+
+    def test_codex_counts_as_an_agent_and_a_plain_shell_does_not(self):
+        self.agent('coder', 'codex')
+        self.report('coder', 'working')
+        self.assertEqual(self.rows()['coder']['agent']['state'], 'working')
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.report('plain', 'working')
+        # A state outlives the agent that reported it; without a running agent it is not shown.
+        self.assertIsNone(self.rows()['plain']['agent'])
+
+    def test_a_bad_state_or_no_session_changes_nothing_and_never_fails_the_hook(self):
+        self.agent('lead', 'claude')
+        self.report('lead', 'idle')
+        for state in ['busy', '', 'idle;rm']:
+            self.assertEqual(self.report('lead', state).returncode, 0, state)
+        self.assertEqual(self.report('lead', 'working', inside=False).returncode, 0)
+        self.assertEqual(self.rows()['lead']['agent']['state'], 'idle')
+
+    def test_interrupt_sets_a_reported_agent_to_idle(self):
+        self.agent('lead', 'claude')
+        self.report('lead', 'working')
+        identity = self.rows()['lead']['identity']
+        self.assertEqual(self.helper('interrupt', 'lead', identity).returncode, 0)
+        self.assertEqual(self.rows()['lead']['agent']['state'], 'idle')
+
+
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""
 

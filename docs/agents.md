@@ -53,7 +53,7 @@ These are the read tools. The table lists the tools of the other classes when th
 
 | Tool | Input | Result |
 | --- | --- | --- |
-| `tokiwa_sessions` | None | The output of `tokiwa sessions --json`: each session with its `name`, `identity`, folder, project, clients and pane commands. See [the snapshot](architecture.md#host-helper-and-snapshot). |
+| `tokiwa_sessions` | None | The output of `tokiwa sessions --json`: each session with its `name`, `identity`, folder, project, clients, pane commands, and the state that its agent reported (`agent`, see [Agent state](host.md#agent-state)). See [the snapshot](architecture.md#host-helper-and-snapshot). |
 | `tokiwa_screen` | `name`, `identity`, optional `lines` | The output of `tokiwa capture`, after one line that marks the text as data. |
 | `tokiwa_health` | None | The output of `tokiwa health`. See [Health](health.md). |
 | `tokiwa_status` | None | The output of `tokiwa status`. |

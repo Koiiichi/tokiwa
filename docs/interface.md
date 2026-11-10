@@ -89,6 +89,10 @@ Top-level projects follow the order that you set by drag, then sort by name. A b
 | `attaching` | The app attaches the session now. |
 | `◈ starting`, the glyph throbs | The workstation creates the session now. The row holds its place in the project. |
 | `shell` | A shell is the foreground program of every pane: no other program, for example no agent, runs in the session. |
+| `working`, `idle` | The state that the agent in the session last reported: a turn runs, or the turn ended. See [Agent state](host.md#agent-state). |
+| `◈ waiting` | The agent waits on a question or an approval: the row needs you until the agent moves on. |
+| `limited`, `error` (amber) | The agent stopped on a rate or usage limit, or on another error. |
+| `frozen` | `tokiwa freeze` holds the session's processes. It takes the place of the agent's state, which is then out of date. |
 | `…` at the end of a name | The name is longer than its column. Names give way first. |
 
 When the list is empty, it says why:

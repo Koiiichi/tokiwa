@@ -25,6 +25,12 @@ export interface SessionRef {
   attention?: number;
   /** True while `tokiwa freeze` holds the processes of the session; `tokiwa resume` ends it. */
   frozen?: boolean;
+  /**
+   * The state that the agent in the session last reported through its hooks (tokiwa-state):
+   * working, waiting, idle, limited or error, with the time in seconds on the host. Null while no
+   * agent runs or none reported.
+   */
+  agent?: { state: string; at: number } | null;
   /** The tmux session id (for example `$4`) of the session that this one was opened from. */
   parent?: string;
   /** True when Tokiwa made the session. A host helper without this field leaves it out. */

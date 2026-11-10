@@ -1,0 +1,11 @@
+#!/bin/bash
+# Record the state of the agent in this tmux pane, for example working or waiting, for Tokiwa's
+# session list. Agents call it from their hooks, so it never fails: a hook that fails can stop an
+# agent. The hook settings decide which event means which state; this command only records it.
+[[ ${1:-} =~ ^(working|waiting|idle|limited|error)$ ]] || exit 0
+# A hook writes its event to stdin; read it so the hook never waits on a full pipe.
+cat > /dev/null 2>&1 || true
+[[ -n ${TMUX_PANE:-} && -n ${TMUX:-} ]] || exit 0
+# -N: never start a tmux server; this command only reaches the server of its own session.
+tmux -N set-option -t "$TMUX_PANE" @tokiwa_agent "$1:$(date +%s)" > /dev/null 2>&1 || true
+exit 0

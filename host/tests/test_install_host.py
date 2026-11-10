@@ -62,6 +62,8 @@ class HostInstall(unittest.TestCase):
         self.assertIn('/etc/needrestart/conf.d/tokiwa.conf', out)
         self.assertIn('/opt/agent-platform/rootless/tokiwa-bashrc', out)
         self.assertIn('/usr/local/bin/tokiwa-attention', out)
+        self.assertIn('/usr/local/bin/tokiwa-state', out)
+        self.assertIn('agent-hooks.py install /srv/development/private/homes/workbench/.claude/settings.json', out)
         self.assertNotIn('docker', out.lower().replace('dry run', ''))
         self.assertIn('nothing changed', out)
 

@@ -290,16 +290,23 @@ for line in output.splitlines():
     # The time that tokiwa-attention marked the session, or 0. Unlike the bell, it survives an open client.
     attention = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_attention')
     frozen = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_frozen') != ''
+    # The state that the agent's hooks last reported (tokiwa-state), shown only while an agent
+    # runs, so a state that an ended agent left behind does not show.
+    reported = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_agent')
     # One line per pane of every window. The window bell flag is set when a pane of the window
     # rang the bell while no client viewed that window; viewing the window clears it.
     panes = [pane.split('\t', 3) for pane in read('list-panes', '-s', '-t', '=' + name, '-F',
              '#{pane_id}\t#{pane_dead}\t#{window_bell_flag}\t#{pane_current_command}').splitlines()]
     bell = any(flag == '1' for _, _, flag, _ in panes)
+    agent = None
+    state, _, at = reported.partition(':')
+    if at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for _, dead, _, command in panes):
+        agent = {'state': state, 'at': int(at)}
     activity = []
     for pane_id, dead, _, command in panes[:16]:
         screen = read('capture-pane', '-p', '-t', pane_id, '-S', '-20')
         activity.append({'pane':pane_id, 'dead':dead == '1', 'command':command[:80], 'screen':hashlib.sha256(screen.encode()).hexdigest()})
-    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'attention': int(attention) if attention.isdigit() else 0, 'frozen': frozen, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
+    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'attention': int(attention) if attention.isdigit() else 0, 'frozen': frozen, 'agent': agent, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
 if len(sessions) > 100:
     raise SystemExit('The session list exceeds the dashboard limit of 100.')
 # Drop optional activity before it can prevent session navigation.
@@ -335,6 +342,10 @@ PY_SNAPSHOT
   answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
    "send-keys -t '$session_id' Escape" "display-message -p 'Session identity changed. Nothing was sent.'") || fail 'The key could not be sent. Refresh the session state.'
   [[ -z $answer ]] || fail "$answer"
+  # Claude Code reports no event when Esc stops a turn, so a reported agent becomes idle here.
+  if [[ -n $(tm show-options -qv -t "=$name:" @tokiwa_agent) ]]; then
+   tm set-option -t "=$name:" @tokiwa_agent "idle:$(date +%s)"
+  fi
   audit interrupt "$extra"
   printf 'Sent Esc to %s.\n' "$name"
   exit ;;

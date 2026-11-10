@@ -104,8 +104,12 @@ dir agent-workspace agent-workspace 700 /srv/development/private/peermesh
 
 # The helpers and the units.
 for file in start-workbench.sh terminal-session.sh tokiwa-open; do place 0755 "$file" "$rootless/$file"; done
-for file in tokiwa-bashrc workbench-health.py workspace-metadata.nft; do place 0644 "$file" "$rootless/$file"; done
+for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft; do place 0644 "$file" "$rootless/$file"; done
 place 0755 tokiwa-attention /usr/local/bin/tokiwa-attention
+place 0755 tokiwa-state /usr/local/bin/tokiwa-state
+# Each agent reports its state through its own hooks: working, waiting, idle, limited or error.
+# The hooks join any hooks that are there already; Codex asks a person to trust new hooks once.
+run runuser -u agent-workspace -- python3 "$rootless/agent-hooks.py" install "$home/.claude/settings.json" "$home/.codex/hooks.json"
 for unit in agent.slice agent-sessions.slice cloud-workbench.service; do place 0644 "units/$unit" "$units/$unit"; done
 
 # Sessions never reach the instance metadata service.
