@@ -28,11 +28,19 @@ interface Tool {
   args: Record<string, Argument>;
   /** The output holds text from another program, so the result says that it is data. */
   untrusted_output?: boolean;
+  /** Launcher arguments that the contract test runs, when they differ from the command's example. */
+  example?: string[];
 }
 export interface Table {
   classes: Record<string, string>;
   patterns: Record<string, string>;
-  capabilities: { command: string; class: string; tool?: Tool }[];
+  /** A command has one tool, or a list of them when it serves several, for example create and launch. */
+  capabilities: {
+    command: string;
+    class: string;
+    tool?: Tool;
+    tools?: Tool[];
+  }[];
 }
 
 /** The classes that --allow can add. Read tools need no flag; human commands are never tools. */
@@ -98,10 +106,12 @@ export function createServer(
       );
     }
   };
-  for (const capability of table.capabilities) {
-    const tool = capability.tool;
-    if (!tool) continue;
-    const kind = tool.class ?? capability.class;
+  const tools = table.capabilities.flatMap((capability) =>
+    (capability.tool ? [capability.tool] : (capability.tools ?? [])).map(
+      (tool) => ({ tool, kind: tool.class ?? capability.class }),
+    ),
+  );
+  for (const { tool, kind } of tools) {
     if (kind !== "read" && !(OPT_IN.includes(kind) && allow.includes(kind)))
       continue;
     const input = schema(tool.args, table.patterns);

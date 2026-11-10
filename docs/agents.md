@@ -65,6 +65,13 @@ With `--allow control`:
 | `tokiwa_interrupt` | `name`, `identity` | The output of `tokiwa interrupt`: Esc to the session. |
 | `tokiwa_freeze` | `name`, `identity` | The output of `tokiwa freeze`. |
 | `tokiwa_resume` | `name`, `identity` | The output of `tokiwa resume`. |
+| `tokiwa_create` | `name`, `dir`, `project` | The output of `tokiwa create NAME --dir DIR --subfolder NAME --project PROJECT`: a session with a shell, in its own folder inside the project folder. Take `dir` from the projects of `tokiwa_sessions`. |
+
+With `--allow run`:
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `tokiwa_launch` | `name`, `dir`, `project`, `command` | The same, with `--run COMMAND`: the command line is typed into the new session's shell. |
 
 ## Read a screen
 
@@ -107,7 +114,8 @@ A mode that approves on its own, such as Claude Code's auto mode, runs a command
 
 ```json
 "ask": ["Bash(tokiwa freeze:*)", "Bash(tokiwa resume:*)", "Bash(tokiwa interrupt:*)", "Bash(tokiwa create:*)",
-        "mcp__tokiwa__tokiwa_freeze", "mcp__tokiwa__tokiwa_resume", "mcp__tokiwa__tokiwa_interrupt"]
+        "mcp__tokiwa__tokiwa_freeze", "mcp__tokiwa__tokiwa_resume", "mcp__tokiwa__tokiwa_interrupt",
+        "mcp__tokiwa__tokiwa_create", "mcp__tokiwa__tokiwa_launch"]
 ```
 
 A `Bash(...)` rule covers the typed command and not the MCP tool, so the list names both.

@@ -7,7 +7,9 @@
   },
   "patterns": {
     "name": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$",
-    "identity": "^[0-9]+:\\$[0-9]+:[0-9]+$"
+    "identity": "^[0-9]+:\\$[0-9]+:[0-9]+$",
+    "project": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,47}){0,5}$",
+    "directory": "^/[^\\u0000-\\u001f\\u007f]{0,500}$"
   },
   "capabilities": [
     {
@@ -114,7 +116,93 @@
         "--run",
         "echo ready"
       ],
-      "helper": "create"
+      "helper": "create",
+      "tools": [
+        {
+          "name": "tokiwa_create",
+          "description": "Create a Tokiwa session in its own folder, named after it, inside a project's folder. Take dir from the projects of tokiwa_sessions. The session starts with a shell.",
+          "argv": [
+            "create",
+            "{name}",
+            "--dir",
+            "{dir}",
+            "--subfolder",
+            "{name}",
+            "--project",
+            "{project}"
+          ],
+          "args": {
+            "name": {
+              "type": "string",
+              "pattern": "name"
+            },
+            "dir": {
+              "type": "string",
+              "pattern": "directory"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "project"
+            }
+          },
+          "example": [
+            "create",
+            "lead",
+            "--dir",
+            "/w/studio",
+            "--subfolder",
+            "lead",
+            "--project",
+            "studio"
+          ]
+        },
+        {
+          "name": "tokiwa_launch",
+          "class": "run",
+          "description": "Create a Tokiwa session in its own folder and type one command line into its shell, for example an agent with its first message. The command runs on the host as the workbench user.",
+          "argv": [
+            "create",
+            "{name}",
+            "--dir",
+            "{dir}",
+            "--subfolder",
+            "{name}",
+            "--project",
+            "{project}",
+            "--run",
+            "{command}"
+          ],
+          "args": {
+            "name": {
+              "type": "string",
+              "pattern": "name"
+            },
+            "dir": {
+              "type": "string",
+              "pattern": "directory"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "project"
+            },
+            "command": {
+              "type": "string"
+            }
+          },
+          "example": [
+            "create",
+            "lead",
+            "--dir",
+            "/w/studio",
+            "--subfolder",
+            "lead",
+            "--project",
+            "studio",
+            "--run",
+            "echo ready"
+          ]
+        }
+      ]
     },
     {
       "command": "move-project",

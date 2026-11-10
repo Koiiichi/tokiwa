@@ -284,3 +284,53 @@ test("the real control tools appear only with --allow control", async () => {
   ).toBe("frozen");
   expect(allowed.calls).toEqual([["freeze", "lead", "1:$2:3"]]);
 });
+
+test("create needs --allow control, and launch, which runs a command, needs --allow run", async () => {
+  const place = { name: "lead", dir: "/w/studio", project: "studio" };
+  const control = await connect(() => "Created terminal: lead 1:$2:3", {
+    allow: ["control"],
+  });
+  expect(await names(control.client)).toContain("tokiwa_create");
+  expect(await names(control.client)).not.toContain("tokiwa_launch");
+  await control.call("tokiwa_create", place);
+  expect(control.calls).toEqual([
+    [
+      "create",
+      "lead",
+      "--dir",
+      "/w/studio",
+      "--subfolder",
+      "lead",
+      "--project",
+      "studio",
+    ],
+  ]);
+  const run = await connect(() => "Created terminal: lead 1:$2:3", {
+    allow: ["run"],
+  });
+  expect(await names(run.client)).toContain("tokiwa_launch");
+  expect(await names(run.client)).not.toContain("tokiwa_create");
+  await run.call("tokiwa_launch", {
+    ...place,
+    command: "claude 'Read LEAD.md'",
+  });
+  expect(run.calls.at(-1)).toEqual([
+    "create",
+    "lead",
+    "--dir",
+    "/w/studio",
+    "--subfolder",
+    "lead",
+    "--project",
+    "studio",
+    "--run",
+    "claude 'Read LEAD.md'",
+  ]);
+  for (const bad of [
+    { ...place, dir: "relative" },
+    { ...place, project: "a//b" },
+  ]) {
+    expect((await control.call("tokiwa_create", bad)).isError).toBe(true);
+  }
+  expect(control.calls).toHaveLength(1);
+});

@@ -11,6 +11,8 @@ import test_terminal_cli as cli
 
 TABLE = json.loads((Path(__file__).resolve().parents[2] / 'app/capabilities.json').read_text())
 CAPABILITIES = TABLE['capabilities']
+# Each tool with its command: an entry has one tool, or a list of them when one command serves several.
+TOOLS = [(c, t) for c in CAPABILITIES for t in ([c['tool']] if 'tool' in c else c.get('tools', []))]
 
 
 class Capabilities(unittest.TestCase):
@@ -27,23 +29,20 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(listed, described)
 
     def test_each_example_reaches_its_helper_mode(self):
-        for capability in CAPABILITIES:
-            if 'example' not in capability:
-                continue
-            with self.subTest(command=capability['command']):
+        examples = [(c, c['example']) for c in CAPABILITIES if 'example' in c]
+        examples += [(c, t['example']) for c, t in TOOLS if 'example' in t]
+        for capability, example in examples:
+            with self.subTest(example=example):
                 (self.home / 'calls').unlink(missing_ok=True)
-                result = self.run_cli(*capability['example'])
+                result = self.run_cli(*example)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if 'helper' in capability:
                     self.assertIn(f"terminal-session.sh {capability['helper']}", (self.home / 'calls').read_text())
 
     def test_each_tool_fills_in_to_its_example(self):
-        for capability in CAPABILITIES:
-            tool = capability.get('tool')
-            if not tool:
-                continue
+        for capability, tool in TOOLS:
             with self.subTest(tool=tool['name']):
-                argv, example = tool['argv'], capability['example']
+                argv, example = tool['argv'], tool.get('example', capability.get('example'))
                 self.assertEqual(len(argv), len(example))
                 for part, value in zip(argv, example):
                     if part.startswith('{'):
@@ -60,6 +59,7 @@ class Capabilities(unittest.TestCase):
                 self.assertIn(capability['class'], TABLE['classes'])
                 if capability['class'] == 'human':
                     self.assertNotIn('tool', capability)
+                    self.assertNotIn('tools', capability)
                 if 'run_option' in capability:
                     self.assertEqual(capability['class'], 'control')
 
