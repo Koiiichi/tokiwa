@@ -631,3 +631,21 @@ test("× on the title of a session's view asks to end the session, as × on its 
     await w.dispose();
   }
 });
+
+test("an attach starts its transport in the home folder", async () => {
+  const w = await workspace();
+  const { homedir } = await import("node:os");
+  const { realpathSync } = await import("node:fs");
+  w.transports.setup = ["/bin/sh", "-c", "pwd -P; sleep 5"];
+  try {
+    await w.attach("setup");
+    for (let i = 0; i < 50; i++) {
+      await w.t.renderOnce();
+      if (w.t.captureCharFrame().includes(realpathSync(homedir()))) break;
+      await pause(20);
+    }
+    expect(w.t.captureCharFrame()).toContain(realpathSync(homedir()));
+  } finally {
+    await w.dispose();
+  }
+});

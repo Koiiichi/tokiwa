@@ -153,6 +153,8 @@ bash app/install.sh --rollback   # restore the copy that the last install replac
 
 When a step fails, the script removes the new copy and leaves the installed copy unchanged. `--rollback` swaps `opentui` and `opentui.previous`, so a second `--rollback` installs the newer copy again. `TOKIWA_APP_DIR` names another install folder.
 
+An open Tokiwa window keeps running from its old copy after an install. It starts the launcher, sign-in and attached sessions in the home folder, so the swap does not leave them in a removed folder. Reopen the window to use the new copy.
+
 A change to the launcher needs its own install:
 
 ```sh

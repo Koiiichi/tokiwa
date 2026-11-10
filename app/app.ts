@@ -133,7 +133,7 @@ export function transportEnd(output: string) {
   if (!match) return undefined;
   return match[1] === "exited" ? "ended" : "detached";
 }
-const localDirectory = process.env.HOME ?? import.meta.dir;
+const localDirectory = homedir();
 if (
   !/^[a-zA-Z0-9 -]{1,30}$/.test(groups.name) ||
   groups.shells.length > 3 ||
@@ -1349,7 +1349,7 @@ export class App {
       if (source.remote) {
         const prepared = await this.backend.shellCommand(source.remote, name);
         if (this.disposed) return;
-        shell = this.startShell(name, true, import.meta.dir, prepared.command);
+        shell = this.startShell(name, true, homedir(), prepared.command);
         if (!shell) return;
         shell.cwd = prepared.source.cwd;
         // Keep the new shell unfocused until its identity is verified.
@@ -1564,7 +1564,7 @@ export class App {
   startShell(
     label?: string,
     remote = false,
-    cwd = import.meta.dir,
+    cwd = homedir(),
     command?: string[],
   ) {
     if (this.shells.length >= 4) return;
@@ -2468,7 +2468,7 @@ export class App {
               this.shells.find((s) => s.adapter === adapter),
             ),
         },
-        import.meta.dir,
+        homedir(),
       );
       if (!shell) this.selectOnlyUntracked(terminal);
       if (shell) {

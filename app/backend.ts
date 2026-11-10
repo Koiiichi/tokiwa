@@ -1,4 +1,5 @@
 /** Delegate operational authority to the installed launcher. Never call AWS or tmux here. */
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { spendReading } from "./health-view";
 /** The launcher's message when a read fails because the AWS sign-in expired. */
@@ -144,6 +145,8 @@ export class BackendClient {
   async call(args: string[]): Promise<string> {
     if (this.runner) return this.runner(args);
     const p = Bun.spawn([this.launcher, ...args], {
+      // The home folder outlives a reinstall, which replaces the app's own folder.
+      cwd: homedir(),
       // TOKIWA_VIA names this caller in the audit log on the host; the MCP server sets mcp.
       env: {
         ...process.env,

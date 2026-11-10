@@ -204,3 +204,21 @@ test("the snapshot bell is optional: an older host helper gives no bell", async 
   rows = [{ ...ref, bell: "yes" }];
   expect((await b.sessions())[0].bell).toBe(false);
 });
+
+test("the launcher starts in the home folder, not in the app's folder", async () => {
+  const { mkdtempSync, writeFileSync, chmodSync, rmSync, realpathSync } =
+    await import("node:fs");
+  const { tmpdir, homedir } = await import("node:os");
+  const { join } = await import("node:path");
+  const folder = mkdtempSync(join(tmpdir(), "tokiwa-cwd-"));
+  const launcher = join(folder, "tokiwa");
+  writeFileSync(launcher, "#!/bin/sh\npwd -P\n");
+  chmodSync(launcher, 0o755);
+  try {
+    // A reinstall replaces the app's folder under a running app, so its children must not start there.
+    const where = (await new BackendClient(launcher).call(["x"])).trim();
+    expect(where).toBe(realpathSync(homedir()));
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
