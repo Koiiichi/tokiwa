@@ -609,6 +609,25 @@ class SessionModel(ModelHelpers, Server):
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
         self.assertFalse((root / 'x').exists())
 
+    def test_create_runs_a_command_in_the_new_shell_and_keeps_the_shell(self):
+        root = Path(self.temp.name) / 'workspaces'
+        project = root / 'proj'
+        project.mkdir(parents=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        request = {'dir': str(project), 'subfolder': 'lead', 'project': 'proj', 'run': 'echo started-$((40 + 2))'}
+        result = self.helper('create', 'lead', self.b64(request))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('lead', 'started-42')
+        # The command ran in the session's shell, so the shell is still there after it ends.
+        command = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_current_command}').stdout.strip()
+        self.assertEqual(command, 'bash')
+        # One line of printable text only: a command never types extra lines into the shell.
+        for bad in ['two\nlines', 'bell\a', '', 'x' * 2001, 7]:
+            request = {'dir': str(project), 'subfolder': 'bad', 'project': 'proj', 'run': bad}
+            self.assertNotEqual(self.helper('create', 'bad', self.b64(request)).returncode, 0, repr(bad))
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+        self.assertFalse((project / 'bad').exists())
+
 
 class SecretStore(Server):
     """A secret is read with hidden input on the host, saved private, and never printed."""

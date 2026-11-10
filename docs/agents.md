@@ -4,6 +4,8 @@ A local Claude Code or Codex agent can read Tokiwa through a small MCP server: t
 
 Use it when an agent on the Mac must see what a session on the host is doing, for example a session that has stopped answering. To talk to a working agent, use an agent messaging tool in place of this server.
 
+The server stays read only. An agent that has a shell can run the `tokiwa` command instead, which also creates sessions (`tokiwa create … --run`) and gets each new ability first. The server is for agents without a shell, and for permission systems that allow one tool at a time.
+
 ## How a call travels
 
 ```

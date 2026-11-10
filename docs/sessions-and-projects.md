@@ -40,6 +40,20 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 | End a project | × on the project title, or Ctrl+K → End project, then Enter | `tokiwa forget-project PROJECT` (after its sessions end) | Ends its sessions and forgets the project; its folders and the tools' history stay |
 | Prompt name | — | `tokiwa name NAME` | New shells show `NAME:directory$`; `tokiwa` by default |
 
+## Start a program in a new session
+
+`--run` types one command line into the shell of a new session. The shell reads its startup file first, so the command has the owner's `PATH` and the [saved secrets](host.md#secrets), and the shell stays when the command ends. Tokiwa does not know what the command is: an agent, a server or a script.
+
+For example, a session with its own clone that starts an agent with its first message (`claude` and `codex` both take the first message as an argument):
+
+```sh
+tokiwa create review-a --dir /srv/development/state/workspaces/workbench/studio \
+  --subfolder review-a --project studio \
+  --run 'git clone https://github.com/OWNER/app.git . && claude "Read REVIEW.md, then start."'
+```
+
+A set of sessions that start together is a script of such lines. Keep it with your own setup; Tokiwa keeps no list of them. The command is one line of at most 2000 printable characters. It travels through Run Command, which keeps its parameters in the AWS account, so put keys in `tokiwa secret`, not in the command.
+
 ## What Tokiwa does not do
 
 - It does not move a running process between sessions.

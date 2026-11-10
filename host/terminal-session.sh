@@ -388,6 +388,11 @@ PY_MOVE
 import base64, json, os, re, sys
 try:
     want = json.loads(base64.b64decode(sys.argv[1], validate=True))
+    # The command is typed into the shell, so one line of printable text: no extra line runs.
+    run = want.get('run')
+    if run is not None and (not isinstance(run, str) or not run or len(run) > 2000
+                            or any(ord(c) < 32 or ord(c) == 127 for c in run)):
+        raise SystemExit('Use a command of one line, at most 2000 printable characters.')
     if want.get('folder'):
         folder = want['folder']
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,47}', folder):
@@ -411,18 +416,25 @@ try:
     if not os.path.isdir(path) or not os.access(path, os.R_OK | os.X_OK):
         raise ValueError()
     label = want.get('project') or ''
-    print(base64.b64encode(path.encode()).decode(), base64.b64encode(label.encode()).decode() or '-')
+    print(base64.b64encode(path.encode()).decode(), base64.b64encode(label.encode()).decode() or '-',
+          base64.b64encode(run.encode()).decode() if run else '-')
 except (ValueError, OSError, TypeError, AttributeError):
     raise SystemExit('Use an existing absolute directory, or a folder name of letters, digits, dots, hyphens or underscores.')
 PY_CREATE
 ) || exit 1
-  directory=$(printf '%s' "${request% *}" | base64 -d)
+  read -r directory_b64 label_b64 run_b64 <<< "$request"
+  directory=$(printf '%s' "$directory_b64" | base64 -d)
   label=''
-  [[ ${request#* } == - ]] || label=$(project_label "${request#* }") || exit 1
+  [[ $label_b64 == - ]] || label=$(project_label "$label_b64") || exit 1
   start_shell "$name" "$directory" || fail 'The terminal could not be created.'
   if [[ -n $label ]]; then
    tm set-option -t "=$name:" @tokiwa_project "$label"
    registry add "$label" "$directory"
+  fi
+  # The shell reads the typed line after its startup file, so the command has the PATH and the
+  # secrets of a new shell, and the shell stays when the command ends.
+  if [[ $run_b64 != - ]]; then
+   tm send-keys -t "=$name:" -l "$(printf '%s' "$run_b64" | base64 -d)" \; send-keys -t "=$name:" Enter
   fi
   # The identity lets the app attach at once, without another read of the session list.
   identity=$(tm display-message -p -t "=$name:" '#{pid}:#{session_id}:#{session_created}') ||

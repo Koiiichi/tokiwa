@@ -161,6 +161,15 @@ esac
         calls = (self.home / 'calls').read_text()
         self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'project': 'proj'})
 
+    def test_create_sends_the_command_to_run_encoded(self):
+        command = 'git clone https://example.com/app.git . && claude "Read LEAD.md and start."'
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--subfolder', 'lead', '--run', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.home / 'calls').read_text()
+        self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'run': command})
+        # The quotes and && of the command never reach the remote shell unencoded.
+        self.assertNotIn('Read LEAD.md', calls)
+
     def test_secret_reads_the_value_on_the_host_in_a_terminal(self):
         self.run_cli_in_terminal('secret', 'API_KEY')
         calls = (self.home / 'calls').read_text()
