@@ -69,6 +69,10 @@ PY_SECRETS
  case $mode in
   secret)
    [[ -t 0 ]] || fail 'Run tokiwa secret NAME in a terminal: the value is read with hidden input.'
+   # Echo goes off before the prompt shows. A paste that arrives with the prompt reaches the terminal
+   # before `read -s` starts, and the terminal would echo it.
+   stty -echo
+   trap 'stty echo' EXIT
    printf 'Value for %s (input hidden; paste it, then press Enter): ' "$name" >&2
    value=
    IFS= read -rs value || true

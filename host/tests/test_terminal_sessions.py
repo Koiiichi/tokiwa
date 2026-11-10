@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 
@@ -634,12 +635,25 @@ class SecretStore(Server):
                     break
                 output += chunk
                 if not sent and b'hidden' in output:
+                    # The terminal settings at the moment the prompt shows, before anything is typed.
+                    self.echo_at_prompt = bool(termios.tcgetattr(fd)[3] & termios.ECHO)
                     os.write(fd, typed)
                     sent = True
         finally:
             os.close(fd)
         _, status = os.waitpid(pid, 0)
         return os.waitstatus_to_exitcode(status), output.decode(errors='replace')
+
+    def test_echo_is_off_before_the_prompt_shows(self):
+        # A paste that arrives with the prompt must not show: echo goes off first, then the prompt.
+        # A slow `read` widens the gap between the prompt and the read, as a slow host does.
+        slow = Path(self.temp.name) / 'slow-read.sh'
+        slow.write_text('read() { sleep 0.5; builtin read "$@"; }\n')
+        self.env['BASH_ENV'] = str(slow)
+        code, output = self.secret('API_KEY', b'pasted-value\n')
+        self.assertEqual(code, 0, output)
+        self.assertFalse(self.echo_at_prompt)
+        self.assertNotIn('pasted-value', output)
 
     def stored(self, name):
         file = Path(self.env['TOKIWA_STATE']) / 'secrets.env'
