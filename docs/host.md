@@ -93,7 +93,7 @@ systemctl start cloud-workbench.service
 | `terminal-session.sh` | `/opt/agent-platform/rootless/terminal-session.sh` | 0755 | The helper: lists, creates, attaches, reads, renames and ends sessions, and keeps `projects.json`. |
 | `tokiwa-open` | `/opt/agent-platform/rootless/tokiwa-open` | 0755 | The `BROWSER` program. Sends a link to the Mac. |
 | `tokiwa-bashrc` | `/opt/agent-platform/rootless/tokiwa-bashrc` | 0644 | The startup file of each shell: the owner's `~/.bashrc`, then Tokiwa's prompt and `BROWSER`. |
-| `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Rings the bell of the pane that runs it, so the session shows `needs you`. |
+| `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
 | `daemon.json` | `/opt/agent-platform/rootless/daemon.json` | 0644 | The configuration of the rootless engine. |

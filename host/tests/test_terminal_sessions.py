@@ -744,6 +744,68 @@ class ShellSettings(Server):
         self.assertIn('inside a Tokiwa session', result.stderr)
 
 
+class Attention(ModelHelpers, Server):
+    """tokiwa-attention marks its session also while a client has it open, until someone attaches."""
+
+    def attention(self, name, *args):
+        pane = self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_id}').stdout.strip()
+        inside = dict(os.environ, TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        result = subprocess.run(['bash', str(ROOT / 'tokiwa-attention'), *args], env=inside,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def open_client(self, *command):
+        """Attach a client in a terminal; return its PID and terminal, once the server lists it."""
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(self.env, TERM='xterm-256color')
+            os.execv(command[0], list(command))
+        for _ in range(200):
+            if select.select([fd], [], [], 0.02)[0]:
+                os.read(fd, 65536)
+            if self.tm('list-clients', '-F', '#{client_name}').stdout.strip():
+                break
+        return pid, fd
+
+    def close_client(self, pid, fd):
+        # Close the terminal first: on macOS a process that writes to it cannot finish exiting.
+        os.close(fd)
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+
+    def test_a_session_with_a_client_attached_is_marked_and_clear_unmarks_it(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        pid, fd = self.open_client(self.tmux, '-N', '-S', self.socket, 'attach-session', '-t', '=lead')
+        try:
+            self.assertEqual(self.rows()['lead']['clients'], 1)
+            self.attention('lead')
+            self.assertGreater(self.rows()['lead']['attention'], 0)
+            self.attention('lead', '--clear')
+            self.assertEqual(self.rows()['lead']['attention'], 0)
+        finally:
+            self.close_client(pid, fd)
+
+    def test_an_attach_through_the_helper_clears_the_mark(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.attention('lead')
+        identity = self.rows()['lead']['identity']
+        self.assertGreater(self.rows()['lead']['attention'], 0)
+        pid, fd = self.open_client('/bin/bash', str(ROOT / 'terminal-session.sh'), 'view', 'lead', identity)
+        try:
+            self.assertEqual(self.rows()['lead']['attention'], 0)
+        finally:
+            self.close_client(pid, fd)
+
+    def test_other_arguments_are_refused(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()
+        inside = dict(os.environ, TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        result = subprocess.run(['bash', str(ROOT / 'tokiwa-attention'), '--other'], env=inside,
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--clear', result.stderr)
+
+
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""
 

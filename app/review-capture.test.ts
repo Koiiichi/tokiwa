@@ -85,8 +85,8 @@ test("footer, search and hover captures stay readable at 156x40, 100x30 and 62x2
     const hover = await captureScene("hover", width, height);
     expect(last(hover)).toBe(
       width < 100
-        ? "◈ needs you · coder-lead rang the bell"
-        : "◈ needs you · coder-lead rang the bell while no client viewed it",
+        ? "◈ needs you · coder-lead is waiting for a person"
+        : "◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it",
     );
     const health = await captureHealth(width, height);
     expect(health).toContain("Spent so far:");

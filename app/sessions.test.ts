@@ -161,7 +161,7 @@ test("the focus strip names output and needs-you sessions and counts the rest", 
 
 test("the state guide explains a row in plain words, with its glyph and other clients", () => {
   expect(lineText(stateGuide("coder-lead", "needs-you", 0))).toBe(
-    "◈ needs you · coder-lead rang the bell while no client viewed it",
+    "◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it",
   );
   expect(lineText(stateGuide("setup", "disconnected", 0))).toBe(
     "○ disconnected · this app's view ended; enter reconnects",
@@ -180,7 +180,7 @@ test("the state guide shortens to fit the width: the client count goes first", (
     "◇ quiet · the screen of tools did not change since the last read",
   );
   expect(lineText(stateGuide("coder-lead", "needs-you", 0, 60))).toBe(
-    "◈ needs you · coder-lead rang the bell",
+    "◈ needs you · coder-lead is waiting for a person",
   );
   expect(lineText(stateGuide("setup", "disconnected", 0, 40))).toBe(
     "○ disconnected · enter reconnects",

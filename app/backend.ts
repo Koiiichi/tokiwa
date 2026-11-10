@@ -18,6 +18,11 @@ export interface SessionRef {
    * helper without this field gives false.
    */
   bell?: boolean;
+  /**
+   * The time, in seconds on the host, that a program in the session ran `tokiwa-attention`, or 0.
+   * Unlike the bell, it stays while a client has the session open. An attach clears it.
+   */
+  attention?: number;
   /** The tmux session id (for example `$4`) of the session that this one was opened from. */
   parent?: string;
   /** True when Tokiwa made the session. A host helper without this field leaves it out. */

@@ -267,6 +267,8 @@ for line in output.splitlines():
     project = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_project') or cwd
     parent = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_parent')
     managed = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_session') == '1'
+    # The time that tokiwa-attention marked the session, or 0. Unlike the bell, it survives an open client.
+    attention = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_attention')
     # One line per pane of every window. The window bell flag is set when a pane of the window
     # rang the bell while no client viewed that window; viewing the window clears it.
     panes = [pane.split('\t', 3) for pane in read('list-panes', '-s', '-t', '=' + name, '-F',
@@ -276,7 +278,7 @@ for line in output.splitlines():
     for pane_id, dead, _, command in panes[:16]:
         screen = read('capture-pane', '-p', '-t', pane_id, '-S', '-20')
         activity.append({'pane':pane_id, 'dead':dead == '1', 'command':command[:80], 'screen':hashlib.sha256(screen.encode()).hexdigest()})
-    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
+    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'attention': int(attention) if attention.isdigit() else 0, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
 if len(sessions) > 100:
     raise SystemExit('The session list exceeds the dashboard limit of 100.')
 # Drop optional activity before it can prevent session navigation.
@@ -459,7 +461,7 @@ PY_CREATE
    # The identity check and the attachment run in the same tmux command queue.
    # A session that replaced the expected one under the same name is never attached.
    exec tmux -N -S "$socket" if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
-    "attach-session -t '$session_id'" \
+    "set-option -u -t '$session_id' @tokiwa_attention ; attach-session -t '$session_id'" \
     "display-message -p 'Session identity changed. No session was attached.' ; run-shell 'exit 1'"
   fi ;;
  view)
@@ -468,7 +470,7 @@ PY_CREATE
   tm has-session -t "=$name" 2>/dev/null || fail 'This session does not exist. Use tokiwa sessions or tokiwa new NAME.'
   session_id=${extra#*:}; session_id=${session_id%%:*}
   exec tmux -N -S "$socket" if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
-   "attach-session -r -t '$session_id'" \
+   "set-option -u -t '$session_id' @tokiwa_attention ; attach-session -r -t '$session_id'" \
    "display-message -p 'Session identity changed. No session was attached.' ; run-shell 'exit 1'" ;;
  shell)
   names=()

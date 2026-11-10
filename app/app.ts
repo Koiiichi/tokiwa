@@ -434,6 +434,8 @@ export class App {
    * hides that bell until a snapshot reports the session without a bell.
    */
   acknowledged = new Map<string, string>();
+  /** The request time of tokiwa-attention that the owner saw by bringing the session forward. */
+  attentionSeen = new Map<string, number>();
   shells: Shell[] = [];
   get active() {
     return this.state.active;
@@ -1717,6 +1719,10 @@ export class App {
         if (!ref?.bell || ref.identity !== identity)
           this.acknowledged.delete(name);
       }
+      for (const [name, at] of this.attentionSeen) {
+        const ref = rows.find((r) => r.name === name);
+        if (ref?.attention !== at) this.attentionSeen.delete(name);
+      }
       this.sessionsRead = true;
       this.sessionsError = "";
       this.hostOk = this.now();
@@ -1752,6 +1758,7 @@ export class App {
   acknowledge(name: string) {
     const ref = this.remoteSessions.find((r) => r.name === name);
     if (ref?.bell) this.acknowledged.set(name, ref.identity);
+    if (ref?.attention) this.attentionSeen.set(name, ref.attention);
   }
   /** Name the state of the EC2 host from the last session and Health reads. */
   /**
@@ -3229,7 +3236,11 @@ export class App {
   /** True when the snapshot reports a bell that the owner has not seen by attaching. */
   needsYou(row: SessionRow) {
     const ref = row.ref;
-    return !!ref?.bell && this.acknowledged.get(ref.name) !== ref.identity;
+    if (!ref) return false;
+    const bell = !!ref.bell && this.acknowledged.get(ref.name) !== ref.identity;
+    const asked =
+      !!ref.attention && this.attentionSeen.get(ref.name) !== ref.attention;
+    return bell || asked;
   }
   /**
    * The status of one row: its glyph state, the word of a state that needs an action (or

@@ -1,8 +1,17 @@
 #!/bin/bash
-# Ring the bell of the tmux pane that runs this command. Tokiwa then marks the session "needs you"
-# until someone attaches it. Use it when a program in the session waits for a person.
+# Mark the session that runs this command as waiting for a person: Tokiwa shows it as "needs you"
+# until someone brings it forward or attaches it. --clear removes the mark, for example when the
+# request is answered.
 set -euo pipefail
 [[ -n ${TMUX_PANE:-} && -n ${TMUX:-} ]] || { printf 'tokiwa-attention: run it inside a Tokiwa session.\n' >&2; exit 1; }
+[[ $# -eq 0 || ( $# -eq 1 && $1 == --clear ) ]] || { printf 'Use tokiwa-attention, or tokiwa-attention --clear.\n' >&2; exit 2; }
 # -N: never start a tmux server; this command only reaches the server of its own session.
+if [[ $# -eq 1 ]]; then
+ tmux -N set-option -u -t "$TMUX_PANE" @tokiwa_attention
+ exit
+fi
+# tmux keeps the bell only while no client views the window, so the session option carries the mark.
+tmux -N set-option -t "$TMUX_PANE" @tokiwa_attention "$(date +%s)"
+# The bell still sounds in a terminal that has the session open elsewhere.
 tty=$(tmux -N display-message -p -t "$TMUX_PANE" '#{pane_tty}')
 printf '\a' > "$tty"

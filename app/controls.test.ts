@@ -405,7 +405,7 @@ test("the footer explains the state of the session row under the pointer", async
     await w.t.mockMouse.moveTo(codex.x + 3, codex.y);
     await w.t.renderOnce();
     expect(footer(w)).toBe(
-      "◈ needs you · coder-lead rang the bell while no client viewed it",
+      "◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it",
     );
     const tools = w.at(" tools");
     await w.t.mockMouse.moveTo(tools.x + 3, tools.y);

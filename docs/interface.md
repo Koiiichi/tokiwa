@@ -108,7 +108,7 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 | --- | --- | --- |
 | `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
-| `◈` | Amber | Needs you. A window of the session rang the bell while no client viewed it. A program that waits for a person rings it with `tokiwa-attention`. |
+| `◈` | Amber | Needs you. A program in the session ran `tokiwa-attention`, or a window rang the bell while no client viewed it. Bringing the session forward clears it; an attach anywhere clears the mark of `tokiwa-attention`, and `tokiwa-attention --clear` clears it from inside. |
 | `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
 | (empty) | — | No reading yet, or the snapshot did not include the pane activity. |
@@ -133,7 +133,7 @@ The footer is one line of controls for the current context. A control highlights
 
 Inside a terminal a control is its label then its chord. Elsewhere it is its key then its label. When the line is too long, the hints that are not controls go first, then the key labels, then the least important controls. One control always stays.
 
-With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex rang the bell while no client viewed it`, and adds the clients attached elsewhere. It uses a short form when it is narrow.
+With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. It uses a short form when it is narrow.
 
 The footer also shows short notices: the result of a copy, a saved screen, an ended session or an error. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
 

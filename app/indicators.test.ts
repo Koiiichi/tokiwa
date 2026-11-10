@@ -106,6 +106,32 @@ test("attaching a session clears its needs-you state until the bell rings again"
   }
 });
 
+test("a session that asks for a person needs you until it is brought forward, then again on a new request", async () => {
+  const w = await workspace();
+  const asking = (name: string, at: number): SessionRef[] =>
+    withBell("coder-lead", false).map((s) =>
+      s.name === name ? { ...s, attention: at } : s,
+    );
+  try {
+    // The bell is lost while a client has the session open; the mark is not.
+    w.snapshot.current = asking("setup", 1700000000);
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.row("setup")).toMatch(/◈ setup +needs you/);
+    await w.attach("setup");
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.row("setup")).not.toContain("needs you");
+    // A new request has a new time.
+    w.snapshot.current = asking("setup", 1700000300);
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.row("setup")).toContain("needs you");
+  } finally {
+    await w.dispose();
+  }
+});
+
 test("a transport that ends shows the session as disconnected", async () => {
   const w = await workspace();
   w.transports.setup = ["/bin/sh", "-c", "exit 0"];
