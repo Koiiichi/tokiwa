@@ -352,7 +352,10 @@ PY_CREATE
    tm set-option -t "=$name:" @tokiwa_project "$label"
    registry add "$label" "$directory"
   fi
-  printf 'Created terminal: %s\n' "$name"
+  # The identity lets the app attach at once, without another read of the session list.
+  identity=$(tm display-message -p -t "=$name:" '#{pid}:#{session_id}:#{session_created}') ||
+   fail 'The terminal could not be created.'
+  printf 'Created terminal: %s %s\n' "$name" "$identity"
   exit ;;
  status)
   printf 'Workbench server ready.\n'

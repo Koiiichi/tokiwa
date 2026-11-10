@@ -161,13 +161,41 @@ export function snapshotActivity(
     : "quiet";
 }
 
+const SHELLS = new Set([
+  "bash",
+  "zsh",
+  "sh",
+  "dash",
+  "fish",
+  "ksh",
+  "tcsh",
+  "csh",
+]);
+/**
+ * True when a shell is the foreground program of every live pane: the session runs no other
+ * program, for example no agent. A login shell can report its name with a leading hyphen.
+ */
+export function runsOnlyShell(ref: SessionRef) {
+  const live = (ref.activity ?? []).filter((p) => !p.dead);
+  return (
+    live.length > 0 &&
+    live.every((p) => SHELLS.has(p.command.replace(/^-/, "")))
+  );
+}
+
 /**
  * The status of a session row, shown as one glyph before its name. `needs-you` means that the
  * session rang the bell; `disconnected` means that the transport of this app ended; `unknown`
  * means that the view has no observation yet.
  */
 export type RowState =
-  "output" | "quiet" | "needs-you" | "disconnected" | "exited" | "unknown";
+  | "output"
+  | "quiet"
+  | "needs-you"
+  | "disconnected"
+  | "exited"
+  | "starting"
+  | "unknown";
 
 export const STATUS_GLYPH: Record<RowState, string> = {
   output: "◆",
@@ -175,6 +203,7 @@ export const STATUS_GLYPH: Record<RowState, string> = {
   "needs-you": "◈",
   disconnected: "○",
   exited: "·",
+  starting: "◈",
   unknown: " ",
 };
 /** The tone of each glyph. The throb of output changes its colour in app.ts. */
@@ -184,6 +213,7 @@ export const STATUS_TONE: Record<RowState, Tone> = {
   "needs-you": "warning",
   disconnected: "warning",
   exited: "dim",
+  starting: "accent",
   unknown: "dim",
 };
 /** A dim word follows the name only for a state that needs an action. */
@@ -193,6 +223,7 @@ export const STATUS_WORD: Record<RowState, string> = {
   "needs-you": "needs you",
   disconnected: "disconnected",
   exited: "exited",
+  starting: "starting",
   unknown: "",
 };
 /** The glyphs in the order of the Status group of the shortcuts sheet. */
@@ -300,6 +331,7 @@ const STATE_GUIDE: Record<RowState, (name: string) => string> = {
     `needs you · ${name} rang the bell while no client viewed it`,
   disconnected: () => "disconnected · this app's view ended; enter reconnects",
   exited: (name) => `exited · every process of ${name} ended`,
+  starting: (name) => `starting · the workstation creates ${name}`,
   unknown: (name) =>
     `no reading yet · the next read shows whether ${name} changed`,
 };
@@ -311,6 +343,7 @@ const STATE_SHORT: Record<RowState, (name: string) => string> = {
   "needs-you": (name) => `needs you · ${name} rang the bell`,
   disconnected: () => "disconnected · enter reconnects",
   exited: () => "exited · every process ended",
+  starting: () => "starting",
   unknown: () => "no reading yet",
 };
 

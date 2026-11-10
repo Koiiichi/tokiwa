@@ -99,7 +99,7 @@ The prompt name is the server option `@tokiwa_name` (`tokiwa` by default; `tokiw
 
 The helper validates each argument, runs tmux commands on the socket and exits. It uses `tmux -N`, so a call never starts a server. When the server is down, every call fails with `The workbench service is unavailable. No service was started. Run tokiwa status.`
 
-`attach` with an identity, `rename` and `end` take the session identity, `#{pid}:#{session_id}:#{session_created}`. The helper compares it and acts in one tmux command queue (`if-shell -F`), so a session that took the same name is never attached, renamed or ended. [Transport](transport.md#session-identity) describes the attach check.
+`attach` with an identity, `rename` and `end` take the session identity, `#{pid}:#{session_id}:#{session_created}`. `create` prints it as `Created terminal: NAME IDENTITY`, so the app attaches a new session without another read of the list. The helper compares it and acts in one tmux command queue (`if-shell -F`), so a session that took the same name is never attached, renamed or ended. [Transport](transport.md#session-identity) describes the attach check.
 
 `--snapshot` and `sessions --json` print one JSON object. The app reads it through `BackendClient.sessions` in [`backend.ts`](../app/backend.ts).
 

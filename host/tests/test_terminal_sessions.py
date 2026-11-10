@@ -581,6 +581,14 @@ class SessionModel(ModelHelpers, Server):
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
         self.assertNotEqual(self.helper('create', 'one', self.b64(request)).returncode, 0)
 
+    def test_create_prints_the_identity_of_the_new_session(self):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir()
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        result = self.helper('create', 'fresh', self.b64({'folder': 'inbox', 'project': 'inbox'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"Created terminal: fresh {self.rows()['fresh']['identity']}\n")
+
 
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""

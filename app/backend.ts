@@ -247,18 +247,19 @@ export class BackendClient {
     project: string,
   ) {
     sessionName(name);
-    if ((await this.sessions()).some((s) => s.name === name))
-      throw new Error("A session with this name exists.");
+    // The workstation refuses a name that is taken, so no read of the list comes first.
     const place =
       "dir" in where ? ["--dir", where.dir] : ["--folder", where.folder];
     // An old project label is an absolute directory; the helper checks that it exists.
-    return this.call([
+    const output = await this.call([
       "create",
       name,
       ...place,
       "--project",
       project.startsWith("/") ? project : projectName(project),
     ]);
+    // A current helper prints the identity of the new session; an older one prints only its name.
+    return /^Created terminal: \S+ (\d+:\$\d+:\d+)$/m.exec(output)?.[1];
   }
   /** Move a project and the projects inside it, for example `api` to `studio/api`. */
   async moveProject(from: string, to: string) {

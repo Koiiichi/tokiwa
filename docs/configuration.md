@@ -7,7 +7,7 @@ The app has no settings screen. A setting changes only through the items on this
 
 | Variable | Read by | Default | Meaning |
 | --- | --- | --- | --- |
-| `TOKIWA_REDUCED_MOTION` | App | Unset | `1` stops the throb of the output glyph `◆`, the cycle of the header diamond and the pulse of a starting shell. |
+| `TOKIWA_REDUCED_MOTION` | App | Unset | `1` stops the throb of the output glyph `◆`, the cycle of the header diamond and the pulse of a starting shell or session. |
 | `TOKIWA_LOCAL_SHELL` | App ([`pty.ts`](../app/pty.ts)) | Unset: `$SHELL -l`, or `/bin/zsh -l` | The command of a local shell, split at spaces, for example `/bin/zsh -f`. |
 | `TOKIWA_CAPTURE_DIR` | App, capture scripts | `~/.local/state/tokiwa/captures` | The folder for **Save screen**. The capture scripts in `app/` write to subfolders of it. |
 | `TOKIWA_RECORD_DIR` | App ([`pty.ts`](../app/pty.ts)) | Unset: nothing is recorded | A folder for the raw output and the size changes of each remote transport. See [Files](#files). |

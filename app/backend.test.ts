@@ -78,15 +78,32 @@ test("projects: move, create, nest and forget delegate to the launcher with chec
     "--project",
     "api",
   ]);
+  // The workstation refuses a taken name, so create reads nothing first.
+  const before = commands.length;
+  await b.create("again", { dir: "/w/api" }, "api");
+  expect(commands.length).toBe(before + 1);
   await b.moveProject("api", "studio/api");
   expect(commands.at(-1)).toEqual(["move-project", "api", "studio/api"]);
   await b.forgetProject("studio");
   expect(commands.at(-1)).toEqual(["forget-project", "studio"]);
   expect(b.projects).toEqual({ api: { dir: "/w/api" } });
   await expect(b.setProject(ref, "bad name")).rejects.toThrow("project name");
-  await expect(b.create(ref.name, { folder: "x" }, "x")).rejects.toThrow(
-    "exists",
+  await expect(b.create("bad name", { folder: "x" }, "x")).rejects.toThrow();
+  // The identity that a current workstation prints, and none from an older one.
+  const created = new BackendClient(
+    "/fixture/tokiwa",
+    async () => "Created terminal: notes 12:$4:1700\n",
   );
+  expect(await created.create("notes", { folder: "inbox" }, "inbox")).toBe(
+    "12:$4:1700",
+  );
+  const older = new BackendClient(
+    "/fixture/tokiwa",
+    async () => "Created terminal: notes\n",
+  );
+  expect(
+    await older.create("notes", { folder: "inbox" }, "inbox"),
+  ).toBeUndefined();
 });
 test("history preserves timestamps, errors, gaps and stale state", async () => {
   const h = new HealthHistory();

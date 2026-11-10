@@ -29,7 +29,7 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 
 | Action | In the interface | From the command line | Effect |
 | --- | --- | --- | --- |
-| New session in a project | + on the project title, or Ctrl+K → New session in project | `tokiwa create NAME --dir DIR --project PROJECT` | Starts a shell in the project's folder; an empty name takes the project's last name |
+| New session in a project | + on the project title, or Ctrl+K → New session in project | `tokiwa create NAME --dir DIR --project PROJECT` | Starts a shell in the project's folder; an empty name takes the project's last name. The prompt closes at once, and the row says `starting` until the workstation answers. The session then opens in the pane, unless you pressed a key or opened another view meanwhile: then the footer says that it is ready |
 | New project | **+ new project** at the end of the list, or Ctrl+K → New project | `tokiwa create NAME --folder FOLDER --project PROJECT` | Makes the folder in `workbench/` if it is new and starts a first session there. Sessions can write project files only inside `workbench/` (see [What a session can write](host.md#what-a-session-can-write)), so new folders go there |
 | Move a session | Drag its row onto a project title, or `p` | `tokiwa project NAME PROJECT` | Changes the label; a new project name is also saved, with the session's folder |
 | Nest a project | Drag its title onto another project title; onto Workspace for the top level | `tokiwa move-project FROM TO` | Rewrites the labels of its sessions and of the projects inside it |

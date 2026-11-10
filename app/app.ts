@@ -28,6 +28,7 @@ import {
   isBackground,
   SIGN_IN_EXPIRED,
   projectName,
+  sessionName,
   type SessionRef,
 } from "./backend";
 import { activity, HealthHistory, WorkspaceState } from "./state";
@@ -47,6 +48,7 @@ import {
   stateGuide,
   projectTitle,
   rowState,
+  runsOnlyShell,
   sessionRowText,
   snapshotActivity,
   superscript,
@@ -226,6 +228,8 @@ export type SessionRow = {
   parent?: string;
   ref?: SessionRef;
   shell?: Shell;
+  /** True while the workstation creates the session: the row holds its place. */
+  starting?: boolean;
 };
 // The session list reads the snapshot again after this time while the workspace is in view.
 const SESSIONS_REFRESH_MS = 30 * 1000;
@@ -383,6 +387,14 @@ export class App {
   ending?: { ref: SessionRef; children: SessionRef[]; busy?: string };
   /** True while the search panel lists the background sessions in place of the search. */
   picker = false;
+  /** A title line above the input of the search panel, for an operation that needs one. */
+  paletteTitle?: string;
+  /** The sessions that the workstation creates now, by name, with their project. */
+  starting = new Map<string, string>();
+  /** Sessions that this app created, and when: a read that began earlier cannot list them. */
+  created = new Map<string, { ref: SessionRef; at: number }>();
+  /** The key presses so far: a new session opens in the pane only when none came meanwhile. */
+  inputs = 0;
   /** A project that waits for the answer to "end it?". */
   endingProject?: { path: string; refs: SessionRef[]; busy?: string };
   /** A question about a local shell with a running program: close that shell, or quit the app. */
@@ -1687,6 +1699,7 @@ export class App {
     this.sessionsLoading = true;
     clearTimeout(this.sessionTimer);
     const first = !this.sessionsRead;
+    const started = this.now();
     const selected = this.sessionRows()[this.listSelection]?.name;
     this.drawHeader();
     try {
@@ -1695,7 +1708,7 @@ export class App {
       this.previousSessions = new Map(
         this.remoteSessions.map((r) => [r.name, r]),
       );
-      this.remoteSessions = rows;
+      this.remoteSessions = this.keepCreated(rows, started);
       // A seen bell stays hidden until the host reports the session without a bell.
       for (const [name, identity] of this.acknowledged) {
         const ref = rows.find((r) => r.name === name);
@@ -2097,6 +2110,7 @@ export class App {
   /** Open the search box as a prompt for one operation. */
   askOperation(op: Operation) {
     if (this.palette) this.dismiss();
+    this.paletteTitle = this.operationText(op).title;
     this.openPalette();
     this.confirm = op;
     this.confirmStatus = undefined;
@@ -2109,7 +2123,11 @@ export class App {
     this.drawFooter();
   }
   /** The placeholder of the prompt and the line under it, in plain words. */
-  operationText(op: Operation) {
+  operationText(op: Operation): {
+    title?: string;
+    placeholder: string;
+    hint: string;
+  } {
     const shells = (n: number) => (n === 1 ? "1 shell" : `${n} shells`);
     switch (op.operation) {
       case "project":
@@ -2119,7 +2137,8 @@ export class App {
         };
       case "new-session":
         return {
-          placeholder: `New session in ${op.path}: name, or enter for ${this.suggestName(op.path)}`,
+          title: `New session in ${projectTitle(op.path)}`,
+          placeholder: `name, or enter for ${this.suggestName(op.path)}`,
           hint: `It starts in ${projectTitle(op.dir)}`,
         };
       case "new-project":
@@ -2145,7 +2164,10 @@ export class App {
       (path.split("/").at(-1) ?? "session")
         .replace(/[^A-Za-z0-9_-]/g, "-")
         .slice(0, 40) || "session";
-    const taken = new Set(this.remoteSessions.map((r) => r.name));
+    const taken = new Set([
+      ...this.remoteSessions.map((r) => r.name),
+      ...this.starting.keys(),
+    ]);
     for (let n = 1; ; n++) {
       const name = n === 1 ? base : `${base}-${n}`;
       if (!taken.has(name)) return name;
@@ -2160,32 +2182,41 @@ export class App {
       this.confirmStatus = { text, failed: false };
       this.drawActions();
     };
-    let attach = "";
     try {
+      // A new session starts behind the list: the prompt closes at once.
+      if (
+        pending.operation === "new-session" ||
+        pending.operation === "new-project"
+      ) {
+        const path =
+          pending.operation === "new-session"
+            ? pending.path
+            : projectName(value);
+        const name =
+          pending.operation === "new-session"
+            ? sessionName(value || this.suggestName(path))
+            : this.suggestName(path);
+        if (
+          this.remoteSessions.some((r) => r.name === name) ||
+          this.starting.has(name)
+        )
+          throw new Error("A session with this name exists.");
+        this.dismiss();
+        this.error = "";
+        void this.startSession(
+          name,
+          pending.operation === "new-session"
+            ? { dir: pending.dir }
+            : { folder: path.split("/").at(-1)! },
+          path,
+        );
+        return;
+      }
       switch (pending.operation) {
         case "project":
           working("Moving the session…");
           await this.backend.setProject(pending.ref, value);
           break;
-        case "new-session": {
-          const name = value || this.suggestName(pending.path);
-          working(`Starting ${name}…`);
-          await this.backend.create(name, { dir: pending.dir }, pending.path);
-          attach = name;
-          break;
-        }
-        case "new-project": {
-          const path = projectName(value);
-          const name = this.suggestName(path);
-          working(`Creating ${path}…`);
-          await this.backend.create(
-            name,
-            { folder: path.split("/").at(-1)! },
-            path,
-          );
-          attach = name;
-          break;
-        }
         case "rename-session": {
           if (value === pending.ref.name) break;
           working(`Renaming to ${value}…`);
@@ -2213,7 +2244,6 @@ export class App {
       this.error = "";
       this.record("remote-operation", { operation: pending.operation });
       await this.refreshSessions();
-      if (attach) await this.attachRemote(attach);
     } catch (e) {
       this.error = String(e);
       if (this.confirm === pending) {
@@ -2227,14 +2257,99 @@ export class App {
     }
   }
   /**
+   * Add the sessions that this app created after the read began to the rows of that read. A read
+   * that began later, or that lists the session, ends the hold.
+   */
+  keepCreated(rows: SessionRef[], started: number) {
+    const kept = [...rows];
+    for (const [name, made] of this.created) {
+      if (started > made.at || rows.some((r) => r.name === name))
+        this.created.delete(name);
+      else kept.push(made.ref);
+    }
+    return kept;
+  }
+  /**
+   * Create a session without holding the prompt. Its row says starting until the workstation
+   * answers. The session then opens in the pane, unless the owner pressed a key or opened another
+   * view meanwhile: then the footer says that it is ready.
+   */
+  async startSession(
+    name: string,
+    where: { dir: string } | { folder: string },
+    project: string,
+  ) {
+    this.starting.set(name, project);
+    const inputs = this.inputs;
+    const active = this.shells[this.active];
+    this.drawSessions();
+    this.drawFooter();
+    try {
+      const identity = await this.backend.create(name, where, project);
+      this.record("remote-operation", { operation: "create" });
+      if (this.disposed) return;
+      // The identity from the workstation is enough to attach; the launcher checks it again.
+      const known: SessionRef | undefined = identity
+        ? {
+            name,
+            identity,
+            project,
+            cwd: "dir" in where ? where.dir : "",
+            clients: 0,
+            parent: "",
+            managed: true,
+            activity: [],
+          }
+        : undefined;
+      if (known) {
+        this.created.set(name, { ref: known, at: this.now() });
+        this.remoteSessions = this.keepCreated(this.remoteSessions, 0);
+      }
+      if (!known) await this.refreshSessions();
+      this.starting.delete(name);
+      const free =
+        this.inputs === inputs &&
+        this.shells[this.active] === active &&
+        !this.palette &&
+        !this.sheetOpen;
+      if (free)
+        await this.attachRemote(
+          name,
+          known
+            ? undefined
+            : this.remoteSessions.find((r) => r.name === name)?.identity,
+          false,
+          true,
+          known,
+        );
+      else {
+        this.drawSessions();
+        this.notify(
+          `${name} is ready`,
+          false,
+          [{ label: "attach", run: () => void this.attachRemote(name) }],
+          8000,
+        );
+      }
+      if (known) void this.refreshSessions();
+    } catch (e) {
+      this.starting.delete(name);
+      if (this.disposed) return;
+      this.drawSessions();
+      this.notify(String(e).replace(/^Error: /, ""), true, undefined, 8000);
+    }
+  }
+  /**
    * Attach a remote session. A fresh attach also reopens the session's newest child shell beside
-   * it (see `openChildBeside`); `withChild` is false for that child itself.
+   * it (see `openChildBeside`); `withChild` is false for that child itself. `known` is a session
+   * that the workstation just created: the attach needs no read of the list to find it.
    */
   async attachRemote(
     name: string,
     expected?: string,
     reconnect = false,
     withChild = true,
+    known?: SessionRef,
   ) {
     if (this.remotePending.has(name)) return;
     this.remotePending.add(name);
@@ -2254,7 +2369,7 @@ export class App {
         if (!this.palette) this.show("shell");
         return;
       }
-      const ref = await this.backend.resolve(name, expected);
+      const ref = known ?? (await this.backend.resolve(name, expected));
       if (shell?.remote && shell.remote.identity !== ref.identity)
         throw new Error("The session identity changed. Open a new view.");
       if (!shell && this.shells.length >= 4)
@@ -2840,7 +2955,10 @@ export class App {
     // The output glyphs throb in place: a redraw would drop a text selection in the list.
     const throb = throbColor(theme.cpu, Date.now(), this.animate);
     for (const glyph of this.listGlyphs)
-      if (glyph.state === "output" && !glyph.text.isDestroyed)
+      if (
+        (glyph.state === "output" || glyph.state === "starting") &&
+        !glyph.text.isDestroyed
+      )
         glyph.text.fg = throb;
     this.drawNavStatus(throb);
     this.drawPending();
@@ -2982,6 +3100,14 @@ export class App {
           ref: shell.remote,
           shell,
         });
+    for (const [name, project] of this.starting)
+      if (!remote.some((r) => r.name === name))
+        remote.push({
+          name,
+          project,
+          title: projectTitle(project),
+          starting: true,
+        });
     return remote;
   }
   /** The sessions of the background list. */
@@ -3064,6 +3190,8 @@ export class App {
    * count of the snapshot includes this app's own client while its transport is open.
    */
   rowStatus(row: SessionRow) {
+    if (row.starting)
+      return { state: "starting" as RowState, word: "starting", others: 0 };
     const state = rowState(this.rowActivity(row), this.needsYou(row));
     const own =
       row.shell?.remote?.name === row.name && !row.shell.exited ? 1 : 0;
@@ -3072,7 +3200,8 @@ export class App {
       word:
         row.ref && this.remotePending.has(row.name)
           ? "attaching"
-          : STATUS_WORD[state],
+          : STATUS_WORD[state] ||
+            (row.ref && runsOnlyShell(row.ref) ? "shell" : ""),
       others: Math.max(0, (row.ref?.clients ?? 0) - own),
     };
   }
@@ -3336,7 +3465,10 @@ export class App {
             flexShrink: 0,
             wrapMode: "none",
             selectable: false,
-            fg: state === "output" ? throb : tones[STATUS_TONE[state]],
+            fg:
+              state === "output" || state === "starting"
+                ? throb
+                : tones[STATUS_TONE[state]],
           },
         );
         this.listGlyphs.push({ text: glyph, state });
@@ -3662,6 +3794,8 @@ export class App {
   }
   /** Attach the session of a row, or bring an attached view forward. */
   openRow(row: SessionRow, method: "keyboard" | "mouse") {
+    // A session that the workstation still creates opens by itself when it is ready.
+    if (row.starting) return;
     if (this.ending && !this.ending.busy) this.cancelEnd();
     this.listFocused = false;
     this.record("session-select", { name: row.name, method });
@@ -3810,13 +3944,16 @@ export class App {
       paddingLeft: 2,
       paddingRight: 2,
     });
-    if (this.picker)
-      this.text(searchArea, "picker-title", "Background sessions", {
+    const title = this.picker ? "Background sessions" : this.paletteTitle;
+    if (title)
+      this.text(searchArea, "palette-title", title, {
         height: 1,
         fg: theme.muted,
         selectable: false,
+        wrapMode: "none",
+        truncate: true,
       });
-    else {
+    if (!this.picker) {
       const inputRow = this.box(searchArea, "search-row", {
         height: 1,
         flexDirection: "row",
@@ -3935,7 +4072,10 @@ export class App {
       "search-area",
     ) as BoxRenderable;
     area.border = titled ? [] : ["bottom"];
-    area.height = 1 + (titled ? 0 : 1);
+    area.height =
+      (this.picker || this.paletteTitle ? 1 : 0) +
+      (this.search ? 1 : 0) +
+      (titled ? 0 : 1);
     const question = this.picker && !!this.ending;
     this.choices.height = Math.min(
       (this.searchList.length || 1) + (question ? 1 : 0),
@@ -4050,6 +4190,7 @@ export class App {
   dismiss() {
     this.palette?.destroyRecursively();
     this.picker = false;
+    this.paletteTitle = undefined;
     this.confirm = undefined;
     this.confirmStatus = undefined;
     this.palette = undefined;
@@ -4060,6 +4201,7 @@ export class App {
     this.record("palette-close");
   }
   key = (key: KeyEvent) => {
+    this.inputs++;
     const stop = () => {
       key.preventDefault();
       key.stopPropagation();

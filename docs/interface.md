@@ -87,6 +87,8 @@ Top-level projects follow the order that you set by drag, then sort by name. A b
 | `›` and the selection band | The selected row, while the list has the keyboard. |
 | `¹` to `⁹`, then `⁹⁺` | The clients attached elsewhere. The count leaves out this app's own client while its transport is open. |
 | `attaching` | The app attaches the session now. |
+| `◈ starting`, the glyph throbs | The workstation creates the session now. The row holds its place in the project. |
+| `shell` | A shell is the foreground program of every pane: no other program, for example no agent, runs in the session. |
 | `…` at the end of a name | The name is longer than its column. Names give way first. |
 
 When the list is empty, it says why:
