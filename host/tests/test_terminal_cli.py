@@ -223,6 +223,19 @@ esac
             self.assertIn(f'TOKIWA_VIA={expected} ', (self.home / 'calls').read_text(), via)
         self.assertNotIn('x;rm', (self.home / 'calls').read_text())
 
+    def test_search_sends_the_text_encoded_after_the_certificate(self):
+        result = self.run_cli('search', 'web-lead', '1:$2:3', "it's done && more")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.home / 'calls').read_text()
+        encoded = base64.b64encode("it's done && more".encode()).decode()
+        self.assertRegex(calls, r"terminal-session.sh capture web-lead '1:\$2:3' 50 [A-Za-z0-9+/=]+ " + re.escape(encoded))
+        self.assertNotIn('done &&', calls)
+        for args in [('search', 'web-lead', '1:$2:3'), ('search', 'web-lead', 'x', 'text'),
+                     ('search', 'web-lead', '1:$2:3', 'x' * 201), ('search', 'web-lead', '1:$2:3', 'a\tb')]:
+            (self.home / 'calls').unlink(missing_ok=True)
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+            self.assertFalse((self.home / 'calls').exists(), args)
+
     def test_rename_sends_the_new_name_and_identity_encoded(self):
         result = self.run_cli('rename', 'agent', 'claude-api', '1:$4:5')
         self.assertEqual(result.returncode, 0, result.stderr)

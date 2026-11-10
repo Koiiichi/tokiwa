@@ -6,8 +6,9 @@ for attempt in $(seq 1 100); do
  if /usr/bin/tmux -S "$socket" show-options -s exit-empty >/dev/null 2>&1; then
   # The server starts without a configuration file. Mouse mode passes the wheel and drags to
   # programs that report the mouse and gives other panes tmux's own scrolling. set-clipboard and
-  # allow-passthrough pass a program's OSC 52 copy on to the viewer's clipboard.
-  /usr/bin/tmux -S "$socket" set-option -g mouse on \; set-option -s set-clipboard on \; set-option -g allow-passthrough on
+  # allow-passthrough pass a program's OSC 52 copy on to the viewer's clipboard. A long scrollback
+  # lets tokiwa search find what a session printed long ago.
+  /usr/bin/tmux -S "$socket" set-option -g mouse on \; set-option -s set-clipboard on \; set-option -g allow-passthrough on \; set-option -g history-limit 50000
   # Programs open links through tokiwa-open, so the links open in the browser of the Mac.
   /usr/bin/tmux -S "$socket" set-environment -g BROWSER /opt/agent-platform/rootless/tokiwa-open
   # New shells show the configured name in the prompt (tokiwa unless `tokiwa name` set another).

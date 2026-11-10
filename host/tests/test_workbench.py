@@ -112,6 +112,8 @@ class WorkbenchTmuxOptions(unittest.TestCase):
                 self.assertEqual(show('-sv', 'set-clipboard'), 'on')
                 self.assertEqual(show('-gv', 'allow-passthrough'), 'on')
                 self.assertEqual(show('-gwv', 'window-size'), 'latest')
+                # Search reads the scrollback, so each pane keeps more of it.
+                self.assertEqual(show('-gv', 'history-limit'), '50000')
                 browser = subprocess.run([tmux, '-S', socket, 'show-environment', '-g', 'BROWSER'], capture_output=True, text=True).stdout.strip()
                 self.assertEqual(browser, 'BROWSER=/opt/agent-platform/rootless/tokiwa-open')
                 sessions = subprocess.run([tmux, '-S', socket, 'list-sessions', '-F', '#{session_name}'], capture_output=True, text=True).stdout.split()

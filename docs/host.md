@@ -75,13 +75,13 @@ systemctl start cloud-workbench.service
 | --- | --- |
 | Socket | `/run/cloud-workbench/tmux.sock` |
 | Configuration file | none (`-f /dev/null`) |
-| Server options from `start-workbench.sh` | `mouse on`, `set-clipboard on`, `allow-passthrough on` |
+| Server options from `start-workbench.sh` | `mouse on`, `set-clipboard on`, `allow-passthrough on`, `history-limit 50000` |
 | Global environment | `BROWSER=/opt/agent-platform/rootless/tokiwa-open` |
 | Shell of a new session | `/bin/bash --noprofile --rcfile tokiwa-bashrc`: it reads the owner's `~/.bashrc` (for example the `PATH` of the tools in `~/.local/bin`), then the [saved secrets](#secrets), then sets `BROWSER` and `PS1=NAME:\W\$ ` |
 | Prompt name | The `@tokiwa_name` server option, `tokiwa` when it is not set (`tokiwa name NAME`) |
 | Session options | `@tokiwa_project` and `@tokiwa_parent` (see [Sessions and projects](sessions-and-projects.md)) |
 
-`mouse on` passes the wheel and drags to programs that report the mouse. `set-clipboard on` and `allow-passthrough on` pass a program's OSC 52 copy, and the `tokiwa-open` request, to the client on the Mac.
+`mouse on` passes the wheel and drags to programs that report the mouse. `set-clipboard on` and `allow-passthrough on` pass a program's OSC 52 copy, and the `tokiwa-open` request, to the client on the Mac. `history-limit 50000` keeps up to 50,000 lines of scrollback for each pane that starts after it is set, for `tokiwa search`; a full pane holds a few megabytes. The scrollback ends with its session: Tokiwa stores no copy of what a session prints.
 
 ## Files that the host installer installs
 

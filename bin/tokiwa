@@ -7,6 +7,7 @@ mode=${1:-dashboard}
 name=${2:-}
 extra=
 lines=
+query=
 usage() {
  cat <<'EOF'
 Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|mcp|shell|admin]
@@ -36,6 +37,8 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   health        Read host and workspace resource metrics
   spend         Read the instance, volumes and public addresses as JSON for the spend estimate
   sessions      List terminals and attached clients; with --json, the full session list as JSON
+  search NAME IDENTITY TEXT
+                Find the latest lines that hold TEXT in a session's whole scrollback, with context, as JSON
   capture NAME IDENTITY [LINES]
                 Read the last lines of a session as JSON (1 to 200, default 60), encrypted on the way; only that exact session
   secret NAME   Save a secret on the host, for example an API key; new shells load it as NAME.
@@ -133,6 +136,14 @@ PY_CREATE
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail "Use $mode NAME IDENTITY, with the identity from tokiwa sessions --json."
   extra=$3 ;;
+ search)
+  # A capture that reads the whole scrollback for the lines that hold the text.
+  [[ $# -eq 4 && $2 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && -n $4 && ${#4} -le 200 && $4 != *[[:cntrl:]]* ]] \
+   || fail 'Use search NAME IDENTITY TEXT, with a text of 1 to 200 printable characters.'
+  extra=$3
+  lines=50
+  query=$(printf '%s' "$4" | base64 | tr -d '\n')
+  mode=capture ;;
  sessions)
   if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot; name=
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
@@ -233,7 +244,7 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   trap 'rm -rf "$work"' EXIT
   openssl req -x509 -newkey rsa:3072 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -subj /CN=tokiwa-capture -days 1 >/dev/null 2>&1 \
    || fail 'The capture key could not be made.'
-  remote="$remote $(base64 < "$work/cert.pem" | tr -d '\n')"
+  remote="$remote $(base64 < "$work/cert.pem" | tr -d '\n')${query:+ $query}"
  fi
  parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$remote")
  id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'

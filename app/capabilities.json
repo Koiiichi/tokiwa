@@ -53,6 +53,31 @@
       }
     },
     {
+      "command": "search",
+      "class": "read",
+      "example": ["search", "web-lead", "1:$2:3", "needle"],
+      "helper": "capture",
+      "tool": {
+        "name": "tokiwa_search",
+        "description": "Search the whole scrollback of one Tokiwa session for a text, without regard to case, and return the latest matching lines, each with two lines before and after it, as JSON. Use it to find what a session printed before the last 200 lines. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": ["search", "{name}", "{identity}", "{text}"],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "untrusted_output": true
+      }
+    },
+    {
       "command": "health",
       "class": "read",
       "example": ["health"],

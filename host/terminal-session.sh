@@ -38,7 +38,7 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( $mode == capture && $# -le 5 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( $mode == capture && $# -le 6 ) ]] || fail 'Too many arguments.'
 case "$mode" in
  new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
@@ -122,6 +122,9 @@ if [[ $mode == capture ]]; then
  [[ $lines =~ ^[0-9]{1,3}$ ]] && (( lines >= 1 && lines <= 200 )) || fail 'Use a line count from 1 to 200.'
  # Run Command keeps its output in the account, so screen text leaves this host only encrypted.
  [[ $recipient =~ ^[A-Za-z0-9+/=]+$ && ${#recipient} -le 4000 ]] || fail 'A capture needs a recipient certificate. Nothing was read.'
+ # A search term, base64: the capture then reads the whole scrollback for the lines that hold it.
+ query=${6:-}
+ [[ -z $query || ( $query =~ ^[A-Za-z0-9+/=]+$ && ${#query} -le 400 ) ]] || fail 'Use a search term of 1 to 200 printable characters.'
 fi
 # -N prevents a failed connection from creating an unprotected server.
 tm show-options -s exit-empty >/dev/null 2>&1 || fail 'The workbench service is unavailable. No service was started. Run tokiwa status.'
@@ -197,7 +200,7 @@ case "$mode" in
  capture)
   # Read only. The text is the last lines of the active pane, with its scrollback, without colour.
   # The output is encrypted to the one-time certificate of the caller. There is no plain output.
-  python3 - "$socket" "$name" "$extra" "$lines" "$recipient" <<'PY_CAPTURE'
+  python3 - "$socket" "$name" "$extra" "$lines" "$recipient" "$query" <<'PY_CAPTURE'
 import base64
 import binascii
 import json
@@ -206,7 +209,9 @@ import sys
 import tempfile
 import time
 
-socket, name, identity, limit, recipient = sys.argv[1:6]
+socket, name, identity, limit, recipient, query = sys.argv[1:7]
+# Lines of context on each side of a line that holds the search term.
+CONTEXT = 2
 # The sealed output must fit the 24,000 characters that Run Command returns: base64 adds a third.
 LIMIT_BYTES = 15000
 
@@ -228,13 +233,34 @@ if fields.returncode:
 current, pane, dead, clients, command = fields.stdout.rstrip('\n').split('\t', 4)
 if current != identity:
     raise SystemExit('Session identity changed. Nothing was read.')
+if query:
+    try:
+        query = base64.b64decode(query, validate=True).decode('utf-8')
+    except (binascii.Error, UnicodeDecodeError):
+        query = ''
+    if not 1 <= len(query) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in query):
+        raise SystemExit('Use a search term of 1 to 200 printable characters.')
 # A pane ID is never reused on a server, so this reads the session that the check saw.
-screen = tmux('capture-pane', '-p', '-J', '-S', '-200', '-t', pane)
+screen = tmux('capture-pane', '-p', '-J', '-S', '-' if query else '-200', '-t', pane)
 if screen.returncode:
     raise SystemExit('The selected session no longer exists.')
 rows = [row.rstrip() for row in screen.stdout.splitlines()]
-rows = [row for row in rows if row][-int(limit):]
-text = '\n'.join(rows)
+rows = [row for row in rows if row]
+found = 0
+if query:
+    # The latest matches, each with its context; blocks that touch are joined.
+    hits = [i for i, row in enumerate(rows) if query.lower() in row.lower()][-int(limit):]
+    found = len(hits)
+    blocks = []
+    for i in hits:
+        start, end = max(0, i - CONTEXT), min(len(rows), i + CONTEXT + 1)
+        if blocks and start <= blocks[-1][1]:
+            blocks[-1][1] = end
+        else:
+            blocks.append([start, end])
+    text = '\n--\n'.join('\n'.join(rows[start:end]) for start, end in blocks)
+else:
+    text = '\n'.join(rows[-int(limit):])
 truncated = size(text) > LIMIT_BYTES
 if truncated:
     # The smallest start that fits. Text is cut between characters, never inside one.
@@ -249,6 +275,8 @@ if truncated:
 output = {'name': name, 'identity': identity, 'pane': pane, 'command': command[:80],
           'clients': int(clients), 'dead': dead == '1', 'sampled_at': time.time(),
           'lines': text.count('\n') + 1 if text else 0, 'truncated': truncated, 'text': text}
+if query:
+    output.update(query=query, matches=found)
 try:
     certificate = base64.b64decode(recipient, validate=True)
 except binascii.Error:

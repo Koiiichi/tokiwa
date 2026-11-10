@@ -140,6 +140,37 @@ class ScreenCapture(Server):
         self.assertTrue(row['command'])
         self.assertGreater(row['sampled_at'], 0)
 
+    def search(self, name, identity, query, limit='50'):
+        encoded = base64.b64encode(query.encode()).decode()
+        result = self.helper('capture', name, identity, limit, self.keys(), encoded)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey', str(self.key),
+                                 '-recip', str(self.cert)], input=base64.b64decode(result.stdout), capture_output=True)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        return json.loads(opened.stdout)
+
+    def test_search_finds_a_line_beyond_the_last_200_with_its_context(self):
+        text = ''.join(f'line-{i}\n' for i in range(1500)).replace('line-50\n', 'Needle here\n')
+        identity = self.session('cap', text)
+        row = self.search('cap', identity, 'needle')
+        self.assertEqual((row['query'], row['matches']), ('needle', 1))
+        self.assertEqual(row['text'], 'line-48\nline-49\nNeedle here\nline-51\nline-52')
+
+    def test_search_keeps_the_latest_matches_and_parts_them(self):
+        text = ''.join(f'hit-{i}\nfill-{i}\nfill-{i}\nfill-{i}\nfill-{i}\nfill-{i}\n' for i in range(10))
+        identity = self.session('cap', text)
+        row = self.search('cap', identity, 'HIT-', limit='2')
+        self.assertEqual(row['matches'], 2)
+        blocks = row['text'].split('\n--\n')
+        self.assertEqual([b.split('\n')[2] for b in blocks], ['hit-8', 'hit-9'])
+
+    def test_search_without_a_match_and_a_bad_query(self):
+        identity = self.session('cap', 'one\ntwo\n')
+        row = self.search('cap', identity, 'absent')
+        self.assertEqual((row['matches'], row['text']), (0, ''))
+        for bad in ['not base64!', base64.b64encode(b'line\nbreak').decode(), base64.b64encode(b'x' * 201).decode()]:
+            self.assertNotEqual(self.helper('capture', 'cap', identity, '50', self.keys(), bad).returncode, 0, bad)
+
     def test_capture_reads_scrollback(self):
         identity = self.session('cap', ''.join(f'line-{i}\n' for i in range(300)))
         row = self.capture('cap', identity)

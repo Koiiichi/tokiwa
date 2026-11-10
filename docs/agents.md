@@ -55,6 +55,7 @@ These are the read tools. The table lists the tools of the other classes when th
 | --- | --- | --- |
 | `tokiwa_sessions` | None | The output of `tokiwa sessions --json`: each session with its `name`, `identity`, folder, project, clients, pane commands, and the state that its agent reported (`agent`, see [Agent state](host.md#agent-state)). See [the snapshot](architecture.md#host-helper-and-snapshot). |
 | `tokiwa_screen` | `name`, `identity`, optional `lines` | The output of `tokiwa capture`, after one line that marks the text as data. |
+| `tokiwa_search` | `name`, `identity`, `text` | The output of `tokiwa search`: the latest 50 lines of the whole scrollback that hold the text, without regard to case, each with two lines before and after it, and `query` and `matches`. Encrypted on the way as a capture is, and marked as data. |
 | `tokiwa_health` | None | The output of `tokiwa health`. See [Health](health.md). |
 | `tokiwa_status` | None | The output of `tokiwa status`. |
 

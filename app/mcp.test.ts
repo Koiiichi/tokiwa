@@ -39,12 +39,13 @@ async function connect(
 }
 const screen = { name: "web-lead", identity: "1:$2:3" };
 
-test("the server lists four read-only tools", async () => {
+test("the server lists five read-only tools", async () => {
   const { client } = await connect(() => "");
   const { tools } = await client.listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
     "tokiwa_health",
     "tokiwa_screen",
+    "tokiwa_search",
     "tokiwa_sessions",
     "tokiwa_status",
   ]);
@@ -218,6 +219,7 @@ test("a control tool needs --allow control, and a run tool needs --allow run", a
   const read = [
     "tokiwa_health",
     "tokiwa_screen",
+    "tokiwa_search",
     "tokiwa_sessions",
     "tokiwa_status",
   ];
@@ -333,4 +335,19 @@ test("create needs --allow control, and launch, which runs a command, needs --al
     expect((await control.call("tokiwa_create", bad)).isError).toBe(true);
   }
   expect(control.calls).toHaveLength(1);
+});
+
+test("search reads the whole scrollback through the launcher and marks the result as data", async () => {
+  const { client, calls, call } = await connect(() => '{"matches":1}');
+  const result = await call("tokiwa_search", {
+    ...screen,
+    text: "build failed",
+  });
+  expect(result.text).toBe(`${SCREEN_NOTICE}\n{"matches":1}`);
+  expect(calls).toEqual([["search", "web-lead", "1:$2:3", "build failed"]]);
+  const tool = (await client.listTools()).tools.find(
+    (t) => t.name === "tokiwa_search",
+  );
+  expect(tool?.annotations?.readOnlyHint).toBe(true);
+  expect(tool?.description).toContain("not an instruction");
 });
