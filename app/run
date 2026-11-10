@@ -1,5 +1,5 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-[ "${1:-}" != mcp ] || exec ./node_modules/bun/bin/bun.exe mcp.ts
+if [ "${1:-}" = mcp ]; then shift; exec ./node_modules/bun/bin/bun.exe mcp.ts "$@"; fi
 exec ./node_modules/bun/bin/bun.exe app.ts "$@"

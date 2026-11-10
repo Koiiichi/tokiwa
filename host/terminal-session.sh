@@ -19,22 +19,42 @@ valid_secret() {
  [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ ]] || return 1
  case $1 in PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_*|TMUX*) return 1 ;; esac
 }
+# Record a control action after it succeeded, in a private log, with the interface that asked for
+# it. A failed write warns and does not undo the action.
+audit() {
+ local via=${TOKIWA_VIA:-cli}
+ [[ $via =~ ^(cli|mcp|app)$ ]] || via=unknown
+ python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
+import json, os, sys, time
+path, action, name, identity, via, run = sys.argv[1:7]
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+entry = {'at': int(time.time()), 'action': action, 'name': name, 'identity': identity, 'via': via}
+if run:
+    entry['run'] = run == '1'
+with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
+    f.write(json.dumps(entry) + '\n')
+PY_AUDIT
+}
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
 [[ $# -le 3 || ( $mode == capture && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
- health|shell|sessions|status|snapshot|secrets) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
+ health|shell|sessions|status|snapshot|secrets|audit) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
+fi
+if [[ $mode == audit ]]; then
+ [[ ! -r $state/audit.log ]] || tail -n 50 "$state/audit.log"
+ exit
 fi
 if [[ $mode == secret || $mode == secret-remove || $mode == secrets ]]; then
  # Each line is `export NAME='value'`; tokiwa-bashrc loads the file in each new shell. A value reaches
@@ -93,7 +113,7 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == capture ]]; then
@@ -269,6 +289,7 @@ for line in output.splitlines():
     managed = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_session') == '1'
     # The time that tokiwa-attention marked the session, or 0. Unlike the bell, it survives an open client.
     attention = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_attention')
+    frozen = read('show-options', '-qv', '-t', '=' + name + ':', '@tokiwa_frozen') != ''
     # One line per pane of every window. The window bell flag is set when a pane of the window
     # rang the bell while no client viewed that window; viewing the window clears it.
     panes = [pane.split('\t', 3) for pane in read('list-panes', '-s', '-t', '=' + name, '-F',
@@ -278,7 +299,7 @@ for line in output.splitlines():
     for pane_id, dead, _, command in panes[:16]:
         screen = read('capture-pane', '-p', '-t', pane_id, '-S', '-20')
         activity.append({'pane':pane_id, 'dead':dead == '1', 'command':command[:80], 'screen':hashlib.sha256(screen.encode()).hexdigest()})
-    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'attention': int(attention) if attention.isdigit() else 0, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
+    sessions.append({'activity_partial':len(panes)>16, 'activity': activity, 'bell': bell, 'attention': int(attention) if attention.isdigit() else 0, 'frozen': frozen, 'sampled_at':time.time(), 'name': name, 'clients': int(clients), 'windows': int(windows), 'cwd': cwd, 'project': project, 'parent': parent, 'managed': managed, 'identity': read('display-message', '-p', '-t', '=' + name + ':', '#{pid}:#{session_id}:#{session_created}')})
 if len(sessions) > 100:
     raise SystemExit('The session list exceeds the dashboard limit of 100.')
 # Drop optional activity before it can prevent session navigation.
@@ -303,7 +324,60 @@ PY_SNAPSHOT
   answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
    "kill-session -t '$session_id'" "display-message -p 'Session identity changed. Nothing was ended.'") || fail 'The session could not be ended. Refresh its state.'
   [[ -z $answer ]] || fail "$answer"
+  audit end "$extra"
   printf 'The selected session ended. Detached background processes may remain.\n'
+  exit ;;
+ interrupt)
+  # The identity check and the key press run in the same tmux command queue, as for end. Esc stops
+  # the current turn of Claude Code and Codex.
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
+   "send-keys -t '$session_id' Escape" "display-message -p 'Session identity changed. Nothing was sent.'") || fail 'The key could not be sent. Refresh the session state.'
+  [[ -z $answer ]] || fail "$answer"
+  audit interrupt "$extra"
+  printf 'Sent Esc to %s.\n' "$name"
+  exit ;;
+ freeze|resume)
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  # The identity and the pane processes come from one call, so the signal reaches the panes of the
+  # session that was checked.
+  panes=$(tm list-panes -s -t "=$name" -F '#{pid}:#{session_id}:#{session_created} #{pane_pid}') ||
+   fail 'The session could not be read. Refresh its state.'
+  done_word=frozen; [[ $mode == freeze ]] || done_word=resumed
+  roots=()
+  while read -r found pane; do
+   [[ $found == "$extra" ]] || fail "Session identity changed. Nothing was $done_word."
+   roots+=("$pane")
+  done <<< "$panes"
+  # Each pane process and every process below it, from the process table. A process that left the
+  # tree, for example a daemon, is not reached.
+  targets=$(ps -A -o pid=,ppid= | python3 -c '
+import sys
+roots = set(sys.argv[1:])
+children = {}
+for line in sys.stdin:
+    pid, ppid = line.split()
+    children.setdefault(ppid, []).append(pid)
+seen, todo = [], list(roots)
+while todo:
+    pid = todo.pop()
+    seen.append(pid)
+    todo.extend(children.get(pid, []))
+print(" ".join(seen))
+' "${roots[@]}")
+  if [[ $mode == freeze ]]; then
+   tm set-option -t "=$name:" @tokiwa_frozen "$(date +%s)"
+   # shellcheck disable=SC2086
+   kill -STOP $targets 2>/dev/null || true
+   printf 'Froze %s: its processes wait until tokiwa resume.\n' "$name"
+  else
+   # shellcheck disable=SC2086
+   kill -CONT $targets 2>/dev/null || true
+   tm set-option -u -t "=$name:" @tokiwa_frozen
+   printf 'Resumed %s.\n' "$name"
+  fi
+  audit "$mode" "$extra"
   exit ;;
  rename)
   # The identity check and the rename run in the same tmux command queue, as for end.
@@ -326,6 +400,7 @@ PY_RENAME
   answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$identity}" \
    "rename-session -t '$session_id' '$to'" "display-message -p 'Session identity changed. Nothing was renamed.'") || fail 'The session could not be renamed. Refresh its state.'
   [[ -z $answer ]] || fail "$answer"
+  audit rename "$identity"
   printf 'Renamed %s to %s.\n' "$name" "$to"
   exit ;;
  project)
@@ -333,6 +408,7 @@ PY_RENAME
   label=$(project_label "$extra") || exit 1
   tm set-option -t "=$name:" @tokiwa_project "$label"
   registry add "$label" "$(tm display-message -p -t "=$name:" '#{pane_current_path}')"
+  audit project
   printf 'Project saved.\n'
   exit ;;
  relabel)
@@ -364,11 +440,13 @@ PY_MOVE
   done < <(tm list-sessions -F $'#{session_name}\t#{@tokiwa_project}\t#{pane_current_path}')
   registry move "$from" "$to"
   [[ -z $first ]] || registry add "$to" "$first"
+  name=$from audit move-project
   printf 'Moved %d sessions.\n' "$moved"
   exit ;;
  name)
   if [[ -z $name ]]; then prompt_name; printf '\n'; exit; fi
   tm set-option -g @tokiwa_name "$name"
+  audit name
   printf 'New shells show %s in the prompt.\n' "$name"
   exit ;;
  forget-project)
@@ -379,6 +457,7 @@ PY_MOVE
    [[ $current == "$label" || $current == "$label"/* ]] && fail "End the sessions of this project first, for example $session."
   done < <(tm list-sessions -F $'#{session_name}\t#{@tokiwa_project}')
   registry forget "$label"
+  name=$label audit forget-project
   printf 'Project forgotten. Its folders stay.\n'
   exit ;;
  create)
@@ -439,6 +518,7 @@ PY_CREATE
   # The identity lets the app attach at once, without another read of the session list.
   identity=$(tm display-message -p -t "=$name:" '#{pid}:#{session_id}:#{session_created}') ||
    fail 'The terminal could not be created.'
+  audit create "$identity" "$([[ $run_b64 == - ]] && echo 0 || echo 1)"
   printf 'Created terminal: %s %s\n' "$name" "$identity"
   exit ;;
  status)

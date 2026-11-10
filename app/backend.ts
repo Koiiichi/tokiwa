@@ -23,6 +23,8 @@ export interface SessionRef {
    * Unlike the bell, it stays while a client has the session open. An attach clears it.
    */
   attention?: number;
+  /** True while `tokiwa freeze` holds the processes of the session; `tokiwa resume` ends it. */
+  frozen?: boolean;
   /** The tmux session id (for example `$4`) of the session that this one was opened from. */
   parent?: string;
   /** True when Tokiwa made the session. A host helper without this field leaves it out. */
@@ -136,7 +138,12 @@ export class BackendClient {
   async call(args: string[]): Promise<string> {
     if (this.runner) return this.runner(args);
     const p = Bun.spawn([this.launcher, ...args], {
-      env: { ...process.env, TOKIWA_DASHBOARD: "1" },
+      // TOKIWA_VIA names this caller in the audit log on the host; the MCP server sets mcp.
+      env: {
+        ...process.env,
+        TOKIWA_DASHBOARD: "1",
+        TOKIWA_VIA: process.env.TOKIWA_VIA ?? "app",
+      },
       stdout: "pipe",
       stderr: "pipe",
     });

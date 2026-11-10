@@ -27,6 +27,12 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   forget-project PROJECT  Forget a saved project without sessions; its folders stay
   name [NAME]   Show or set the name that new shells show in the prompt (default tokiwa)
   rename NAME NEW IDENTITY  Rename a session; only that exact session
+  interrupt NAME IDENTITY
+                Send Esc to a session, which stops the current turn of an agent; only that exact session
+  freeze NAME IDENTITY
+                Pause every process of a session until resume; only that exact session
+  resume NAME IDENTITY
+                Continue a frozen session
   health        Read host and workspace resource metrics
   spend         Read the instance, volumes and public addresses as JSON for the spend estimate
   sessions      List terminals and attached clients; with --json, the full session list as JSON
@@ -37,10 +43,13 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   secret --remove NAME
                 Remove a saved secret
   secrets       List the names of the saved secrets
+  audit         Show the last control actions on the host: what, which session, when and from where
   status        Check AWS access, host state and the workbench server
   --check       Same as status
   login         Sign in to AWS with the profile of the host settings
-  mcp           Run the read-only MCP server for local agents
+  mcp [--allow control,run]
+                Run the MCP server for local agents: read tools, and with --allow the tools
+                that change sessions (control) or run a command on the host (run)
   shell         Open or select a terminal without the dashboard
   admin         Open the existing administrator shell
 
@@ -120,17 +129,25 @@ PY_CREATE
   [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ && ! $name =~ ^(PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_.*|TMUX.*)$ ]] \
    || fail 'Use a secret name of letters, digits and underscores, for example OPENAI_API_KEY. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  secrets) [[ $# -le 1 ]] || fail 'Use secrets.' ;;
+ interrupt|freeze|resume)
+  [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail "Use $mode NAME IDENTITY, with the identity from tokiwa sessions --json."
+  extra=$3 ;;
  sessions)
   if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot; name=
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
- health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|mcp) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
+ health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|audit) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
+ mcp)
+  # --allow adds the tools that change a session (control) or run a command on the host (run).
+  [[ $# -eq 1 || ( $# -eq 3 && $2 == --allow && $3 =~ ^(control|run)(,(control|run))?$ ) ]] \
+   || fail 'Use mcp, or mcp --allow control, run or control,run.' ;;
  *) usage >&2; exit 2 ;;
 esac
 # The MCP server reports a missing host setting as a tool error, so it starts without the settings.
 if [[ $mode == mcp ]]; then
  app="$HOME/.local/lib/tokiwa/opentui/run"
  [[ -x $app ]] || fail 'The Tokiwa interface is not installed. Run app/install.sh.'
- exec "$app" mcp
+ exec "$app" mcp "${@:2}"
 fi
 # The host settings: KEY=VALUE lines. The file is read, never run. See docs/configuration.md.
 config=${TOKIWA_HOST_CONFIG:-$HOME/.config/tokiwa/host.env}
@@ -191,13 +208,16 @@ fi
 state=$(aws_call ec2 describe-instances --instance-ids "$instance" --query 'Reservations[0].Instances[0].State.Name' --output text) || fail 'The host state could not be read.'
 [[ $state == running ]] || fail "The host is $state. No restart was requested."
 note 'Tokiwa · host running\n' >&2
-helper='sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 /opt/agent-platform/rootless/terminal-session.sh'
+# The interface that asked, for the audit log on the host: this command, the MCP server or the app.
+via=${TOKIWA_VIA:-cli}
+[[ $via =~ ^(cli|mcp|app)$ ]] || via=cli
+helper="sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=$via /opt/agent-platform/rootless/terminal-session.sh"
 case "$mode" in
  list) mode=sessions ;;
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then

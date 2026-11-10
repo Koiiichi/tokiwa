@@ -16,6 +16,7 @@ The app has no settings screen. A setting changes only through the items on this
 | `TOKIWA_APP_DIR` | [`install.sh`](../app/install.sh) | `~/.local/lib/tokiwa/opentui` | The install folder. The launcher opens only the default folder. |
 | `TOKIWA_HOST_CONFIG` | Launcher, app | `~/.config/tokiwa/host.env` | The file of the [host settings](#host-settings). |
 | `TOKIWA_DASHBOARD` | Launcher | `0` | `1` turns off the progress lines of the launcher, and the launcher does not start `aws sso login`. The app sets `1` on each launcher call. |
+| `TOKIWA_VIA` | Launcher, app, MCP server | `cli`; the app sets `app`, the MCP server `mcp` | The interface that the [audit log](host.md#audit-log) of the host names for each control action. Another value counts as `cli`. |
 | `HOME` | App, launcher | — | The base of the launcher path, `health.json`, the state files and the start directory of a local shell. |
 | `SHELL` | App | — | The login shell of a local shell. |
 | `LANG` | App | `en_US.UTF-8` when unset | The locale of each transport. |

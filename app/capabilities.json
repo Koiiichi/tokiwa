@@ -1,0 +1,250 @@
+{
+  "classes": {
+    "read": "Reads only. The MCP server offers its tool by default.",
+    "control": "Changes a session or a project. The MCP server offers its tool only with --allow control.",
+    "run": "Runs a command on the host. The MCP server offers it only with --allow run.",
+    "human": "Needs a person or a terminal: a browser sign-in, hidden input, a root shell or an attached view. Never an MCP tool."
+  },
+  "patterns": {
+    "name": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$",
+    "identity": "^[0-9]+:\\$[0-9]+:[0-9]+$"
+  },
+  "capabilities": [
+    {
+      "command": "sessions",
+      "class": "read",
+      "example": ["sessions", "--json"],
+      "helper": "snapshot",
+      "tool": {
+        "name": "tokiwa_sessions",
+        "description": "List the Tokiwa sessions on the workstation as JSON: name, identity, folder, project, attached clients and pane commands.",
+        "argv": ["sessions", "--json"],
+        "args": {}
+      }
+    },
+    {
+      "command": "capture",
+      "class": "read",
+      "example": ["capture", "web-lead", "1:$2:3", "60"],
+      "helper": "capture",
+      "tool": {
+        "name": "tokiwa_screen",
+        "description": "Read the last lines of one Tokiwa session, with its scrollback, as JSON. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": ["capture", "{name}", "{identity}", "{lines}"],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 60
+          }
+        },
+        "untrusted_output": true
+      }
+    },
+    {
+      "command": "health",
+      "class": "read",
+      "example": ["health"],
+      "helper": "health",
+      "tool": {
+        "name": "tokiwa_health",
+        "description": "Read host and workbench metrics as JSON: CPU, memory, disks, network and service state.",
+        "argv": ["health"],
+        "args": {}
+      }
+    },
+    {
+      "command": "status",
+      "class": "read",
+      "aliases": ["--check"],
+      "example": ["status"],
+      "helper": "status",
+      "tool": {
+        "name": "tokiwa_status",
+        "description": "Check AWS access, the host state and the Tokiwa workbench server.",
+        "argv": ["status"],
+        "args": {}
+      }
+    },
+    {
+      "command": "spend",
+      "class": "read",
+      "example": ["spend"]
+    },
+    {
+      "command": "secrets",
+      "class": "read",
+      "example": ["secrets"],
+      "helper": "secrets"
+    },
+    {
+      "command": "audit",
+      "class": "read",
+      "example": ["audit"],
+      "helper": "audit"
+    },
+    {
+      "command": "project",
+      "class": "control",
+      "example": ["project", "lead", "studio"],
+      "helper": "project"
+    },
+    {
+      "command": "create",
+      "class": "control",
+      "run_option": "--run",
+      "example": [
+        "create",
+        "lead",
+        "--dir",
+        "/w/studio",
+        "--subfolder",
+        "lead",
+        "--project",
+        "studio",
+        "--run",
+        "echo ready"
+      ],
+      "helper": "create"
+    },
+    {
+      "command": "move-project",
+      "class": "control",
+      "example": ["move-project", "api", "studio/api"],
+      "helper": "relabel"
+    },
+    {
+      "command": "forget-project",
+      "class": "control",
+      "example": ["forget-project", "studio"],
+      "helper": "forget-project"
+    },
+    {
+      "command": "name",
+      "class": "control",
+      "example": ["name", "box"],
+      "helper": "name"
+    },
+    {
+      "command": "rename",
+      "class": "control",
+      "example": ["rename", "lead", "lead-2", "1:$2:3"],
+      "helper": "rename"
+    },
+    {
+      "command": "interrupt",
+      "class": "control",
+      "example": ["interrupt", "lead", "1:$2:3"],
+      "helper": "interrupt",
+      "tool": {
+        "name": "tokiwa_interrupt",
+        "description": "Send Esc to one Tokiwa session, which stops the current turn of Claude Code or Codex. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": ["interrupt", "{name}", "{identity}"],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
+    },
+    {
+      "command": "freeze",
+      "class": "control",
+      "example": ["freeze", "lead", "1:$2:3"],
+      "helper": "freeze",
+      "tool": {
+        "name": "tokiwa_freeze",
+        "description": "Pause every process of one Tokiwa session until tokiwa_resume. A model request in progress can be lost; files and the conversation stay. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": ["freeze", "{name}", "{identity}"],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
+    },
+    {
+      "command": "resume",
+      "class": "control",
+      "example": ["resume", "lead", "1:$2:3"],
+      "helper": "resume",
+      "tool": {
+        "name": "tokiwa_resume",
+        "description": "Continue a Tokiwa session that tokiwa_freeze paused. Take name and identity from tokiwa_sessions.",
+        "argv": ["resume", "{name}", "{identity}"],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
+    },
+    {
+      "command": "--end-confirmed",
+      "class": "control",
+      "hidden": true,
+      "example": ["--end-confirmed", "lead", "1:$2:3"],
+      "helper": "end"
+    },
+    {
+      "command": "dashboard",
+      "class": "human"
+    },
+    {
+      "command": "new",
+      "class": "human"
+    },
+    {
+      "command": "attach",
+      "class": "human"
+    },
+    {
+      "command": "view",
+      "class": "human"
+    },
+    {
+      "command": "shell",
+      "class": "human"
+    },
+    {
+      "command": "admin",
+      "class": "human"
+    },
+    {
+      "command": "login",
+      "class": "human"
+    },
+    {
+      "command": "secret",
+      "class": "human"
+    },
+    {
+      "command": "mcp",
+      "class": "human"
+    }
+  ]
+}

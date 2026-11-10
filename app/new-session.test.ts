@@ -326,3 +326,16 @@ test("the first session of a new project gets its own folder too", async () => {
     w.dispose();
   }
 });
+
+test("a frozen session says frozen, also when it runs only a shell", async () => {
+  const w = await workspace();
+  try {
+    w.sessions.push({ ...session("held", "inbox", 7, "bash"), frozen: true });
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    expect(w.row("held")).toContain("frozen");
+    expect(w.row("held")).not.toContain("shell");
+  } finally {
+    w.dispose();
+  }
+});

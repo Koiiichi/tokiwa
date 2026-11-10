@@ -3259,7 +3259,11 @@ export class App {
         row.ref && this.remotePending.has(row.name)
           ? "attaching"
           : STATUS_WORD[state] ||
-            (row.ref && runsOnlyShell(row.ref) ? "shell" : ""),
+            (row.ref?.frozen
+              ? "frozen"
+              : row.ref && runsOnlyShell(row.ref)
+                ? "shell"
+                : ""),
       others: Math.max(0, (row.ref?.clients ?? 0) - own),
     };
   }

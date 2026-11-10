@@ -204,6 +204,25 @@ esac
         self.assertIn('interactive terminal', result.stderr)
         self.assertFalse((self.home / 'calls').exists())
 
+    def test_control_commands_need_a_name_and_an_identity_before_aws(self):
+        for mode in ['interrupt', 'freeze', 'resume']:
+            for args in [(mode,), (mode, 'lead'), (mode, 'lead', 'x;y'), (mode, 'bad name', '1:$2:3'), (mode, 'lead', '1:$2:3', 'more')]:
+                self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+        result = self.run_cli('freeze', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh freeze lead '1:$2:3'", (self.home / 'calls').read_text())
+
+    def test_the_interface_reaches_the_helper_for_the_audit_log(self):
+        self.run_cli('freeze', 'lead', '1:$2:3')
+        self.assertIn('TOKIWA_VIA=cli ', (self.home / 'calls').read_text())
+        for via, expected in [('mcp', 'mcp'), ('app', 'app'), ('x;rm', 'cli')]:
+            (self.home / 'calls').unlink()
+            self.env['TOKIWA_VIA'] = via
+            self.run_cli('freeze', 'lead', '1:$2:3')
+            self.assertIn(f'TOKIWA_VIA={expected} ', (self.home / 'calls').read_text(), via)
+        self.assertNotIn('x;rm', (self.home / 'calls').read_text())
+
     def test_rename_sends_the_new_name_and_identity_encoded(self):
         result = self.run_cli('rename', 'agent', 'claude-api', '1:$4:5')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -457,6 +476,14 @@ esac
         result = self.run_cli('mcp')
         self.assertEqual((result.returncode, result.stdout), (0, 'app mcp'), result.stderr)
         self.assertFalse((self.home / 'calls').exists())
+
+    def test_mcp_passes_the_allowed_classes_to_the_server(self):
+        self.stub_app()
+        result = self.run_cli('mcp', '--allow', 'control,run')
+        self.assertEqual((result.returncode, result.stdout), (0, 'app mcp --allow control,run'), result.stderr)
+        # A person or a terminal is needed for the human commands, so no flag offers them.
+        for args in [('mcp', '--allow'), ('mcp', '--allow', 'human'), ('mcp', '--allow', 'control;x'), ('mcp', 'x')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
 
     def test_mcp_needs_the_installed_app(self):
         result = self.run_cli('mcp')

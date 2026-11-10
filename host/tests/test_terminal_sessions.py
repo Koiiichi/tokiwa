@@ -825,6 +825,97 @@ class Attention(ModelHelpers, Server):
         self.assertIn('--clear', result.stderr)
 
 
+class Control(ModelHelpers, Server):
+    """interrupt, freeze and resume act only on the session with the given identity."""
+
+    def started(self, name, command):
+        """A Tokiwa session whose shell runs `command`; return its identity and the PID of the command."""
+        self.assertEqual(self.helper('ensure', name).returncode, 0)
+        self.tm('send-keys', '-t', f'={name}:', command, 'Enter')
+        shell = self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_pid}').stdout.strip()
+        child = ''
+        for _ in range(100):
+            child = subprocess.run(['pgrep', '-P', shell], capture_output=True, text=True).stdout.split()
+            if child:
+                break
+            time.sleep(.05)
+        self.assertTrue(child, 'the command did not start')
+        return self.rows()[name]['identity'], child[0]
+
+    def state(self, pid):
+        return subprocess.run(['ps', '-o', 'stat=', '-p', pid], capture_output=True, text=True).stdout.strip()
+
+    def test_interrupt_sends_esc_to_the_session(self):
+        identity, _ = self.started('lead', 'cat -v')
+        result = self.helper('interrupt', 'lead', identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.tm('send-keys', '-t', '=lead:', 'x', 'Enter')
+        self.screen('lead', '^[x')
+
+    def test_freeze_stops_the_processes_and_resume_continues_them(self):
+        identity, pid = self.started('lead', 'sleep 300')
+        result = self.helper('freeze', 'lead', identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state(pid).startswith('T'), self.state(pid))
+        self.assertTrue(self.rows()['lead']['frozen'])
+        result = self.helper('resume', 'lead', identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.state(pid).startswith('T'), self.state(pid))
+        self.assertFalse(self.rows()['lead']['frozen'])
+
+    def test_a_changed_identity_is_refused_and_nothing_happens(self):
+        identity, pid = self.started('lead', 'sleep 300')
+        stale = identity.rsplit(':', 1)[0] + ':1'
+        for mode in ['interrupt', 'freeze', 'resume']:
+            result = self.helper(mode, 'lead', stale)
+            self.assertNotEqual(result.returncode, 0, mode)
+            self.assertIn('identity changed', result.stderr)
+            self.assertNotIn('freezed', result.stderr)
+        self.assertFalse(self.state(pid).startswith('T'))
+        self.assertFalse(self.rows()['lead']['frozen'])
+        for mode in ['interrupt', 'freeze', 'resume']:
+            self.assertNotEqual(self.helper(mode, 'lead').returncode, 0, mode)
+
+    def audit(self):
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+
+    def test_each_control_action_is_logged_with_its_interface(self):
+        identity, _ = self.started('lead', 'sleep 300')
+        self.env['TOKIWA_VIA'] = 'mcp'
+        for mode in ['freeze', 'resume', 'interrupt']:
+            self.assertEqual(self.helper(mode, 'lead', identity).returncode, 0, mode)
+        self.env['TOKIWA_VIA'] = 'cli'
+        self.assertEqual(self.helper('end', 'lead', identity).returncode, 0)
+        entries = self.audit()
+        self.assertEqual([(e['action'], e['name'], e['identity'], e['via']) for e in entries], [
+            ('freeze', 'lead', identity, 'mcp'), ('resume', 'lead', identity, 'mcp'),
+            ('interrupt', 'lead', identity, 'mcp'), ('end', 'lead', identity, 'cli')])
+        self.assertTrue(all(isinstance(e['at'], int) for e in entries))
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+        shown = self.helper('audit')
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertEqual(len(shown.stdout.splitlines()), 4)
+
+    def test_a_refused_action_and_a_read_are_not_logged(self):
+        identity, _ = self.started('lead', 'sleep 300')
+        stale = identity.rsplit(':', 1)[0] + ':1'
+        self.helper('freeze', 'lead', stale)
+        self.helper('snapshot')
+        self.assertEqual(self.audit(), [])
+
+    def test_create_logs_that_a_command_ran_but_not_the_command(self):
+        root = Path(self.temp.name) / 'workspaces'
+        (root / 'proj').mkdir(parents=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        request = {'dir': str(root / 'proj'), 'project': 'proj', 'run': 'echo secret-looking-text'}
+        self.assertEqual(self.helper('create', 'made', self.b64(request)).returncode, 0)
+        entry = self.audit()[-1]
+        self.assertEqual((entry['action'], entry['name'], entry['run']), ('create', 'made', True))
+        self.assertNotIn('secret-looking-text', json.dumps(self.audit()))
+
+
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""
 

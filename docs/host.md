@@ -242,6 +242,16 @@ The prompt runs on the host, in a Session Manager session, so the value goes fro
 
 The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/development/private/homes/workbench`), mode 600, one `export NAME='value'` line each. `tokiwa-bashrc` loads the file after `~/.bashrc`, so the newest saved value wins. Every program in a session runs as that user and can read the values; that includes the agents. Names that shells and Tokiwa rely on are refused: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `PWD`, `BROWSER`, `PS1`, and names that start with `TOKIWA_` or `TMUX`.
 
+## Audit log
+
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze` and `resume`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+
+```json
+{"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}
+```
+
+`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
+
 ## Stuck connections
 
 Each connection runs its command under `sudo -n runuser -u agent-workspace`, and that `sudo` ends when the connection ends. A `sudo` that outlives its connection loses its parent, and `init` (PID 1) adopts it. It does no work, but it can spin at full CPU: one used a whole core for six days. The cause is not known yet. Closing a connection in the usual ways (detach, a dropped network, a closed session) does not reproduce it.
