@@ -49,6 +49,8 @@ case "$*" in
  *get-command-invocation*StandardErrorContent*) echo 'Workbench unavailable.' ;;
  *get-command-invocation*) echo "${TEST_STATUS:-Success}" ;;
  *start-session*)
+  # The local terminal as the Session Manager plugin finds it.
+  stty -a > "$HOME/session-tty" 2>&1
   if [ -n "${TEST_LINE_FEED:-}" ]; then
    # The Session Manager plugin's own terminal setup, then a bare line feed from tmux.
    stty cbreak; stty -echo
@@ -166,6 +168,15 @@ esac
         self.assertIn('terminal-session.sh secret API_KEY ||', calls)
         # Run Command keeps its parameters and output in the account, so a value never goes there.
         self.assertNotIn('send-command', calls)
+
+    def test_secret_turns_local_echo_off_before_the_session_and_restores_it(self):
+        # The plugin turns echo off only after it starts; a paste before that would show locally.
+        code, _, local_modes = self.run_cli_in_terminal('secret', 'API_KEY')
+        self.assertEqual(code, 0)
+        self.assertRegex((self.home / 'session-tty').read_text(), r'(^|\s)-echo(\s|$)')
+        self.assertTrue(local_modes & termios.ECHO)
+        self.run_cli_in_terminal('attach', 'backend')
+        self.assertRegex((self.home / 'session-tty').read_text(), r'(^|\s)echo(\s|$)')
 
     def test_secret_list_and_remove_send_only_names(self):
         result = self.run_cli('secrets')

@@ -262,6 +262,9 @@ local_tty=$(stty -g)
 # line feed. The Session Manager plugin runs `stty cbreak`, which on macOS turns opost on; with
 # onlcr on, that line feed becomes CR LF and the row lands at column 0. The restore below undoes it.
 stty -onlcr 2>/dev/null || true
+# The plugin turns local echo off only after the session starts. A secret pasted before then would
+# show on this screen, so echo is off from the start; the host reads it with hidden input.
+[[ $mode != secret ]] || stty -echo 2>/dev/null || true
 session_status=0
 aws --profile "$profile" --region "$region" ssm start-session --target "$instance" --document-name AWS-StartInteractiveCommand --parameters "$parameters" || session_status=$?
 stty "$local_tty" 2>/dev/null || true
