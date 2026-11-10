@@ -589,6 +589,65 @@ class SessionModel(ModelHelpers, Server):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, f"Created terminal: fresh {self.rows()['fresh']['identity']}\n")
 
+    def test_create_makes_an_own_folder_inside_the_project(self):
+        root = Path(self.temp.name) / 'workspaces'
+        project = root / 'proj'
+        project.mkdir(parents=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        result = self.helper('create', 'lead', self.b64({'dir': str(project), 'subfolder': 'lead', 'project': 'proj'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.helper('create', 'fresh', self.b64({'folder': 'inbox', 'subfolder': 'fresh', 'project': 'inbox'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = self.rows()
+        self.assertEqual(rows['lead']['cwd'], str((project / 'lead').resolve()))
+        self.assertEqual(rows['fresh']['cwd'], str((root / 'inbox' / 'fresh').resolve()))
+        # The own folder is one name, so it stays inside the project folder.
+        for bad in ['../x', 'a/b', '', '.hidden']:
+            request = {'dir': str(project), 'subfolder': bad, 'project': 'proj'}
+            self.assertNotEqual(self.helper('create', 'bad', self.b64(request)).returncode, 0, bad)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+        self.assertFalse((root / 'x').exists())
+
+
+class ShellSettings(Server):
+    """A new shell reads the owner's .bashrc, and Tokiwa's prompt and browser still apply."""
+
+    def test_a_new_shell_reads_the_bashrc_and_keeps_the_tokiwa_prompt(self):
+        home = Path(self.temp.name) / 'home'
+        home.mkdir()
+        (home / '.bashrc').write_text('export PATH="$HOME/tools:$PATH"\nPS1="mine> "\nexport BROWSER=other\n')
+        self.tm('set-environment', '-g', 'HOME', str(home))
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        out = Path(self.temp.name) / 'settings'
+        self.tm('send-keys', '-t', '=plain:', f'echo "$PATH|$PS1|$BROWSER" > {out}', 'Enter')
+        for _ in range(100):
+            if out.exists() and out.read_text().endswith('\n'):
+                break
+            time.sleep(.05)
+        path, prompt, browser = out.read_text().strip().split('|')
+        self.assertTrue(path.startswith(f'{home}/tools:'), path)
+        self.assertEqual(prompt, 'tokiwa:\\W\\$ ')
+        self.assertEqual(browser, '/opt/agent-platform/rootless/tokiwa-open')
+
+    def test_tokiwa_attention_rings_the_bell_of_its_own_pane(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()
+        command = ['bash', str(ROOT / 'tokiwa-attention')]
+        inside = dict(os.environ, TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        result = subprocess.run(command, env=inside, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        flag = ''
+        for _ in range(100):
+            flag = self.tm('display-message', '-p', '-t', '=lead:', '#{window_bell_flag}').stdout.strip()
+            if flag == '1':
+                break
+            time.sleep(.02)
+        self.assertEqual(flag, '1')
+        outside = {k: v for k, v in os.environ.items() if k not in ('TMUX', 'TMUX_PANE')}
+        result = subprocess.run(command, env=outside, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('inside a Tokiwa session', result.stderr)
+
 
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""

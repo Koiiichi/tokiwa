@@ -389,6 +389,8 @@ export class App {
   picker = false;
   /** A title line above the input of the search panel, for an operation that needs one. */
   paletteTitle?: string;
+  /** True while a new session gets its own folder inside the project folder; tab changes it. */
+  ownFolder = true;
   /** The sessions that the workstation creates now, by name, with their project. */
   starting = new Map<string, string>();
   /** Sessions that this app created, and when: a read that began earlier cannot list them. */
@@ -2110,6 +2112,7 @@ export class App {
   /** Open the search box as a prompt for one operation. */
   askOperation(op: Operation) {
     if (this.palette) this.dismiss();
+    this.ownFolder = true;
     this.paletteTitle = this.operationText(op).title;
     this.openPalette();
     this.confirm = op;
@@ -2135,17 +2138,28 @@ export class App {
           placeholder: `Move ${op.ref.name} to project, for example studio/api`,
           hint: "Press enter to move it; its folder and processes stay",
         };
-      case "new-session":
+      case "new-session": {
+        const name = this.search?.value.trim() || this.suggestName(op.path);
+        // The last two names of the folder fit the prompt; the footer offers tab.
         return {
           title: `New session in ${projectTitle(op.path)}`,
           placeholder: `name, or enter for ${this.suggestName(op.path)}`,
-          hint: `It starts in ${projectTitle(op.dir)}`,
+          hint: `It starts in ${projectTitle(this.ownFolder ? `${op.dir}/${name}` : op.dir)}`,
         };
-      case "new-project":
+      }
+      case "new-project": {
+        // The folder takes the last name of the project, and the first session takes it too.
+        const last = (this.search?.value ?? "")
+          .split("/")
+          .filter(Boolean)
+          .at(-1);
         return {
           placeholder: "New project, for example inbox or studio/inbox",
-          hint: "Press enter: a folder of that name in workbench/ and a first session",
+          hint: !last
+            ? "It starts in a new folder in workbench/"
+            : `It starts in ${this.ownFolder ? `${last}/${last}` : `workbench/${last}`}`,
         };
+      }
       case "rename-session":
         return {
           placeholder: `Rename ${op.ref.name}`,
@@ -2209,6 +2223,7 @@ export class App {
             ? { dir: pending.dir }
             : { folder: path.split("/").at(-1)! },
           path,
+          this.ownFolder ? name : undefined,
         );
         return;
       }
@@ -2278,6 +2293,7 @@ export class App {
     name: string,
     where: { dir: string } | { folder: string },
     project: string,
+    subfolder?: string,
   ) {
     this.starting.set(name, project);
     const inputs = this.inputs;
@@ -2285,7 +2301,12 @@ export class App {
     this.drawSessions();
     this.drawFooter();
     try {
-      const identity = await this.backend.create(name, where, project);
+      const identity = await this.backend.create(
+        name,
+        where,
+        project,
+        subfolder,
+      );
       this.record("remote-operation", { operation: "create" });
       if (this.disposed) return;
       // The identity from the workstation is enough to attach; the launcher checks it again.
@@ -2294,7 +2315,12 @@ export class App {
             name,
             identity,
             project,
-            cwd: "dir" in where ? where.dir : "",
+            cwd:
+              "dir" in where
+                ? subfolder
+                  ? `${where.dir}/${subfolder}`
+                  : where.dir
+                : "",
             clients: 0,
             parent: "",
             managed: true,
@@ -2776,6 +2802,17 @@ export class App {
                 5,
                 () => void this.completeOperation(),
               ),
+              ...(this.choosesFolder()
+                ? [
+                    hint(
+                      "folder",
+                      "tab",
+                      this.ownFolder ? "project folder" : "own folder",
+                      3,
+                      () => this.toggleOwnFolder(),
+                    ),
+                  ]
+                : []),
               hint("cancel", "esc", "cancel", 9, () => this.dismiss()),
             ]
           : [
@@ -2887,6 +2924,16 @@ export class App {
         : []),
       hint("close", "esc", "close", 9, () => this.dismiss()),
     ];
+  }
+  /** True while the prompt makes a session, so tab chooses its folder. */
+  choosesFolder() {
+    const op = this.confirm?.operation;
+    return op === "new-session" || op === "new-project";
+  }
+  toggleOwnFolder() {
+    this.ownFolder = !this.ownFolder;
+    this.drawActions();
+    this.drawFooter();
   }
   /** Ask to end the session under the selection of the background list. */
   endPicked() {
@@ -4292,6 +4339,11 @@ export class App {
       if (key.ctrl && key.name === "c") {
         stop();
         this.dismiss();
+        return;
+      }
+      if (key.name === "tab" && this.choosesFolder()) {
+        stop();
+        this.toggleOwnFolder();
         return;
       }
       if (

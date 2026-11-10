@@ -108,7 +108,7 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 | --- | --- | --- |
 | `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
-| `◈` | Amber | Needs you. A window of the session rang the bell while no client viewed it. |
+| `◈` | Amber | Needs you. A window of the session rang the bell while no client viewed it. A program that waits for a person rings it with `tokiwa-attention`. |
 | `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
 | (empty) | — | No reading yet, or the snapshot did not include the pane activity. |

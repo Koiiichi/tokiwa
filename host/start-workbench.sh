@@ -13,7 +13,7 @@ for attempt in $(seq 1 100); do
   # New shells show the configured name in the prompt (tokiwa unless `tokiwa name` set another).
   prompt=$(/usr/bin/tmux -S "$socket" show-options -gqv @tokiwa_name || true)
   [[ $prompt =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]] || prompt=tokiwa
-  exec /usr/bin/tmux -S "$socket" new-session -d -s workbench -c /srv/development/state/workspaces/workbench env BROWSER=/opt/agent-platform/rootless/tokiwa-open "PS1=$prompt:\\W\\$ " /bin/bash --noprofile --norc \; set-option @tokiwa_session 1
+  exec /usr/bin/tmux -S "$socket" new-session -d -s workbench -c /srv/development/state/workspaces/workbench env TOKIWA_BROWSER=/opt/agent-platform/rootless/tokiwa-open "TOKIWA_PS1=$prompt:\\W\\$ " /bin/bash --noprofile --rcfile /opt/agent-platform/rootless/tokiwa-bashrc \; set-option @tokiwa_session 1
  fi
  sleep 0.1
 done

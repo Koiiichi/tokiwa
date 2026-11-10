@@ -249,6 +249,7 @@ export class BackendClient {
     name: string,
     where: { dir: string } | { folder: string },
     project: string,
+    subfolder?: string,
   ) {
     sessionName(name);
     // The workstation refuses a name that is taken, so no read of the list comes first.
@@ -259,6 +260,7 @@ export class BackendClient {
       "create",
       name,
       ...place,
+      ...(subfolder ? ["--subfolder", subfolder] : []),
       "--project",
       project.startsWith("/") ? project : projectName(project),
     ]);

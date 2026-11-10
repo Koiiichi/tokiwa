@@ -1,0 +1,8 @@
+# The startup file of every Tokiwa shell. The owner's .bashrc comes first, so that its PATH and
+# tools apply; Tokiwa's prompt and browser come after it, so that they stay the same in each session.
+if [[ -f $HOME/.bashrc ]]; then
+ . "$HOME/.bashrc"
+fi
+PS1=$TOKIWA_PS1
+export BROWSER=$TOKIWA_BROWSER
+unset TOKIWA_PS1 TOKIWA_BROWSER

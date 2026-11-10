@@ -103,6 +103,8 @@ test("+ on a project title starts a named session in its folder; + new project a
       "review",
       "--dir",
       "/w/api",
+      "--subfolder",
+      "review",
       "--project",
       "studio/api",
     ]);
@@ -118,6 +120,8 @@ test("+ on a project title starts a named session in its folder; + new project a
       "inbox",
       "--dir",
       "/w/notes",
+      "--subfolder",
+      "inbox",
       "--project",
       "inbox",
     ]);
@@ -129,6 +133,8 @@ test("+ on a project title starts a named session in its folder; + new project a
       "create",
       "inbox",
       "--folder",
+      "inbox",
+      "--subfolder",
       "inbox",
       "--project",
       "studio/inbox",
@@ -142,6 +148,8 @@ test("+ on a project title starts a named session in its folder; + new project a
       "tools2",
       "--dir",
       old,
+      "--subfolder",
+      "tools2",
       "--project",
       old,
     ]);

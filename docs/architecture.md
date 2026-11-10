@@ -91,7 +91,7 @@ On the host, each command runs as `sudo -n runuser -u agent-workspace -- env TOK
 | `mouse on` | Programs that report the mouse get the wheel and drags; other panes get tmux scrolling |
 | `set-clipboard on`, `allow-passthrough on` | A program's OSC 52 write and a `tokiwa-open` request reach the attached client |
 | Global `BROWSER=/opt/agent-platform/rootless/tokiwa-open` | Programs open links through the link helper |
-| Session `workbench` | A plain `bash --noprofile --norc` in the workbench folder, with the prompt `<name>:\W$ ` |
+| Session `workbench` | `bash` with the startup file `tokiwa-bashrc` in the workbench folder: the owner's `~/.bashrc`, then the prompt `<name>:\W$ ` |
 
 The prompt name is the server option `@tokiwa_name` (`tokiwa` by default; `tokiwa name NAME` sets it).
 

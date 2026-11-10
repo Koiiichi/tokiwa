@@ -255,3 +255,74 @@ test("a session that runs only a shell says shell; one that runs an agent does n
     w.dispose();
   }
 });
+
+test("a new session gets its own folder; tab starts it in the project folder", async () => {
+  const w = await workspace();
+  try {
+    w.app.askOperation({
+      operation: "new-session",
+      path: "inbox",
+      dir: "/w/inbox",
+    });
+    await w.t.mockInput.typeText("fresh");
+    await w.settle();
+    expect(w.frame()).toContain("It starts in inbox/fresh");
+    expect(w.frame()).toContain("tab project folder");
+    w.t.mockInput.pressEnter();
+    await w.settle();
+    expect(w.calls.find((c) => c[0] === "create")).toEqual([
+      "create",
+      "fresh",
+      "--dir",
+      "/w/inbox",
+      "--subfolder",
+      "fresh",
+      "--project",
+      "inbox",
+    ]);
+    w.app.askOperation({
+      operation: "new-session",
+      path: "inbox",
+      dir: "/w/inbox",
+    });
+    await w.t.mockInput.typeText("shared");
+    w.t.mockInput.pressTab();
+    await w.settle();
+    expect(w.frame()).toContain("It starts in w/inbox");
+    expect(w.frame()).toContain("tab own folder");
+    w.t.mockInput.pressEnter();
+    await w.settle();
+    expect(w.calls.filter((c) => c[0] === "create").at(-1)).toEqual([
+      "create",
+      "shared",
+      "--dir",
+      "/w/inbox",
+      "--project",
+      "inbox",
+    ]);
+  } finally {
+    w.dispose();
+  }
+});
+
+test("the first session of a new project gets its own folder too", async () => {
+  const w = await workspace();
+  try {
+    w.app.askOperation({ operation: "new-project" });
+    await w.t.mockInput.typeText("studio/review");
+    w.t.mockInput.pressEnter();
+    await w.settle();
+    expect(w.calls.find((c) => c[0] === "create")).toEqual([
+      "create",
+      "review",
+      "--folder",
+      "review",
+      "--subfolder",
+      "review",
+      "--project",
+      "studio/review",
+    ]);
+  } finally {
+    w.dispose();
+  }
+});

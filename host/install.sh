@@ -104,7 +104,8 @@ dir agent-workspace agent-workspace 700 /srv/development/private/peermesh
 
 # The helpers and the units.
 for file in start-workbench.sh terminal-session.sh tokiwa-open; do place 0755 "$file" "$rootless/$file"; done
-for file in workbench-health.py workspace-metadata.nft; do place 0644 "$file" "$rootless/$file"; done
+for file in tokiwa-bashrc workbench-health.py workspace-metadata.nft; do place 0644 "$file" "$rootless/$file"; done
+place 0755 tokiwa-attention /usr/local/bin/tokiwa-attention
 for unit in agent.slice agent-sessions.slice cloud-workbench.service; do place 0644 "units/$unit" "$units/$unit"; done
 
 # Sessions never reach the instance metadata service.

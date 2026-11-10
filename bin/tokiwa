@@ -20,7 +20,7 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 Attach to an existing terminal; with IDENTITY, only that exact session
   new NAME --from SOURCE  Open a shell in SOURCE’s current directory
   project NAME PROJECT  Put a session in a project: a name path such as studio/api, or a directory
-  create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT]
+  create NAME (--dir DIRECTORY | --folder FOLDER) [--subfolder NAME] [--project PROJECT]
                 Create a session in a directory, or in a new folder in the workbench folder
   move-project FROM TO  Move a project and the projects inside it, for example api studio/api
   forget-project PROJECT  Forget a saved project without sessions; its folders stay
@@ -71,14 +71,14 @@ case "$mode" in
   extra=$(python3 - "${@:3}" <<'PY_CREATE'
 import base64, json, sys
 args, want = sys.argv[1:], {}
-keys = {'--dir': 'dir', '--folder': 'folder', '--project': 'project'}
+keys = {'--dir': 'dir', '--folder': 'folder', '--project': 'project', '--subfolder': 'subfolder'}
 while args:
     if len(args) < 2 or args[0] not in keys or keys[args[0]] in want:
-        raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT].')
+        raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--subfolder NAME] [--project PROJECT].')
     want[keys[args[0]]] = args[1]
     args = args[2:]
 if ('dir' in want) == ('folder' in want):
-    raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--project PROJECT].')
+    raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--subfolder NAME] [--project PROJECT].')
 print(base64.b64encode(json.dumps(want).encode()).decode())
 PY_CREATE
 ) || exit 1 ;;

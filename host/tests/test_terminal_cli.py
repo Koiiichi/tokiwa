@@ -153,6 +153,12 @@ esac
         for args in [('create', 'notes'), ('create', 'notes', '--dir', '/a', '--folder', 'b'), ('move-project', 'api')]:
             self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
 
+    def test_create_sends_the_own_folder_of_the_session(self):
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--subfolder', 'lead', '--project', 'proj')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.home / 'calls').read_text()
+        self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'project': 'proj'})
+
     def test_rename_sends_the_new_name_and_identity_encoded(self):
         result = self.run_cli('rename', 'agent', 'claude-api', '1:$4:5')
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -60,6 +60,8 @@ class HostInstall(unittest.TestCase):
         self.assertIn('include "/opt/agent-platform/rootless/workspace-metadata.nft"', out)
         self.assertIn('would run: systemctl start cloud-workbench.service', out)
         self.assertIn('/etc/needrestart/conf.d/tokiwa.conf', out)
+        self.assertIn('/opt/agent-platform/rootless/tokiwa-bashrc', out)
+        self.assertIn('/usr/local/bin/tokiwa-attention', out)
         self.assertNotIn('docker', out.lower().replace('dry run', ''))
         self.assertIn('nothing changed', out)
 

@@ -50,7 +50,7 @@ prompt_name() {
 }
 # Start session $1 in directory $2 with a plain shell.
 start_shell() {
- tm new-session -d -s "$1" -c "$2" env "BROWSER=$browser" "PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --norc \; set-option @tokiwa_session 1
+ tm new-session -d -s "$1" -c "$2" env "TOKIWA_BROWSER=$browser" "TOKIWA_PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --rcfile "$(dirname "$0")/tokiwa-bashrc" \; set-option @tokiwa_session 1
 }
 # Validate a project label from base64 $1: a name path such as studio/api, or an existing absolute directory.
 project_label() {
@@ -335,6 +335,13 @@ try:
             raise ValueError()
     else:
         raise ValueError()
+    if 'subfolder' in want:
+        # The session's own folder is one name, so it stays inside the folder above.
+        subfolder = want['subfolder']
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,47}', subfolder) or not os.path.isdir(path):
+            raise ValueError()
+        path = os.path.join(path, subfolder)
+        os.makedirs(path, exist_ok=True)
     path = os.path.realpath(path)
     if not os.path.isdir(path) or not os.access(path, os.R_OK | os.X_OK):
         raise ValueError()

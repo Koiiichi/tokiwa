@@ -101,6 +101,7 @@ class WorkbenchTmuxOptions(unittest.TestCase):
             source = (ROOT / 'start-workbench.sh').read_text()
             source = source.replace('/run/cloud-workbench/tmux.sock', socket).replace('/usr/bin/tmux', tmux)
             source = source.replace('/srv/development/state/workspaces/workbench', folder)
+            source = source.replace('/opt/agent-platform/rootless/tokiwa-bashrc', str(ROOT / 'tokiwa-bashrc'))
             script = Path(folder) / 'start.sh'
             script.write_text(source)
             subprocess.run([tmux, '-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'seed'], check=True)

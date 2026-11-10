@@ -1,0 +1,8 @@
+#!/bin/bash
+# Ring the bell of the tmux pane that runs this command. Tokiwa then marks the session "needs you"
+# until someone attaches it. Use it when a program in the session waits for a person.
+set -euo pipefail
+[[ -n ${TMUX_PANE:-} && -n ${TMUX:-} ]] || { printf 'tokiwa-attention: run it inside a Tokiwa session.\n' >&2; exit 1; }
+# -N: never start a tmux server; this command only reaches the server of its own session.
+tty=$(tmux -N display-message -p -t "$TMUX_PANE" '#{pane_tty}')
+printf '\a' > "$tty"

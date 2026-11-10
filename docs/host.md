@@ -77,7 +77,7 @@ systemctl start cloud-workbench.service
 | Configuration file | none (`-f /dev/null`) |
 | Server options from `start-workbench.sh` | `mouse on`, `set-clipboard on`, `allow-passthrough on` |
 | Global environment | `BROWSER=/opt/agent-platform/rootless/tokiwa-open` |
-| Shell of a new session | `/bin/bash --noprofile --norc`, with `BROWSER` and `PS1=NAME:\W\$ ` |
+| Shell of a new session | `/bin/bash --noprofile --rcfile tokiwa-bashrc`: it reads the owner's `~/.bashrc` (for example the `PATH` of the tools in `~/.local/bin`), then sets `BROWSER` and `PS1=NAME:\W\$ ` |
 | Prompt name | The `@tokiwa_name` server option, `tokiwa` when it is not set (`tokiwa name NAME`) |
 | Session options | `@tokiwa_project` and `@tokiwa_parent` (see [Sessions and projects](sessions-and-projects.md)) |
 
@@ -92,6 +92,8 @@ systemctl start cloud-workbench.service
 | `start-workbench.sh` | `/opt/agent-platform/rootless/start-workbench.sh` | 0755 | Sets the tmux options and creates the `workbench` session. |
 | `terminal-session.sh` | `/opt/agent-platform/rootless/terminal-session.sh` | 0755 | The helper: lists, creates, attaches, reads, renames and ends sessions, and keeps `projects.json`. |
 | `tokiwa-open` | `/opt/agent-platform/rootless/tokiwa-open` | 0755 | The `BROWSER` program. Sends a link to the Mac. |
+| `tokiwa-bashrc` | `/opt/agent-platform/rootless/tokiwa-bashrc` | 0644 | The startup file of each shell: the owner's `~/.bashrc`, then Tokiwa's prompt and `BROWSER`. |
+| `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Rings the bell of the pane that runs it, so the session shows `needs you`. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
 | `daemon.json` | `/opt/agent-platform/rootless/daemon.json` | 0644 | The configuration of the rootless engine. |
