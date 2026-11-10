@@ -1002,6 +1002,16 @@ class AgentState(ModelHelpers, Server):
         self.assertEqual(self.report('lead', 'working', inside=False).returncode, 0)
         self.assertEqual(self.rows()['lead']['agent']['state'], 'idle')
 
+    def test_the_time_is_when_the_state_began_not_its_latest_report(self):
+        self.agent('lead', 'claude')
+        self.report('lead', 'idle')
+        began = self.rows()['lead']['agent']['at']
+        time.sleep(1.2)
+        self.report('lead', 'idle')
+        self.assertEqual(self.rows()['lead']['agent']['at'], began)
+        self.report('lead', 'working')
+        self.assertGreater(self.rows()['lead']['agent']['at'], began)
+
     def test_interrupt_sets_a_reported_agent_to_idle(self):
         self.agent('lead', 'claude')
         self.report('lead', 'working')

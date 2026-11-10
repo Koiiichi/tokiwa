@@ -246,7 +246,7 @@ The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/developme
 
 ## Agent state
 
-The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE`. The command records the state and the time on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show.
+The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE`. The command records the state, and the time that the state began, on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show.
 
 | State | Claude Code events | Codex events |
 | --- | --- | --- |

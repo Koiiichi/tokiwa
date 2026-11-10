@@ -7,5 +7,8 @@
 cat > /dev/null 2>&1 || true
 [[ -n ${TMUX_PANE:-} && -n ${TMUX:-} ]] || exit 0
 # -N: never start a tmux server; this command only reaches the server of its own session.
+# The time is when the state began: a report of the state that is already there keeps it.
+current=$(tmux -N show-options -qv -t "$TMUX_PANE" @tokiwa_agent 2>/dev/null) || exit 0
+[[ ${current%%:*} == "$1" ]] && exit 0
 tmux -N set-option -t "$TMUX_PANE" @tokiwa_agent "$1:$(date +%s)" > /dev/null 2>&1 || true
 exit 0
