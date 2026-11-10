@@ -1,5 +1,6 @@
 """Check CLI routing without AWS calls or provider requests."""
 import base64
+import json
 import os
 import pty
 import re
@@ -35,7 +36,10 @@ case "$*" in
  *describe-addresses*) echo '[]' ;;
  *send-command*) echo test-command ;;
  *get-command-invocation*StandardOutputContent*)
-  if grep -q 'terminal-session.sh capture' "$HOME/calls"; then
+  if grep -q 'terminal-session.sh digest' "$HOME/calls"; then
+   now=$(date +%s)
+   printf '{"sampled_at": %s, "sessions": [{"name": "lead-a", "identity": "1:$2:3", "active_at": %s, "agent": {"state": "waiting", "at": %s}, "git": {"branch": "main", "unpushed": 2, "changed": 1, "commit": "abc1234", "committed_at": %s}}, {"name": "notes", "identity": "1:$3:3", "active_at": %s, "agent": null, "git": null}]}\n' "$now" "$now" "$((now - 180))" "$((now - 7200))" "$((now - 86400))"
+  elif grep -q 'terminal-session.sh capture' "$HOME/calls"; then
    ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
    # Act as the host: encrypt to the certificate that the launcher sent.
    cert=$(grep -o "capture [^ ]* '[^']*' [0-9]* [A-Za-z0-9+/=]*" "$HOME/calls" | tail -1 | awk '{print $NF}')
@@ -235,6 +239,30 @@ esac
             (self.home / 'calls').unlink(missing_ok=True)
             self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
             self.assertFalse((self.home / 'calls').exists(), args)
+
+    def test_digest_prints_one_line_per_session_and_json_on_request(self):
+        result = self.run_cli('digest')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('terminal-session.sh digest', (self.home / 'calls').read_text())
+        lines = result.stdout.splitlines()
+        lead = next(line for line in lines if line.startswith('lead-a'))
+        for part in ['waiting 3m', 'active now', 'main', '2 unpushed', '1 changed', 'abc1234 2h ago']:
+            self.assertIn(part, lead)
+        notes = next(line for line in lines if line.startswith('notes'))
+        self.assertIn('active 1d ago', notes)
+        self.assertIn('no git', notes)
+        raw = self.run_cli('digest', '--json')
+        self.assertEqual(json.loads(raw.stdout)['sessions'][0]['name'], 'lead-a')
+        self.assertNotEqual(self.run_cli('digest', 'x').returncode, 0)
+
+    def test_the_actor_reaches_the_helper_only_when_well_formed(self):
+        self.env['TOKIWA_ACTOR'] = 'orchestrator-a'
+        self.run_cli('freeze', 'lead', '1:$2:3')
+        self.assertIn('TOKIWA_ACTOR=orchestrator-a ', (self.home / 'calls').read_text())
+        (self.home / 'calls').unlink()
+        self.env['TOKIWA_ACTOR'] = 'bad;rm'
+        self.run_cli('freeze', 'lead', '1:$2:3')
+        self.assertNotIn('TOKIWA_ACTOR', (self.home / 'calls').read_text())
 
     def test_rename_sends_the_new_name_and_identity_encoded(self):
         result = self.run_cli('rename', 'agent', 'claude-api', '1:$4:5')

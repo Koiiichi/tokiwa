@@ -22,15 +22,19 @@ valid_secret() {
 # Record a control action after it succeeded, in a private log, with the interface that asked for
 # it. A failed write warns and does not undo the action.
 audit() {
- local via=${TOKIWA_VIA:-cli}
+ local via=${TOKIWA_VIA:-cli} actor=${TOKIWA_ACTOR:-}
  [[ $via =~ ^(cli|mcp|app)$ ]] || via=unknown
- python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
+ # The caller names itself, for example an orchestrator's session; a malformed name is left out.
+ [[ $actor =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] || actor=
+ python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" "$actor" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
 import json, os, sys, time
-path, action, name, identity, via, run = sys.argv[1:7]
+path, action, name, identity, via, run, actor = sys.argv[1:8]
 os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
 entry = {'at': int(time.time()), 'action': action, 'name': name, 'identity': identity, 'via': via}
 if run:
     entry['run'] = run == '1'
+if actor:
+    entry['actor'] = actor
 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
     f.write(json.dumps(entry) + '\n')
 PY_AUDIT
@@ -43,7 +47,7 @@ case "$mode" in
  new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
- health|shell|sessions|status|snapshot|secrets|audit) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
+ health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
@@ -294,6 +298,57 @@ if sealed is None or sealed.returncode or not sealed.stdout:
     raise SystemExit('The capture could not be encrypted. Nothing was read.')
 print(base64.b64encode(sealed.stdout).decode())
 PY_CAPTURE
+  exit ;;
+ digest)
+  # One line of facts for each session: the state that its agent reported, when its screen last
+  # changed, and the git state of its folder. Commit messages stay out: Run Command keeps this output.
+  python3 - "$socket" <<'PY_DIGEST'
+import json
+import os
+import subprocess
+import sys
+import time
+
+socket = sys.argv[1]
+# A status check never takes the index lock that an agent's own git command needs.
+GIT_ENV = dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
+
+def tmux(*args):
+    return subprocess.run(['tmux', '-N', '-S', socket, *args], capture_output=True, text=True, timeout=10).stdout.rstrip('\n')
+
+def git(folder, *args):
+    try:
+        result = subprocess.run(['git', '-C', folder, *args], capture_output=True, text=True, timeout=5, env=GIT_ENV)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+def repository(folder):
+    if git(folder, 'rev-parse', '--is-inside-work-tree') != 'true':
+        return None
+    head = git(folder, 'log', '-1', '--format=%h %ct')
+    commit, _, committed = (head or '').partition(' ')
+    unpushed = git(folder, 'rev-list', '--count', '@{upstream}..HEAD')
+    return {'branch': git(folder, 'rev-parse', '--abbrev-ref', 'HEAD'),
+            'unpushed': int(unpushed) if unpushed is not None else None,
+            'changed': len((git(folder, 'status', '--porcelain') or '').splitlines()),
+            'commit': commit or None,
+            'committed_at': int(committed) if committed.isdigit() else None}
+
+rows = []
+for line in tmux('list-sessions', '-F', '#{session_name}\t#{pid}:#{session_id}:#{session_created}\t#{session_activity}').splitlines()[:100]:
+    name, identity, active = line.split('\t')
+    target = '=' + name + ':'
+    folder = tmux('display-message', '-p', '-t', target, '#{pane_current_path}')
+    panes = [pane.split(' ', 1) for pane in tmux('list-panes', '-s', '-t', '=' + name, '-F', '#{pane_dead} #{pane_current_command}').splitlines()]
+    state, _, at = tmux('show-options', '-qv', '-t', target, '@tokiwa_agent').partition(':')
+    agent = None
+    if at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for dead, command in panes):
+        agent = {'state': state, 'at': int(at)}
+    rows.append({'name': name, 'identity': identity, 'active_at': int(active) if active.isdigit() else None,
+                 'agent': agent, 'git': repository(folder) if folder else None})
+print(json.dumps({'sampled_at': int(time.time()), 'sessions': rows}))
+PY_DIGEST
   exit ;;
  snapshot)
   python3 - "$socket" "$state" <<'PY_SNAPSHOT'

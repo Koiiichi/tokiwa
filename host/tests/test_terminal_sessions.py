@@ -1010,6 +1010,70 @@ class AgentState(ModelHelpers, Server):
         self.assertEqual(self.rows()['lead']['agent']['state'], 'idle')
 
 
+class Digest(ModelHelpers, Server):
+    """digest gives one line of facts for each session: its agent, its activity and its folder's git state."""
+
+    def git(self, folder, *args):
+        subprocess.run(['git', '-C', str(folder), *args], check=True, capture_output=True,
+                       env=dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@example.com',
+                                GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@example.com'))
+
+    def created(self, name, folder):
+        request = {'dir': str(folder), 'project': 'proj'}
+        self.assertEqual(self.helper('create', name, self.b64(request)).returncode, 0)
+
+    def digest(self):
+        result = self.helper('digest')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return {row['name']: row for row in json.loads(result.stdout)['sessions']}
+
+    def test_digest_reports_the_git_state_of_each_session_folder(self):
+        root = Path(self.temp.name)
+        remote, repo, plain = root / 'remote.git', root / 'repo', root / 'plain'
+        subprocess.run(['git', 'init', '-q', '--bare', '-b', 'main', str(remote)], check=True)
+        subprocess.run(['git', 'clone', '-q', str(remote), str(repo)], check=True, capture_output=True)
+        self.git(repo, 'commit', '-q', '--allow-empty', '-m', 'first')
+        self.git(repo, 'push', '-q', '-u', 'origin', 'HEAD:main')
+        self.git(repo, 'commit', '-q', '--allow-empty', '-m', 'secret plan in a message')
+        (repo / 'notes.txt').write_text('changed\n')
+        plain.mkdir()
+        self.created('lead', repo)
+        self.created('other', plain)
+        rows = self.digest()
+        git = rows['lead']['git']
+        self.assertEqual((git['branch'], git['unpushed'], git['changed']), ('main', 1, 1))
+        self.assertRegex(git['commit'], r'^[0-9a-f]{7,}$')
+        self.assertIsInstance(git['committed_at'], int)
+        # A commit message can hold more than a name, and the digest is not encrypted.
+        self.assertNotIn('secret plan', json.dumps(rows))
+        self.assertIsNone(rows['other']['git'])
+        for row in rows.values():
+            self.assertIsInstance(row['active_at'], int)
+            self.assertIn('agent', row)
+            self.assertIn('identity', row)
+
+    def test_a_branch_without_upstream_has_no_unpushed_count(self):
+        repo = Path(self.temp.name) / 'solo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', '-b', 'work', str(repo)], check=True)
+        self.git(repo, 'commit', '-q', '--allow-empty', '-m', 'first')
+        self.created('lead', repo)
+        git = self.digest()['lead']['git']
+        self.assertEqual((git['branch'], git['unpushed'], git['changed']), ('work', None, 0))
+
+    def test_the_actor_of_an_action_is_logged_when_given(self):
+        self.created('lead', Path(self.temp.name))
+        identity = self.rows()['lead']['identity']
+        self.env['TOKIWA_ACTOR'] = 'orchestrator-a'
+        self.assertEqual(self.helper('interrupt', 'lead', identity).returncode, 0)
+        self.env['TOKIWA_ACTOR'] = 'bad actor;rm'
+        self.assertEqual(self.helper('interrupt', 'lead', identity).returncode, 0)
+        lines = (Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()
+        entries = [json.loads(line) for line in lines if '"interrupt"' in line]
+        self.assertEqual(entries[0]['actor'], 'orchestrator-a')
+        self.assertNotIn('actor', entries[1])
+
+
 class SavedProjects(ModelHelpers, Server):
     """Projects are saved on the workstation, so a project outlives its sessions."""
 

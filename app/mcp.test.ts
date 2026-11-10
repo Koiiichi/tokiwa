@@ -39,10 +39,11 @@ async function connect(
 }
 const screen = { name: "web-lead", identity: "1:$2:3" };
 
-test("the server lists five read-only tools", async () => {
+test("the server lists six read-only tools", async () => {
   const { client } = await connect(() => "");
   const { tools } = await client.listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
+    "tokiwa_digest",
     "tokiwa_health",
     "tokiwa_screen",
     "tokiwa_search",
@@ -217,6 +218,7 @@ test("the read tools are the read entries of the capability table", async () => 
 
 test("a control tool needs --allow control, and a run tool needs --allow run", async () => {
   const read = [
+    "tokiwa_digest",
     "tokiwa_health",
     "tokiwa_screen",
     "tokiwa_search",

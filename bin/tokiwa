@@ -8,6 +8,7 @@ name=${2:-}
 extra=
 lines=
 query=
+digest_json=0
 usage() {
  cat <<'EOF'
 Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|mcp|shell|admin]
@@ -46,6 +47,8 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   secret --remove NAME
                 Remove a saved secret
   secrets       List the names of the saved secrets
+  digest [--json]
+                One line for each session: its agent's state, its last activity, and its folder's git state
   audit         Show the last control actions on the host: what, which session, when and from where
   status        Check AWS access, host state and the workbench server
   --check       Same as status
@@ -136,6 +139,9 @@ PY_CREATE
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail "Use $mode NAME IDENTITY, with the identity from tokiwa sessions --json."
   extra=$3 ;;
+ digest)
+  if [[ $# -eq 2 && $2 == --json ]]; then digest_json=1; name=
+  else [[ $# -le 1 ]] || fail 'Use digest or digest --json.'; fi ;;
  search)
   # A capture that reads the whole scrollback for the lines that hold the text.
   [[ $# -eq 4 && $2 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && -n $4 && ${#4} -le 200 && $4 != *[[:cntrl:]]* ]] \
@@ -222,13 +228,16 @@ note 'Tokiwa · host running\n' >&2
 # The interface that asked, for the audit log on the host: this command, the MCP server or the app.
 via=${TOKIWA_VIA:-cli}
 [[ $via =~ ^(cli|mcp|app)$ ]] || via=cli
-helper="sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=$via /opt/agent-platform/rootless/terminal-session.sh"
+# The caller may also name itself, for example an orchestrator's session; a malformed name is left out.
+actor=${TOKIWA_ACTOR:-}
+[[ $actor =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] || actor=
+helper="sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=$via${actor:+ TOKIWA_ACTOR=$actor} /opt/agent-platform/rootless/terminal-session.sh"
 case "$mode" in
  list) mode=sessions ;;
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit || $mode == digest ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
@@ -264,7 +273,44 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
    || fail 'The capture could not be decrypted.'
   exit 0
  fi
- [[ $mode == capture ]] || aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
+ if [[ $mode == digest && $digest_json == 0 ]]; then
+  aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text | python3 -c '
+import json, sys
+digest = json.load(sys.stdin)
+now = digest["sampled_at"]
+def span(seconds):
+    seconds = max(0, now - seconds)
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            return f"{seconds // size}{unit}"
+    return "now"
+rows = []
+for row in digest["sessions"]:
+    agent = row["agent"]
+    state = f"{agent["state"]} {span(agent["at"])}" if agent else "-"
+    active = row["active_at"]
+    active = "active now" if active is None or span(active) == "now" else f"active {span(active)} ago"
+    git = row["git"]
+    if not git:
+        place = "no git"
+    else:
+        counts = []
+        if git["unpushed"] is None:
+            counts.append("no upstream")
+        elif git["unpushed"]:
+            counts.append(f"{git["unpushed"]} unpushed")
+        if git["changed"]:
+            counts.append(f"{git["changed"]} changed")
+        last = f"{git["commit"]} {span(git["committed_at"])} ago" if git["commit"] else "no commits"
+        place = f"{git["branch"]}  {" · ".join(counts) or "up to date"}  {last}"
+    rows.append((row["name"], state, active, place))
+width = [max([len(r[i]) for r in rows] + [0]) for i in range(3)]
+for r in rows:
+    print("  ".join(r[i].ljust(width[i]) for i in range(3)) + "  " + r[3])
+' || true
+ else
+  [[ $mode == capture ]] || aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
+ fi
  if [[ $status != Success ]]; then
   aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text >&2 || true
   fail "The workbench check returned $status. No service was started."

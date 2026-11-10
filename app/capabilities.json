@@ -103,6 +103,18 @@
       }
     },
     {
+      "command": "digest",
+      "class": "read",
+      "example": ["digest", "--json"],
+      "helper": "digest",
+      "tool": {
+        "name": "tokiwa_digest",
+        "description": "One line of facts for each Tokiwa session, as JSON: the state that its agent reported and since when, when its screen last changed, and the git state of its folder (branch, unpushed commits, changed files, last commit and its time). Commit messages are not included.",
+        "argv": ["digest", "--json"],
+        "args": {}
+      }
+    },
+    {
       "command": "spend",
       "class": "read",
       "example": ["spend"]

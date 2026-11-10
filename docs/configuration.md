@@ -17,6 +17,7 @@ The app has no settings screen. A setting changes only through the items on this
 | `TOKIWA_HOST_CONFIG` | Launcher, app | `~/.config/tokiwa/host.env` | The file of the [host settings](#host-settings). |
 | `TOKIWA_DASHBOARD` | Launcher | `0` | `1` turns off the progress lines of the launcher, and the launcher does not start `aws sso login`. The app sets `1` on each launcher call. |
 | `TOKIWA_VIA` | Launcher, app, MCP server | `cli`; the app sets `app`, the MCP server `mcp` | The interface that the [audit log](host.md#audit-log) of the host names for each control action. Another value counts as `cli`. |
+| `TOKIWA_ACTOR` | Launcher | Unset | A name for the caller, for example an orchestrator's session, that the [audit log](host.md#audit-log) records as `actor`. One to 64 letters, digits and `_ . : -`; another value is left out. Like `via`, it is what the caller says. |
 | `HOME` | App, launcher | — | The base of the launcher path, `health.json`, the state files and the start directory of a local shell. |
 | `SHELL` | App | — | The login shell of a local shell. |
 | `LANG` | App | `en_US.UTF-8` when unset | The locale of each transport. |
