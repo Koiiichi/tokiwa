@@ -239,7 +239,9 @@ export function estimateSpend(
   return {
     monthToDate,
     forecast,
-    ...(config.budget_usd ? { percent: (100 * forecast) / config.budget_usd } : {}),
+    ...(config.budget_usd
+      ? { percent: (100 * forecast) / config.budget_usd }
+      : {}),
     monthStart,
     computeSince,
     end,
@@ -423,6 +425,21 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     value: uptime,
     tone: uptime.startsWith("not") ? "dim" : undefined,
   });
+  const stuck = Array.isArray(host?.stuck_connections)
+    ? host.stuck_connections
+    : [];
+  for (const process of stuck)
+    rows.push({
+      kind: "pair",
+      label: "Stuck connection:",
+      value: `PID ${process.pid} · ${formatDuration(process.age_seconds)} · ${Math.round((100 * process.cpu_seconds) / Math.max(process.age_seconds, 1))}% of a core`,
+      tone: "warning",
+    });
+  if (stuck.length)
+    rows.push({
+      kind: "note",
+      text: "Its connection ended. See Stuck connections in docs/host.md before you stop it.",
+    });
   if (m.configError)
     rows.push({
       kind: "pair",
@@ -491,7 +508,12 @@ function spend(m: HealthViewModel): Row[] {
         label: "Spent so far:",
         value: `${money(spent)} of $${budget} budget`,
       },
-      { kind: "bar", label: "", percent: share, value: `${Math.round(share)}%` },
+      {
+        kind: "bar",
+        label: "",
+        percent: share,
+        value: `${Math.round(share)}%`,
+      },
     );
   } else
     rows.push({ kind: "pair", label: "Spent so far:", value: money(spent) });

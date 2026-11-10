@@ -13,6 +13,8 @@ DISKS = [
     ("State disk", "/srv/development/state"),
     ("Cache disk", "/srv/development/cache"),
 ]
+# The launcher starts the command of every connection with this prefix (`helper` in bin/tokiwa).
+CONNECTION = [b"sudo", b"-n", b"runuser", b"-u", b"agent-workspace"]
 
 
 def cpu_counters(text):
@@ -79,6 +81,47 @@ def workbench_limits(path, cores):
         "tasks": int((path / "pids.current").read_text()),
         "tasks_max": limit((path / "pids.max").read_text()),
     }
+
+
+def stuck_connections():
+    """List the connection sudo processes that init adopted after their connection ended.
+
+    A live connection's sudo has the session shell as its parent. One that lost it does no work,
+    and it can spin at full CPU for days. Each entry has its PID, CPU seconds and age in seconds.
+    """
+    ticks = os.sysconf("SC_CLK_TCK")
+    uptime = float((PROC / "uptime").read_text().split()[0])
+    found = []
+    for folder in sorted(PROC.iterdir(), key=lambda path: path.name):
+        if not folder.name.isdigit():
+            continue
+        try:
+            stat = (folder / "stat").read_text()
+            command = (folder / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            # The process ended during the scan.
+            continue
+        # The command name is in parentheses and can hold spaces; the fields follow the last one.
+        name = stat[stat.index("(") + 1 : stat.rindex(")")]
+        fields = stat[stat.rindex(")") + 2 :].split()
+        if name != "sudo" or fields[1] != "1" or command[:5] != CONNECTION:
+            continue
+        found.append(
+            {
+                "pid": int(folder.name),
+                "cpu_seconds": (int(fields[11]) + int(fields[12])) / ticks,
+                "age_seconds": uptime - int(fields[19]) / ticks,
+            }
+        )
+    return sorted(found, key=lambda process: process["pid"])
+
+
+def duration(seconds):
+    for size, unit_name in [(86400, "day"), (3600, "hour"), (60, "minute")]:
+        if seconds >= size:
+            count = int(seconds // size)
+            return f"{count} {unit_name}" + ("" if count == 1 else "s")
+    return "under a minute"
 
 
 def unit(name):
@@ -177,6 +220,19 @@ def collect():
         usage["uptime_seconds"] = float((PROC / "uptime").read_text().split()[0])
     except (OSError, ValueError, IndexError) as exc:
         errors.append("Uptime: " + type(exc).__name__)
+    try:
+        usage["stuck_connections"] = stuck_connections()
+        for process in usage["stuck_connections"]:
+            share = 100 * process["cpu_seconds"] / max(process["age_seconds"], 1)
+            rows.append(
+                [
+                    "Stuck connection",
+                    f"PID {process['pid']} · {duration(process['age_seconds'])}"
+                    f" · {share:.0f}% of a core",
+                ]
+            )
+    except (OSError, ValueError, IndexError) as exc:
+        usage["stuck_connections"] = {"error": type(exc).__name__}
     if network:
         try:
             name, (rx, tx), started = network

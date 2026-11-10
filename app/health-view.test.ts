@@ -349,6 +349,26 @@ test("missing readings and failed parts give a reason, never a zero", () => {
   );
 });
 
+test("a stuck connection shows as an amber row with its PID, age and CPU share", () => {
+  const sample = structuredClone(fixtureSample);
+  sample.host!.stuck_connections = [
+    { pid: 4242, cpu_seconds: 86000, age_seconds: 86400 + 7200 },
+  ];
+  const lines = healthLines(fixtureModel({ sample }), 96);
+  const stuck = row(lines, "Stuck connection:");
+  expect(lineText(stuck)).toContain("PID 4242 · 1d 2h 0m · 92% of a core");
+  expect(stuck.some((span) => span.tone === "warning")).toBe(true);
+  expect(text(lines)).toContain("docs/host.md");
+  // None, an older host script and an unreadable scan show no row.
+  for (const value of [[], undefined, { error: "PermissionError" }]) {
+    const quiet = structuredClone(fixtureSample);
+    quiet.host!.stuck_connections = value;
+    expect(
+      text(healthLines(fixtureModel({ sample: quiet }), 96)),
+    ).not.toContain("Stuck connection");
+  }
+});
+
 test("an invalid configuration shows its error in the view", () => {
   const all = text(
     healthLines(

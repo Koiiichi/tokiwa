@@ -226,6 +226,25 @@ app on the Mac → input in that view in the last 5 seconds?
 
 The state volume holds `workbench/`. The private volume holds the home, with the logins of Claude Code and Codex; the backup leaves it out. Sign in from a session with `claude auth login` or `codex login`.
 
+## Stuck connections
+
+Each connection runs its command under `sudo -n runuser -u agent-workspace`, and that `sudo` ends when the connection ends. A `sudo` that outlives its connection loses its parent, and `init` (PID 1) adopts it. It does no work, but it can spin at full CPU: one used a whole core for six days. The cause is not known yet. Closing a connection in the usual ways (detach, a dropped network, a closed session) does not reproduce it.
+
+`tokiwa health` lists each one in `host.stuck_connections` and as a `Stuck connection` row. The Health view shows it in amber with its PID, its age and its CPU share.
+
+Before you stop one, record where it spins, so that the cause can be found. Run these in `tokiwa admin`, so that the output stays in your terminal. `-s 0` keeps `strace` from printing the data that passes through, which can be terminal text:
+
+```sh
+pid=PID
+cat /proc/$pid/stack              # the kernel stack
+ls -l /proc/$pid/fd               # its terminals and pipes
+timeout 5 strace -c -p $pid       # system calls, counted for 5 seconds
+timeout 1 strace -s 0 -p $pid 2>&1 | head -20
+kill $pid; sleep 5; kill -0 $pid 2>/dev/null && kill -KILL $pid
+```
+
+Stopping it affects no session: its program has already ended. The one seen so far ignored `TERM` and stopped with `KILL`.
+
 ## The admin route
 
 `tokiwa admin` opens an interactive Session Manager session that runs `sudo -n /bin/bash -l`: a root login shell on the host, outside the service sandbox. It uses the same AWS profile as the other launcher commands, and the launcher adds no other authentication. Use it to start the service after it stopped, read the units, or run the installer again:

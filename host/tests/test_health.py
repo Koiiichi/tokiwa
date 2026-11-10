@@ -176,6 +176,39 @@ class CollectTests(unittest.TestCase):
             },
         )
 
+    def test_a_stuck_connection_is_a_tokiwa_sudo_that_lost_its_parent(self):
+        """Only an adopted `sudo -n runuser -u agent-workspace` counts; a live one keeps its parent."""
+        helper = ["sudo", "-n", "runuser", "-u", "agent-workspace", "--", "env"]
+
+        def process(pid, comm, ppid, cmdline, utime=0, stime=0, start=0):
+            folder = self.proc / str(pid)
+            folder.mkdir()
+            rest = ["S", str(ppid)] + ["0"] * 9 + [str(utime), str(stime)] + ["0"] * 6 + [str(start)]
+            (folder / "stat").write_text(f"{pid} ({comm}) " + " ".join(rest) + "\n")
+            (folder / "cmdline").write_text("\0".join(cmdline) + "\0")
+
+        # Uptime is 273600.25 s; at 100 ticks a second the stuck one started 86400.25 s before.
+        process(4242, "sudo", 1, helper, utime=8_000_000, stime=640_000, start=18_720_000)
+        process(4300, "sudo", 4299, helper, start=27_000_000)
+        process(4400, "sudo", 1, ["sudo", "-n", "/bin/bash", "-l"], start=27_000_000)
+        process(4500, "python3", 1, ["python3", "x"], start=27_000_000)
+        (self.proc / "4600").mkdir()  # A process that ended during the scan.
+        with mock.patch.object(health.os, "sysconf", lambda name: 100):
+            sample = self.collect()
+        self.assertEqual(
+            sample["host"]["stuck_connections"],
+            [{"pid": 4242, "cpu_seconds": 86400.0, "age_seconds": 86400.25}],
+        )
+        self.assertEqual(
+            dict(sample["rows"])["Stuck connection"],
+            "PID 4242 · 1 day · 100% of a core",
+        )
+
+    def test_no_stuck_connection_gives_an_empty_list_and_no_row(self):
+        sample = self.collect()
+        self.assertEqual(sample["host"]["stuck_connections"], [])
+        self.assertNotIn("Stuck connection", dict(sample["rows"]))
+
     def test_unreadable_parts_report_an_error_instead_of_zero(self):
         (self.proc / "uptime").unlink()
         (self.proc / "net/route").unlink()

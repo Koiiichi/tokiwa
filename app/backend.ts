@@ -62,6 +62,10 @@ export interface HostUsage {
     rx_bytes_per_second: number;
     tx_bytes_per_second: number;
   }> | null;
+  /** The sudo processes of connections that ended without them; they can spin at full CPU. */
+  stuck_connections?: Part<
+    { pid: number; cpu_seconds: number; age_seconds: number }[]
+  >;
 }
 export interface HealthSample {
   sampled_at: number;

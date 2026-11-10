@@ -9,7 +9,7 @@ It does not change the host, its workloads or its service limits. The spend figu
 
 | Section | Rows | Source |
 | --- | --- | --- |
-| Workstation | `Instance:` (the instance ID, type and region, and its state when it is not running), `Uptime:`, `Authorization:` (days left) and the end time | `tokiwa spend`, `tokiwa health`, `health.json` |
+| Workstation | `Instance:` (the instance ID, type and region, and its state when it is not running), `Uptime:`, an amber `Stuck connection:` row for each [stuck connection](host.md#stuck-connections) (its PID, age and CPU share), `Authorization:` (days left) and the end time | `tokiwa spend`, `tokiwa health`, `health.json` |
 | Spend (estimate) | `Spent so far:` and, with a budget, a bar of it against the budget, `Forecast:`, `Month to date:`, and a note on what the estimate counts | `tokiwa spend`, `health.json` |
 | Workbench limits | `CPU` of the CPU quota, `Memory` of the memory limit, `Tasks` of the task limit, each as a bar | `tokiwa health`: the cgroup of `cloud-workbench.service` |
 | Storage | One bar for each disk that the host reports, used of total | `tokiwa health` |
