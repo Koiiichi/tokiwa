@@ -609,22 +609,103 @@ class SessionModel(ModelHelpers, Server):
         self.assertFalse((root / 'x').exists())
 
 
+class SecretStore(Server):
+    """A secret is read with hidden input on the host, saved private, and never printed."""
+
+    def secret(self, name, typed):
+        """Run `secret NAME` in a terminal, type `typed` at its prompt, and return the code and output."""
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(self.env)
+            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), 'secret', name)
+        output = b''
+        try:
+            sent = False
+            for _ in range(400):
+                if not select.select([fd], [], [], 0.05)[0]:
+                    if sent and output.endswith(b'\n') and b'Saved' in output:
+                        break
+                    continue
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+                if not sent and b'hidden' in output:
+                    os.write(fd, typed)
+                    sent = True
+        finally:
+            os.close(fd)
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status), output.decode(errors='replace')
+
+    def stored(self, name):
+        file = Path(self.env['TOKIWA_STATE']) / 'secrets.env'
+        script = f'. {file}; printf %s "${name}"'
+        return subprocess.run(['bash', '-c', script], capture_output=True, text=True).stdout
+
+    def test_a_secret_is_saved_private_and_never_printed(self):
+        code, output = self.secret('API_KEY', b"s3cr'et value\n")
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('s3cr', output)
+        self.assertIn('Saved API_KEY', output)
+        file = Path(self.env['TOKIWA_STATE']) / 'secrets.env'
+        self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(file.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.stored('API_KEY'), "s3cr'et value")
+
+    def test_a_paste_of_several_lines_keeps_the_first_and_drops_the_rest(self):
+        code, output = self.secret('API_KEY', b'first\nsecond\nthird\n')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.stored('API_KEY'), 'first')
+        self.assertIn('2 extra lines', output)
+        self.assertNotIn('second', output)
+
+    def test_a_secret_is_replaced_listed_by_name_and_removed(self):
+        for name, value in [('A_KEY', b'one\n'), ('B_KEY', b'two\n'), ('A_KEY', b'three\n')]:
+            self.assertEqual(self.secret(name, value)[0], 0)
+        self.assertEqual(self.stored('A_KEY'), 'three')
+        listed = self.helper('secrets')
+        self.assertEqual(listed.stdout, 'A_KEY\nB_KEY\n')
+        self.assertEqual(self.helper('secret-remove', 'B_KEY').returncode, 0)
+        self.assertEqual(self.helper('secrets').stdout, 'A_KEY\n')
+        missing = self.helper('secret-remove', 'B_KEY')
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn('No secret named B_KEY', missing.stderr)
+
+    def test_bad_names_empty_values_and_no_terminal_save_nothing(self):
+        for name in ['PATH', 'HOME', 'PS1', 'TOKIWA_X', 'TMUX_PANE', 'bad-name', '9KEY']:
+            self.assertNotEqual(self.helper('secret', name).returncode, 0, name)
+        self.assertNotEqual(self.secret('API_KEY', b'\n')[0], 0)
+        result = self.helper('secret', 'API_KEY')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('terminal', result.stderr)
+        self.assertFalse((Path(self.env['TOKIWA_STATE']) / 'secrets.env').exists())
+
+
 class ShellSettings(Server):
     """A new shell reads the owner's .bashrc, and Tokiwa's prompt and browser still apply."""
 
     def test_a_new_shell_reads_the_bashrc_and_keeps_the_tokiwa_prompt(self):
         home = Path(self.temp.name) / 'home'
         home.mkdir()
-        (home / '.bashrc').write_text('export PATH="$HOME/tools:$PATH"\nPS1="mine> "\nexport BROWSER=other\n')
+        (home / '.bashrc').write_text('export PATH="$HOME/tools:$PATH"\nPS1="mine> "\nexport BROWSER=other\n'
+                                      'export API_KEY=old\n')
+        # A saved secret comes after .bashrc, so the newest saved value wins.
+        (home / '.tokiwa').mkdir()
+        (home / '.tokiwa/secrets.env').write_text("export API_KEY='new'\n")
         self.tm('set-environment', '-g', 'HOME', str(home))
         self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
         out = Path(self.temp.name) / 'settings'
-        self.tm('send-keys', '-t', '=plain:', f'echo "$PATH|$PS1|$BROWSER" > {out}', 'Enter')
+        self.tm('send-keys', '-t', '=plain:', f'echo "$PATH|$PS1|$BROWSER|$API_KEY" > {out}', 'Enter')
         for _ in range(100):
             if out.exists() and out.read_text().endswith('\n'):
                 break
             time.sleep(.05)
-        path, prompt, browser = out.read_text().strip().split('|')
+        path, prompt, browser, key = out.read_text().strip().split('|')
+        self.assertEqual(key, 'new')
         self.assertTrue(path.startswith(f'{home}/tools:'), path)
         self.assertEqual(prompt, 'tokiwa:\\W\\$ ')
         self.assertEqual(browser, '/opt/agent-platform/rootless/tokiwa-open')

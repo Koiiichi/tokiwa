@@ -159,6 +159,31 @@ esac
         calls = (self.home / 'calls').read_text()
         self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'project': 'proj'})
 
+    def test_secret_reads_the_value_on_the_host_in_a_terminal(self):
+        self.run_cli_in_terminal('secret', 'API_KEY')
+        calls = (self.home / 'calls').read_text()
+        self.assertIn('start-session', calls)
+        self.assertIn('terminal-session.sh secret API_KEY ||', calls)
+        # Run Command keeps its parameters and output in the account, so a value never goes there.
+        self.assertNotIn('send-command', calls)
+
+    def test_secret_list_and_remove_send_only_names(self):
+        result = self.run_cli('secrets')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('terminal-session.sh secrets', (self.home / 'calls').read_text())
+        result = self.run_cli('secret', '--remove', 'API_KEY')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('terminal-session.sh secret-remove API_KEY', (self.home / 'calls').read_text())
+
+    def test_secret_needs_a_terminal_and_a_safe_name_before_aws(self):
+        for args in [('secret',), ('secret', 'bad-name'), ('secret', 'PATH'), ('secret', 'TOKIWA_X'),
+                     ('secret', '--remove'), ('secret', 'A', 'B'), ('secrets', 'x')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        result = self.run_cli('secret', 'API_KEY')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('interactive terminal', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_rename_sends_the_new_name_and_identity_encoded(self):
         result = self.run_cli('rename', 'agent', 'claude-api', '1:$4:5')
         self.assertEqual(result.returncode, 0, result.stderr)

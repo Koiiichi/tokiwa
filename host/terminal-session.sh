@@ -14,6 +14,11 @@ tm() { tmux -N -S "$socket" "$@"; }
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 valid_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]]; }
 valid_prompt_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]]; }
+# A secret becomes an environment variable of each new shell; the names that shells and Tokiwa use are refused.
+valid_secret() {
+ [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ ]] || return 1
+ case $1 in PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_*|TMUX*) return 1 ;; esac
+}
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
@@ -22,13 +27,67 @@ case "$mode" in
  new|attach|view|ensure|project|end|create|rename|capture) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
- health|shell|sessions|status|snapshot) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
+ health|shell|sessions|status|snapshot|secrets) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
+ secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
 [[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
+fi
+if [[ $mode == secret || $mode == secret-remove || $mode == secrets ]]; then
+ # Each line is `export NAME='value'`; tokiwa-bashrc loads the file in each new shell. A value reaches
+ # this program on stdin only: an argument is visible to every user in the process list.
+ read -r -d '' secrets_program <<'PY_SECRETS' || true
+import os, re, shlex, sys
+op, name, path = sys.argv[1:4]
+line = re.compile(r'export ([A-Za-z_][A-Za-z0-9_]*)=')
+try:
+    with open(path, encoding='utf-8') as f:
+        lines = f.read().splitlines()
+except FileNotFoundError:
+    lines = []
+names = [m.group(1) for m in map(line.match, lines) if m]
+if op == 'list':
+    print(''.join(n + '\n' for n in sorted(names)), end='')
+    raise SystemExit
+if op == 'remove' and name not in names:
+    raise SystemExit(f'No secret named {name}.')
+kept = [l for l in lines if not (m := line.match(l)) or m.group(1) != name]
+if op == 'set':
+    kept.append(f'export {name}={shlex.quote(sys.stdin.read())}')
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+temp = path + '.new'
+descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(descriptor, 'w', encoding='utf-8') as f:
+    f.write(''.join(l + '\n' for l in kept))
+os.chmod(temp, 0o600)
+os.replace(temp, path)
+PY_SECRETS
+ secrets_file=$state/secrets.env
+ case $mode in
+  secret)
+   [[ -t 0 ]] || fail 'Run tokiwa secret NAME in a terminal: the value is read with hidden input.'
+   printf 'Value for %s (input hidden; paste it, then press Enter): ' "$name" >&2
+   value=
+   IFS= read -rs value || true
+   printf '\n' >&2
+   # The rest of a paste of several lines waits in the terminal. Read it here, so that no shell runs it.
+   dropped=0
+   while IFS= read -rs -t 1 _; do dropped=$((dropped + 1)); done
+   [[ -n $value ]] || fail 'The value is empty. Nothing was saved.'
+   printf '%s' "$value" | python3 -c "$secrets_program" set "$name" "$secrets_file" || exit 1
+   unset value
+   printf 'Saved %s. New shells load it; restart an agent that runs now to give it the value.\n' "$name"
+   if (( dropped == 1 )); then printf '1 extra line of the paste was dropped. Only the first line was saved.\n'
+   elif (( dropped > 1 )); then printf '%s extra lines of the paste were dropped. Only the first line was saved.\n' "$dropped"; fi ;;
+  secret-remove)
+   python3 -c "$secrets_program" remove "$name" "$secrets_file" < /dev/null || exit 1
+   printf 'Removed %s. Shells that run now keep it until they restart.\n' "$name" ;;
+  secrets) python3 -c "$secrets_program" list - "$secrets_file" < /dev/null ;;
+ esac
+ exit
 fi
 if [[ $mode == end || $mode == capture || $mode == view || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'

@@ -59,8 +59,8 @@ The launcher picks the path from its command. `tokiwa --help` lists the commands
 
 | Path | AWS calls | Document | Launcher commands | Result |
 | --- | --- | --- | --- | --- |
-| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `sessions --json`, `--snapshot`, `capture`, `health`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `--end-confirmed` | The helper's stdout, after the status leaves `Pending` |
-| Interactive session | `ssm start-session` | `AWS-StartInteractiveCommand` | `attach`, `new`, `shell`, `admin` | A byte stream through the Session Manager plugin |
+| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `sessions --json`, `--snapshot`, `capture`, `health`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `--end-confirmed`, `secrets`, `secret --remove` | The helper's stdout, after the status leaves `Pending` |
+| Interactive session | `ssm start-session` | `AWS-StartInteractiveCommand` | `attach`, `new`, `view`, `shell`, `admin`, `secret` | A byte stream through the Session Manager plugin |
 | EC2 API | `ec2 describe-instances`, `describe-volumes`, `describe-addresses` | — | `spend`, and the host state check before every host command | JSON for the spend estimate; the instance state |
 
 The launcher polls `get-command-invocation` up to 15 times, one second apart. A status other than `Success` fails the call with `The workbench check returned <status>. No service was started.`

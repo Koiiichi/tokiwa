@@ -31,6 +31,11 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   sessions      List terminals and attached clients; with --json, the full session list as JSON
   capture NAME IDENTITY [LINES]
                 Read the last lines of a session as JSON (1 to 200, default 60), encrypted on the way; only that exact session
+  secret NAME   Save a secret on the host, for example an API key; new shells load it as NAME.
+                The host reads it with hidden input; it is never stored on this Mac or in AWS
+  secret --remove NAME
+                Remove a saved secret
+  secrets       List the names of the saved secrets
   status        Check AWS access, host state and the workbench server
   --check       Same as status
   login         Sign in to AWS with the profile of the host settings
@@ -101,6 +106,19 @@ PY_CREATE
   lines=${4:-60}
   [[ $lines =~ ^[0-9]{1,3}$ ]] && (( lines >= 1 && lines <= 200 )) || fail 'Use a line count from 1 to 200.'
   extra=$3 ;;
+ secret)
+  if [[ $# -eq 3 && $name == --remove ]]; then
+   name=$3
+   mode=secret-remove
+  else
+   [[ $# -eq 2 && $name != --remove ]] || fail 'Use secret NAME, or secret --remove NAME.'
+   # The host reads the value with hidden input, so the command needs a terminal.
+   [[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command: the value is read with hidden input.'
+  fi
+  # A secret becomes an environment variable of each new shell; the names that shells and Tokiwa use are refused.
+  [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ && ! $name =~ ^(PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_.*|TMUX.*)$ ]] \
+   || fail 'Use a secret name of letters, digits and underscores, for example OPENAI_API_KEY. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
+ secrets) [[ $# -le 1 ]] || fail 'Use secrets.' ;;
  sessions)
   if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot; name=
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
@@ -178,7 +196,7 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then

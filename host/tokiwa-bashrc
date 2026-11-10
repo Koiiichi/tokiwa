@@ -3,6 +3,10 @@
 if [[ -f $HOME/.bashrc ]]; then
  . "$HOME/.bashrc"
 fi
+# Secrets that `tokiwa secret` saved come after .bashrc, so that the newest saved value wins.
+if [[ -r $HOME/.tokiwa/secrets.env ]]; then
+ . "$HOME/.tokiwa/secrets.env"
+fi
 PS1=$TOKIWA_PS1
 export BROWSER=$TOKIWA_BROWSER
 unset TOKIWA_PS1 TOKIWA_BROWSER
