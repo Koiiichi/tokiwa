@@ -285,7 +285,7 @@ test("a project title dropped between projects reorders them; a double click ren
   }
 });
 
-test("the status shows the link as a dot, and under the pointer opens a card with the Mac, ping and loss", async () => {
+test("the status shows the link as a dot, and a click opens a card with the Mac, ping and loss", async () => {
   const times = [40, 50, null];
   const p = await projects({
     probe: async () => {
@@ -296,7 +296,11 @@ test("the status shows the link as a dot, and under the pointer opens a card wit
   });
   try {
     const status = p.at("● EC2");
+    // The pointer alone opens nothing.
     await p.t.mockMouse.moveTo(status.x + 2, status.y);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).not.toContain("Connection");
+    await p.t.mockMouse.click(status.x + 2, status.y);
     await p.t.renderOnce();
     let card = p.lines().join("\n");
     expect(card).toContain("Connection");
@@ -315,9 +319,26 @@ test("the status shows the link as a dot, and under the pointer opens a card wit
     expect(card).toMatch(/ping +lost · avg 45 ms/);
     expect(card).toMatch(/loss +33 % \(1 of the last 3 tries\)/);
     expect(card).not.toContain("last read");
+    // The card stays while the pointer moves away; a click elsewhere closes it.
     await p.t.mockMouse.moveTo(2, 20);
     await p.t.renderOnce();
-    expect(p.lines().join("\n")).not.toContain("jitter");
+    expect(p.lines().join("\n")).toContain("Connection");
+    await p.t.mockMouse.click(2, 20);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).not.toContain("Connection");
+    // A second click on the status closes the card, and so does Escape.
+    await p.t.mockMouse.click(status.x + 2, status.y);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).toContain("Connection");
+    await p.t.mockMouse.click(status.x + 2, status.y);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).not.toContain("Connection");
+    await p.t.mockMouse.click(status.x + 2, status.y);
+    await p.t.renderOnce();
+    p.t.mockInput.pressEscape();
+    await Bun.sleep(30);
+    await p.t.renderOnce();
+    expect(p.lines().join("\n")).not.toContain("Connection");
   } finally {
     await p.t.dispose();
   }

@@ -524,6 +524,13 @@ export class App {
       onMouseOut: (event: MouseEvent) => {
         if (this.hoverKeyOf(event.target) === this.hover) this.setHover("");
       },
+      // A click outside the status and its card closes the card.
+      onMouseDown: (event: MouseEvent) => {
+        if (!this.connectionCard?.visible) return;
+        for (let node: any = event.target; node; node = node.parent)
+          if (node === this.source || node === this.connectionCard) return;
+        this.connectionCard.visible = false;
+      },
     });
     const head = this.box(this.root, "header", {
       height: 2,
@@ -542,14 +549,14 @@ export class App {
     this.source = this.text(head, "source", "", {
       fg: theme.muted,
       selectable: false,
-      // A press is what makes the status a pointer target, so that it can open its card.
-      onMouseDown: () => {},
+      // A click opens the card about the link to the workstation; a second click closes it.
+      onMouseDown: () => this.toggleConnection(),
       // The status keeps its whole label; the breadcrumb beside it gives way first.
       flexShrink: 0,
       wrapMode: "none",
       truncate: true,
     });
-    // Under the pointer, the status opens a card about the link to the workstation.
+    // A click on the status opens a card about the link to the workstation.
     this.connectionCard = this.box(this.root, "connection-card", {
       position: "absolute",
       top: 2,
@@ -571,19 +578,6 @@ export class App {
         selectable: false,
       },
     );
-    this.hoverable(this.source, "header:status", (on) => {
-      if (!this.connectionCard) return;
-      if (on) {
-        // Only a running Tokiwa probes; a test or a capture shows the tries it has.
-        if (
-          this.probeTimer &&
-          (!this.pings.length || this.now() - this.pings.at(-1)!.at > 5000)
-        )
-          void this.probe();
-        this.drawConnection();
-      }
-      this.connectionCard.visible = on;
-    });
     // One band names the current problem; e or a click opens its raw output below it.
     this.band = this.box(this.root, "problem", {
       flexDirection: "column",
@@ -1947,6 +1941,21 @@ export class App {
     const ref = this.remoteSessions.find((r) => r.name === name);
     if (ref?.bell) this.acknowledged.set(name, ref.identity);
     if (ref?.attention) this.attentionSeen.set(name, ref.attention);
+  }
+  /** Open the connection card, or close it when it is open. */
+  toggleConnection() {
+    if (!this.connectionCard) return;
+    const open = !this.connectionCard.visible;
+    if (open) {
+      // Only a running Tokiwa probes; a test or a capture shows the tries it has.
+      if (
+        this.probeTimer &&
+        (!this.pings.length || this.now() - this.pings.at(-1)!.at > 5000)
+      )
+        void this.probe();
+      this.drawConnection();
+    }
+    this.connectionCard.visible = open;
   }
   /** Name the state of the EC2 host from the last session and Health reads. */
   /**
@@ -4504,6 +4513,10 @@ export class App {
       key.preventDefault();
       key.stopPropagation();
     };
+    if (this.connectionCard?.visible && key.name === "escape") {
+      this.connectionCard.visible = false;
+      return stop();
+    }
     // A project waits for the answer to "end it?": enter ends it, esc keeps it.
     if (this.endingProject) {
       if (this.endingProject.busy) return stop();

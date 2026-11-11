@@ -60,7 +60,7 @@ The status at the right shows the link to the host as a dot, for example `● EC
 | `○ EC2 · signed out` | The last read failed because the AWS sign-in expired. Amber. |
 | `○ EC2 · offline` | The last read failed for another reason. Amber. |
 
-With the pointer over the status, a card shows the connection. Its first line names this Mac and the link, for example `<mac> → EC2 · connected`.
+A click on the status opens a card about the connection. A second click on the status, a click elsewhere or `esc` closes it. Its first line names this Mac and the link, for example `<mac> → EC2 · connected`.
 
 | Row | Content |
 | --- | --- |

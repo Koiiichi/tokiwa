@@ -202,7 +202,7 @@ A request reaches the app only through an open transport of its session. A shell
 
 Session Manager carries no ICMP, so the app times TCP connections instead. `reachAws` opens one connection to `ssm.us-east-1.amazonaws.com:443`, the Session Manager endpoint in the launcher's region, and resolves with the connect time.
 
-The card opens under the pointer on the header status, for example `● EC2`. Its first line names the Mac and the link, for example `<mac> → EC2 · connected`.
+The card opens on a click on the header status, for example `● EC2`. Its first line names the Mac and the link, for example `<mac> → EC2 · connected`.
 
 | Row | Content |
 | --- | --- |

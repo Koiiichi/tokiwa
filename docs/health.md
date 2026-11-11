@@ -77,11 +77,11 @@ The estimate uses the list prices in `health.json` and the inventory that `tokiw
 | Compute | Hours since the later of the start of the UTC month and the last start of the instance, times `prices.instance_hour` of its type. |
 | Storage | The size of each volume times `prices.volume_gb_month` of its type, spread over 730 hours a month, from the start of the month. |
 | Public IPv4 | The distinct public addresses of the instance and its Elastic IP addresses, times `prices.public_ipv4_hour`, from the start of the month. |
-| `Month to date:` | Compute plus storage plus public IPv4. |
+| `Month to date:` | Compute plus storage plus public IPv4. With `prior_spend_usd`, the row adds it, for example `· plus $31.34 before Nov 1, entered in health.json`. |
 | `Spent so far:` | `prior_spend_usd` plus the month to date. With `budget_usd`, a bar shows it as a share of the budget. |
-| `Forecast:` | Spent so far plus the cost from now to `authorization_end` (or to the end of the month without it), with the host running and the same volumes and addresses. It shows the date and its share of `budget_usd`. |
+| `Forecast:` | Spent so far plus the cost from now to `authorization_end` (or to the end of the month without it), with the host running and the same volumes and addresses. It shows the date, its share of `budget_usd` and the condition `if the host keeps running`. |
 
-The estimate counts nothing else. It does not count data transfer, snapshots, provisioned IOPS or throughput, or tax. Spend before the current month counts only through `prior_spend_usd`.
+The estimate counts nothing else. It does not count data transfer, snapshots, S3 storage (for example the workstation backups), provisioned IOPS or throughput, or tax. The note under `Month to date:` names what is counted and what is not. Spend before the current month counts only through `prior_spend_usd`.
 
 The estimate is `not available` with the reason in these cases:
 

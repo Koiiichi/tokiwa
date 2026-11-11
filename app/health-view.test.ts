@@ -67,7 +67,9 @@ test("without a budget or an end, Spend shows amounts to the end of the month an
     /^Spent so far: +\$\d+\.\d\d$/,
   );
   // The fixture time is in December 2026, so the forecast runs to December 31.
-  expect(lineText(row(lines, "Forecast:"))).toMatch(/by Dec 31$/);
+  expect(lineText(row(lines, "Forecast:"))).toMatch(
+    /by Dec 31, if the host keeps running$/,
+  );
   const estimate = estimateSpend(fixtureSpend, rest, fixtureNow);
   expect("percent" in estimate && estimate.percent).toBeFalsy();
 });
@@ -236,9 +238,26 @@ test("the budget bar shows spend so far; the forecast is a number with its share
   // Spent so far is the earlier spend from health.json plus the month to date.
   expect(rows[0]).toMatch(/^  Spent so far: +\$130\.91 of \$350 budget$/);
   expect(rows[1]).toMatch(/^ {18}━+╸?─+  37%$/);
-  expect(rows[2]).toMatch(/^  Forecast: +\$274\.03 by Dec 22 · 78% of budget$/);
-  expect(rows[3]).toMatch(/^  Month to date: +\$110\.91$/);
-  expect(rows[4]).toMatch(/^ {18}Compute since/);
+  // The forecast carries its own condition; the month to date names the earlier spend.
+  expect(rows[2]).toMatch(
+    /^  Forecast: +\$274\.03 by Dec 22 · 78% of budget, if the host keeps running$/,
+  );
+  expect(rows[3]).toMatch(
+    /^  Month to date: +\$110\.91 · plus \$20\.00 before Dec 1, entered in health\.json$/,
+  );
+  expect(rows[4]).toMatch(/^ {18}Instance hours since /);
+  const note = rows.slice(4).join(" ").replace(/ +/g, " ");
+  expect(note).toContain("at list prices.");
+  expect(note).toContain(
+    "Not counted: data transfer, snapshots, S3 backups and tax.",
+  );
+  expect(note).not.toContain("health.json");
+  // Without earlier spend, the note says that spend before the month is not counted.
+  const plain = spendRows(healthLines(withBudget(350), 96)).map(lineText);
+  expect(plain[3]).toMatch(/^  Month to date: +\$110\.91$/);
+  expect(plain.slice(4).join(" ").replace(/ +/g, " ")).toContain(
+    "Not counted: spend before Dec 1, data transfer, snapshots, S3 backups and tax.",
+  );
   // The bar measures spend so far: 37 % of 50 cells is 18.5 cells.
   const lines = healthLines(withBudget(350, 20), 112);
   const bar = spendRows(lines)[1].filter((span) => span.bar);
@@ -413,7 +432,7 @@ test("the forecast date uses the offset of the authorization end", () => {
 test("narrow widths wrap the estimate note from the row indent", () => {
   const narrow = healthLines(fixtureModel(), 58);
   const note = narrow.filter((line) =>
-    /Excludes|List prices|compute since/.test(lineText(line)),
+    /Not counted|list prices|Instance hours since/.test(lineText(line)),
   );
   expect(note.length).toBeGreaterThan(0);
   for (const line of note) expect(lineText(line).startsWith("  ")).toBe(true);

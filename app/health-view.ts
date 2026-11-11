@@ -500,9 +500,9 @@ function spend(m: HealthViewModel): Row[] {
     estimate.computeSince > estimate.monthStart
       ? `the last start on ${day(estimate.computeSince)}`
       : day(estimate.monthStart);
-  const earlier = m.config.prior_spend_usd
-    ? `Includes ${money(m.config.prior_spend_usd)} of earlier spend from health.json. Excludes data transfer, snapshots and tax.`
-    : `Excludes spend before ${day(estimate.monthStart)}, data transfer, snapshots and tax.`;
+  // Spend before the month is known only from health.json; without it, the note says so.
+  const prior = m.config.prior_spend_usd;
+  const excluded = `${prior ? "" : `spend before ${day(estimate.monthStart)}, `}data transfer, snapshots, S3 backups and tax`;
   const addresses = `${estimate.publicIpv4} public IPv4`;
   const budget = m.config.budget_usd;
   const spent = m.config.prior_spend_usd + estimate.monthToDate;
@@ -532,9 +532,10 @@ function spend(m: HealthViewModel): Row[] {
       kind: "pair",
       label: "Forecast:",
       value:
-        percent === undefined
+        (percent === undefined
           ? `${money(estimate.forecast)} by ${until}`
-          : `${money(estimate.forecast)} by ${until} · ${Math.round(percent)}% of budget`,
+          : `${money(estimate.forecast)} by ${until} · ${Math.round(percent)}% of budget`) +
+        ", if the host keeps running",
       // The forecast warns from 95 % of the budget and is critical above the budget.
       tone:
         percent === undefined
@@ -548,11 +549,13 @@ function spend(m: HealthViewModel): Row[] {
     {
       kind: "pair",
       label: "Month to date:",
-      value: money(estimate.monthToDate),
+      value: prior
+        ? `${money(estimate.monthToDate)} · plus ${money(prior)} before ${day(estimate.monthStart)}, entered in health.json`
+        : money(estimate.monthToDate),
     },
     {
       kind: "note",
-      text: `Compute since ${since}, ${estimate.storageGib} GiB of EBS and ${addresses} at list prices, if the host keeps running. ${earlier}`,
+      text: `Instance hours since ${since}, ${estimate.storageGib} GiB of disk and ${addresses} at list prices. Not counted: ${excluded}.`,
     },
   );
   return rows;
