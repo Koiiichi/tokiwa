@@ -44,7 +44,7 @@ test("the app starts on the remote sessions grouped by project, without a local 
       "web-lead¹",
       "◈ coder-lead",
       "needs you",
-      "EC2 · connected",
+      "● EC2",
       "No session attached",
       "? shortcuts",
     ])
@@ -74,13 +74,13 @@ test("arrow keys select a session and Enter attaches it with its identity", asyn
   }
 });
 
-test("a failed session read names the reason and the header shows the host unreachable", async () => {
+test("a failed session read names the reason in the band and the header shows the host unreachable", async () => {
   const { t } = await landing(100, 30, true);
   try {
     const frame = t.captureCharFrame();
-    expect(frame).toContain("EC2 · offline");
-    expect(frame).toContain("Sessions not available");
-    expect(frame).toContain("timeout");
+    expect(frame).toContain("○ EC2 · offline");
+    expect(frame).toContain("▲ timeout.");
+    expect(frame).toContain("No sessions read");
   } finally {
     await t.dispose();
   }

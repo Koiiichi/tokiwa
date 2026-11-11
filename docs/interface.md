@@ -7,12 +7,13 @@ For colours, spacing and the drawing of each part, see [DESIGN.md](../DESIGN.md)
 
 ## Screen layout
 
-The screen has a header, a navigation row, a body and a footer. At 100 columns and wider, the Workspace body holds the session list and up to two terminal views side by side.
+The screen has a header, a problem band while a read fails, a navigation row, a body and a footer. At 100 columns and wider, the Workspace body holds the session list and up to two terminal views side by side.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ ◇ tokiwa  /  Workspace                 <mac> → EC2 · connected │ header
+│ ◇ tokiwa  /  Workspace                                   ● EC2 │ header
 ├────────────────────────────────────────────────────────────────┤
+│ ▲ AWS sign-in expired. Last good read at 13:08.  l sign in · … │ problem band
 │ Workspace  Health                                              │ navigation
 ├───────────────────────┬──────────────────┬─────────────────────┤
 │ api                   │ claude-main  api │ shell-1a2b3c4d  api │
@@ -29,7 +30,8 @@ The screen has a header, a navigation row, a body and a footer. At 100 columns a
 | Part | Content |
 | --- | --- |
 | Header | The breadcrumb `◇ tokiwa  /  Workspace` or `◇ tokiwa  /  Health`, and the state of the link to the host at the right. |
-| Navigation | `Workspace` and `Health`. An error shows after them in amber. In focus mode, the strip of the other sessions shows here. |
+| Problem band | Only while the last session read or Health read failed: the cause, the time of the last good read and the key that acts on it. See [Problem band](#problem-band). |
+| Navigation | `Workspace` and `Health`. An error of an action shows after them in amber. In focus mode, the strip of the other sessions shows here. |
 | Body | The Workspace or the Health view. The shortcuts sheet and the search take its place while they are open. |
 | Footer | One line of controls for the current context. |
 
@@ -48,16 +50,17 @@ Until a session is attached, the right side shows `No session attached`, a line 
 
 The breadcrumb names the view. Until the first session read of the host ends, its diamond cycles through `◇ ◈ ◆ ◈`. With `TOKIWA_REDUCED_MOTION=1` it stays still.
 
-The status at the right names this Mac and the link to the host, for example `<mac> → EC2 · connected`. When the header is narrow, only `EC2 · connected` shows. The state comes from the last session read and the last Health read.
+The status at the right shows the link to the host as a dot, for example `● EC2`. A state other than `connected` follows the dot as a word. The state comes from the last session read and the last Health read. Health names this Mac in its Workstation section.
 
-| State | Meaning |
+| Status | Meaning |
 | --- | --- |
-| `connecting` | No read has ended yet, and a read runs. Before the first read starts, the status names only the link. |
-| `connected` | The last read succeeded less than 90 seconds ago. |
-| `reconnecting` | The last successful read is more than 90 seconds old. Amber. |
-| `offline` | The last read failed. Amber. |
+| `◌ EC2 · connecting` | No read has ended yet, and a read runs. Before the first read starts, the status is `◌ EC2`. |
+| `● EC2` | The last read succeeded less than 90 seconds ago. |
+| `◐ EC2 · reconnecting` | The last successful read is more than 90 seconds old. Amber. |
+| `○ EC2 · signed out` | The last read failed because the AWS sign-in expired. Amber. |
+| `○ EC2 · offline` | The last read failed for another reason. Amber. |
 
-With the pointer over the status, a card shows the connection:
+With the pointer over the status, a card shows the connection. Its first line names this Mac and the link, for example `<mac> → EC2 · connected`.
 
 | Row | Content |
 | --- | --- |
@@ -66,6 +69,20 @@ With the pointer over the status, a card shows the connection:
 | `sessions` | The remote views open in this app, and the sessions on the host. |
 
 Session Manager carries no ICMP, so a try is a TCP connection. The app makes a try at start, then one every 15 seconds while it runs. When the card opens and the last try is more than 5 seconds old, the app makes a new try.
+
+### Problem band
+
+While the last session read or the last Health read failed, one band under the header names the problem. The band shows on every view. When both reads failed, it names the cause that explains the other: an expired sign-in first, then a stopped workstation, then a network failure, then any other failure.
+
+| Band | Cause | Key |
+| --- | --- | --- |
+| `▲ AWS sign-in expired.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band says `Signing in… finish in the browser`. |
+| `▲ The workstation is stopped.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
+| `▲ AWS cannot be reached from this Mac.` | The AWS endpoint cannot be reached. | `u` retries. |
+| `▲ The workbench server is not ready.` | The workbench check on the host failed. | `u` retries. |
+| `▲ <first line>` | Any other failure: its first line of output, without the launcher prefix and without shell warnings about a removed folder. | `u` retries. |
+
+After the cause, the band gives the time of the last good read, for example `Last good read at 13:08.`. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. `e`, or a click on the band, opens the last six lines of the raw output in a box under the band, with one copy of a failure that both reads report; `e` closes it. The app also writes each new failure, with its raw output, to the error log. See [Files](configuration.md#files).
 
 ## Session list
 
@@ -101,8 +118,9 @@ When the list is empty, it says why:
 | --- | --- |
 | `Reading sessions…` | The first read has not ended. |
 | `No sessions on EC2` | The read succeeded and the host has no sessions. |
-| `Sessions not available` | The read failed. The reason follows, and `u reads them again`. |
-| `Last read failed` | Above a list: the last read failed, and the list shows the earlier read. |
+| `No sessions read` | The read failed. The problem band names the cause. The list adds `l signs in` or `u reads them again`. |
+
+When a read fails and the list holds an earlier read, the list keeps it. The problem band names the failure.
 
 ## Status glyphs
 
@@ -154,8 +172,9 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `w` | **Sessions**: show the Workspace with the keyboard in the session list. |
 | `h` | **Health**: show the Health view. |
 | `z` | **Focus**: hide the session list beside the terminal, or show it again. |
-| `u` | **Refresh sessions**: read the session snapshot again. |
-| `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser opens for the approval. After a success the view closes and the sessions are read again; after a failure the view stays open with the message. At other times the key does nothing. |
+| `u` | **Refresh sessions**: read the session snapshot again. When the last Health read failed, read Health again too. |
+| `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser opens for the approval. After a success the view closes, and the sessions and Health are read again; after a failure the view stays open with the message. At other times the key does nothing. |
+| `e` | **Error details**: open or close the raw output of the failed read under the problem band. With no problem band, the key does nothing. |
 | `t` | **New local shell**: start a local login shell in the home directory. |
 | `g` | **Local shell group**: start the shells that `projects.json` names. |
 | `b` | **Background sessions**: open or close the background list. In the list, `enter` opens the selected session view only and `x` ends it, after a question. With no background session, the key does nothing. |
@@ -276,7 +295,7 @@ The search box also holds the prompts of these actions and of **Move to project*
 
 `z`, or **Focus** in the search, hides the session list beside the terminal, so the terminal takes the full width. Do the same again to show the list. In focus mode the list and the terminal take the full width in turn: `w` shows the list, and `enter` or `esc` returns to the terminal.
 
-While the terminal is in view, the navigation row shows the sessions that no view shows, for example `◆ build · ◈ codex · 4 quiet`. Sessions with output and sessions that need you show by name. The rest are counted by state. When the line is too long, the counts join as `N more`, and then the output names join them. The names of sessions that need you stay. An error takes the place of the strip.
+While the terminal is in view, the navigation row shows the sessions that no view shows and that need you, for example `◈ codex waiting · 3 working`. A session needs you when it rang the bell, asked for a person, or its agent reported `waiting`, `limited` or `error`; it shows by name, with the agent's word. The agents that report `working` are one count. Other sessions are left out. When the line is too long, the count goes first, then the names after the first join as `N more`. An error of an action takes the place of the strip.
 
 ## Layouts by terminal size
 

@@ -12,6 +12,7 @@ The app has no settings screen. A setting changes only through the items on this
 | `TOKIWA_CAPTURE_DIR` | App, capture scripts | `~/.local/state/tokiwa/captures` | The folder for **Save screen**. The capture scripts in `app/` write to subfolders of it. |
 | `TOKIWA_RECORD_DIR` | App ([`pty.ts`](../app/pty.ts)) | Unset: nothing is recorded | A folder for the raw output and the size changes of each remote transport. See [Files](#files). |
 | `TOKIWA_ORDER_FILE` | App | `~/.local/state/tokiwa/project-order.json` | The file that keeps the order of the top-level projects. |
+| `TOKIWA_ERROR_LOG` | App | `~/.local/state/tokiwa/errors.log` | The file that keeps each new failed read with its raw output. |
 | `TOKIWA_OPEN` | App | `/usr/bin/open` | The command that opens a link in the Mac's browser. It receives the link as its one argument. |
 | `TOKIWA_APP_DIR` | [`install.sh`](../app/install.sh) | `~/.local/lib/tokiwa/opentui` | The install folder. The launcher opens only the default folder. |
 | `TOKIWA_HOST_CONFIG` | Launcher, app | `~/.config/tokiwa/host.env` | The file of the [host settings](#host-settings). |
@@ -46,6 +47,7 @@ These options are for `app/run`. `runOptions` in [`app.ts`](../app/app.ts) parse
 | [`projects.json`](../app/projects.json) | The app folder; in the installed copy, `~/.local/lib/tokiwa/opentui/app/projects.json` | `{ "name": "local", "shells": ["build", "inspect"] }` | The local shell group. `name` is the group title: 1 to 30 letters, digits, spaces or hyphens. `shells` names at most three shells that `g` starts: 1 to 24 letters, digits or hyphens each. A file outside these rules stops the app at start. |
 | `health.json` | `~/.config/tokiwa/health.json` | Missing: built-in defaults | The budget, the authorization end and the prices of the spend estimate. The app reads it once at start. See [Health](health.md#healthjson). |
 | Project order file | `~/.local/state/tokiwa/project-order.json`, or `$TOKIWA_ORDER_FILE` | Missing: projects sort by name | `{ "order": [...] }`: the top-level projects in the order that you set by drag. The app reads it at start and writes it after each reorder. |
+| Error log | `~/.local/state/tokiwa/errors.log`, or `$TOKIWA_ERROR_LOG` | Made on the first failed read | Each new failed session read or Health read, with its time, its source and its raw output. A repeated failure is written once. Above 1 MB, the file moves to `errors.log.1`, which replaces an older one. |
 | Captures folder | `~/.local/state/tokiwa/captures/`, or `$TOKIWA_CAPTURE_DIR` | Made on first use | **Save screen** writes `<time>-<view>.txt` here. |
 | Record folder | `$TOKIWA_RECORD_DIR` | None | Each remote transport appends its raw output to `<time>-<pid>.bytes` and each size change to `<time>-<pid>.sizes`, as `<byte offset> <cols> <rows>`. |
 | Receipt | The FILE of `--receipt` | None | The event log of the app. |

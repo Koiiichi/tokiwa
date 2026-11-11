@@ -32,15 +32,14 @@ async function close(t: { dispose(): Promise<void> | void }, app: App) {
   await Promise.all(children);
 }
 
-test("an expired sign-in offers the sign-in key in the list, the pane and the footer", async () => {
+test("an expired sign-in offers the sign-in key in the band, the list, the pane and the footer", async () => {
   const { t, app } = await open(EXPIRED);
   try {
     const frame = t.captureCharFrame();
-    expect(frame).toContain("AWS sign-in expired");
+    expect(frame).toContain("▲ AWS sign-in expired");
+    expect(frame).toContain("l sign in · e details");
     expect(frame).toContain("l signs in");
-    expect(frame).toContain("u reads them again");
     expect(frame).toContain("l signs in · t opens a local shell");
-    expect(frame).toContain("sign in");
     expect(frame).not.toContain("Sessions not available");
   } finally {
     await close(t, app);
@@ -50,7 +49,7 @@ test("an expired sign-in offers the sign-in key in the list, the pane and the fo
 test("another read failure keeps its message, and the sign-in key does nothing", async () => {
   const { t, app } = await open("Launcher --snapshot exited 255: timeout");
   try {
-    expect(t.captureCharFrame()).toContain("Sessions not available");
+    expect(t.captureCharFrame()).toContain("▲ timeout.");
     await t.mockInput.typeText("l");
     await pause();
     expect(app.shells).toHaveLength(0);
@@ -88,7 +87,8 @@ test("a failed sign-in keeps its view, and the key starts it again", async () =>
     expect(app.shells).toHaveLength(1);
     await t.renderOnce();
     expect(t.captureCharFrame()).toContain("denied");
-    expect(t.captureCharFrame()).toContain("Sign-in expired · l signs in");
+    expect(t.captureCharFrame()).toContain("▲ AWS sign-in expired");
+    expect(t.captureCharFrame()).toContain("l sign in · e details");
     const first = app.shells[0];
     await t.mockInput.typeText("l");
     await pause();
@@ -102,12 +102,12 @@ test("a failed sign-in keeps its view, and the key starts it again", async () =>
 test("a list that has sessions also offers the sign-in when a read expires", async () => {
   const { t, app, state } = await open(undefined);
   try {
-    expect(t.captureCharFrame()).not.toContain("Sign-in expired");
+    expect(t.captureCharFrame()).not.toContain("sign-in expired");
     state.message = EXPIRED;
     await app.refreshSessions();
     await t.renderOnce();
     const frame = t.captureCharFrame();
-    expect(frame).toContain("Sign-in expired · l signs in");
+    expect(frame).toContain("▲ AWS sign-in expired");
     expect(frame).toContain("web-lead");
     expect(frame).not.toContain("Last read failed");
   } finally {

@@ -30,10 +30,10 @@ BackendClient.prototype.call = function (this: BackendClient, args: string[]) {
 // Keep every test away from the user's saved project order: each test run uses an empty one.
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-process.env.TOKIWA_ORDER_FILE = join(
-  mkdtempSync(join(tmpdir(), "tokiwa-test-")),
-  "project-order.json",
-);
+const scratch = mkdtempSync(join(tmpdir(), "tokiwa-test-"));
+process.env.TOKIWA_ORDER_FILE = join(scratch, "project-order.json");
+// No test writes the user's error log.
+process.env.TOKIWA_ERROR_LOG = join(scratch, "errors.log");
 // No test opens the user's browser: a link that a test opens runs /usr/bin/true instead.
 process.env.TOKIWA_OPEN = "/usr/bin/true";
 // A local shell in a test reads none of the user's startup files.

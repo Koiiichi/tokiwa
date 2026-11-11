@@ -16,18 +16,15 @@ test("landing, focus, shortcuts and search captures stay readable at 156x40, 100
       "○ setup        disconnected",
       "◆ setup2",
       "◇ tools¹",
-      "EC2 · connected",
+      "● EC2",
     ])
       expect(landing).toContain(text);
     // No session name is shortened at these sizes, and the top bar carries no status.
     expect(landing).not.toContain("…");
     expect(landing.split("\n")[2].trim()).toBe("Workspace  Health");
     const focus = await captureScene("focus", width, height);
-    expect(focus.split("\n")[2]).toContain(
-      width < 100
-        ? "◆ setup2 · ◈ coder-lead · 4 more"
-        : "◆ setup2 · ◈ coder-lead · 2 quiet · 1 disconnected · 1 exited",
-    );
+    // The strip names only the sessions that need you; output and quiet sessions are left out.
+    expect(focus.split("\n")[2].trimEnd()).toMatch(/Health +◈ coder-lead$/);
     expect(focus).toContain("fixture terminal of web-lead");
     expect(focus).not.toContain("workspaces/workbench");
     const sheet = await captureScene("shortcuts", width, height);

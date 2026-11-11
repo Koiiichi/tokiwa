@@ -77,8 +77,9 @@ Change the table in the same commit as the code.
 
 | Guard | Effect |
 | --- | --- |
-| The `call` method of `BackendClient` | A call without a runner fails with `Tests do not run the launcher (ARG). Give BackendClient a runner.` No test runs `~/.local/bin/tokiwa`, which makes AWS calls. |
+| The `call` method of `BackendClient` | A call without a runner fails with `Tests do not run the launcher (ARG). Give BackendClient a runner.`, unless the launcher is a fake that a test wrote in the temporary folder. No test runs `~/.local/bin/tokiwa`, which makes AWS calls. |
 | `TOKIWA_ORDER_FILE` | Points to `project-order.json` in a new temporary folder, so that no test reads or writes the saved order of the projects. |
+| `TOKIWA_ERROR_LOG` | Points to `errors.log` in the same temporary folder, so that no test writes the error log. |
 | `TOKIWA_OPEN` | `/usr/bin/true`, so that a link that a test opens does not open the browser. |
 | `TOKIWA_LOCAL_SHELL` | `/bin/zsh -f`, so that a local shell in a test reads no startup files of the user. |
 

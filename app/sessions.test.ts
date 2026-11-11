@@ -124,38 +124,45 @@ test("a session row shows the name, the count of other clients and a word for an
   expect(narrow.name.endsWith("…")).toBe(true);
 });
 
-test("the focus strip names output and needs-you sessions and counts the rest", () => {
+test("the focus strip names only the sessions that need you and counts the working agents", () => {
   const rows = [
-    { name: "coder-lead", state: "needs-you" as const },
-    { name: "web-lead", state: "output" as const },
-    { name: "claude-test", state: "quiet" as const },
-    { name: "setup", state: "quiet" as const },
-    { name: "setup2", state: "quiet" as const },
-    { name: "tools", state: "quiet" as const },
+    { name: "coder-lead", needs: true, word: "waiting" },
+    { name: "web-lead", needs: false, agent: "working" },
+    { name: "api-lead", needs: false, agent: "working" },
+    { name: "spare", needs: false, agent: "idle" },
+    { name: "tools", needs: false },
   ];
   const strip = focusStrip(rows, 80);
-  expect(lineText(strip)).toBe("◆ web-lead · ◈ coder-lead · 4 quiet");
-  expect(strip.find((s) => s.text === "◆")?.tone).toBe("accent");
+  expect(lineText(strip)).toBe("◈ coder-lead waiting · 2 working");
   expect(strip.find((s) => s.text === "◈")?.tone).toBe("warning");
-  // Other states are counted by their word.
+  // A rate limit or an error stops an agent, so it needs you as well.
   expect(
     lineText(
       focusStrip(
         [
-          { name: "a", state: "quiet" },
-          { name: "b", state: "disconnected" },
-          { name: "c", state: "exited" },
-          { name: "d", state: "unknown" },
+          { name: "a", needs: true, word: "limited" },
+          { name: "b", needs: true, word: "" },
         ],
         80,
       ),
     ),
-  ).toBe("1 quiet · 1 disconnected · 1 exited · 1 other");
-  // A narrow strip joins the counts first, then the output names; it keeps the names that need you.
-  expect(lineText(focusStrip(rows, 34))).toBe(
-    "◆ web-lead · ◈ coder-lead · 4 more",
+  ).toBe("◈ a limited · ◈ b");
+  // Nothing to say gives an empty strip; quiet sessions are not counted.
+  expect(focusStrip([{ name: "tools", needs: false }], 80)).toEqual([]);
+  expect(lineText(focusStrip(rows.slice(1), 80))).toBe("2 working");
+  // A narrow strip drops the count first, then joins the names after the first as a number.
+  const many = [
+    { name: "coder-lead", needs: true, word: "waiting" },
+    { name: "review-lead", needs: true, word: "error" },
+    { name: "web-lead", needs: false, agent: "working" },
+  ];
+  expect(lineText(focusStrip(many, 60))).toBe(
+    "◈ coder-lead waiting · ◈ review-lead error · 1 working",
   );
-  expect(lineText(focusStrip(rows, 24))).toBe("◈ coder-lead · 5 more");
+  expect(lineText(focusStrip(many, 44))).toBe(
+    "◈ coder-lead waiting · ◈ review-lead error",
+  );
+  expect(lineText(focusStrip(many, 30))).toBe("◈ coder-lead waiting · 1 more");
   expect(focusStrip([], 80)).toEqual([]);
 });
 

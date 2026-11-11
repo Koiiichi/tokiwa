@@ -137,7 +137,8 @@ test("options accept --live-health as a no-op and validate --deadline", () => {
     runOptions(["--deadline", "45", "--layout", "terminal"]).deadline,
   ).toBe(45);
   for (const value of ["0", "-1", "x", "", "100000"])
-    expect(() => runOptions(["--deadline", value])).toThrow("--deadline");  expect(runOptions(["--snapshot", "/tmp/reading.json"]).snapshot).toBe(
+    expect(() => runOptions(["--deadline", value])).toThrow("--deadline");
+  expect(runOptions(["--snapshot", "/tmp/reading.json"]).snapshot).toBe(
     "/tmp/reading.json",
   );
   expect(() => runOptions(["--snapshot", ""])).toThrow("--snapshot");
@@ -228,7 +229,11 @@ test("only a failed read is reported as a failed read", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    expect(t.captureCharFrame()).toContain("Last read failed: Error: offline");
+    // The band under the header names the failed read; the readings stay and are stale.
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("▲ offline.");
+    expect(frame).toContain("· stale");
+    expect(frame).not.toContain("Last read failed");
   } finally {
     await t.dispose();
   }

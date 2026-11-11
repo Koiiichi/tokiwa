@@ -285,7 +285,7 @@ test("a project title dropped between projects reorders them; a double click ren
   }
 });
 
-test("the status names the Mac and the link, and under the pointer opens a card with ping and loss", async () => {
+test("the status shows the link as a dot, and under the pointer opens a card with the Mac, ping and loss", async () => {
   const times = [40, 50, null];
   const p = await projects({
     probe: async () => {
@@ -295,11 +295,12 @@ test("the status names the Mac and the link, and under the pointer opens a card 
     },
   });
   try {
-    const status = p.at("EC2 · connected");
+    const status = p.at("● EC2");
     await p.t.mockMouse.moveTo(status.x + 2, status.y);
     await p.t.renderOnce();
     let card = p.lines().join("\n");
     expect(card).toContain("Connection");
+    expect(card).toContain(`${p.app.device} → EC2 · connected`);
     expect(card).toMatch(/ping +measuring…/);
     expect(card).toContain("0 open here · 3 on the workstation");
     await p.app.probe();

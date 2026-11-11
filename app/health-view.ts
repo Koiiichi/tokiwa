@@ -277,6 +277,8 @@ export interface HealthViewModel {
   spendError: string;
   config: HealthConfig;
   configError: string;
+  /** The name of this Mac, which reads the workstation. */
+  device?: string;
 }
 export const lineText = (line: Span[]) => line.map((s) => s.text).join("");
 
@@ -386,7 +388,14 @@ export function wrap(text: string, width: number): string[] {
 }
 
 function workstation(m: HealthViewModel, valueWidth: number): Row[] {
-  const rows: Row[] = [{ kind: "title", text: "Workstation" }];
+  // The title names the Mac that reads the workstation; a row would push the last line off.
+  const rows: Row[] = [
+    {
+      kind: "title",
+      text: "Workstation",
+      ...(m.device ? { note: ` · from ${m.device}` } : {}),
+    },
+  ];
   if (m.spend) {
     const { instance_id, instance, region } = m.spend;
     const state = instance.state === "running" ? "" : ` · ${instance.state}`;
@@ -694,11 +703,13 @@ function footer(m: HealthViewModel): Row[] {
       second: "2-digit",
       hour12: false,
     });
-    const state = m.status === "live" ? "" : ` · ${m.status}`;
+    // After a failed read, the band under the header names the cause; the readings are stale.
+    const status = m.error ? "stale" : m.status;
+    const state = status === "live" ? "" : ` · ${status}`;
     rows.push({
       kind: "note",
       text: `Sampled ${time} · ${age(m.now / 1000 - sample.sampled_at)}${state}`,
-      tone: m.status === "stale" ? "warning" : "dim",
+      tone: status === "stale" ? "warning" : "dim",
       at: "start",
     });
   } else
@@ -706,13 +717,6 @@ function footer(m: HealthViewModel): Row[] {
       kind: "note",
       text: "Waiting for the first health reading",
       tone: "dim",
-      at: "start",
-    });
-  if (m.error)
-    rows.push({
-      kind: "note",
-      text: `Last read failed: ${m.error}`,
-      tone: "warning",
       at: "start",
     });
   return rows;

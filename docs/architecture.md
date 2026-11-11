@@ -156,7 +156,7 @@ The app reads in the background on fixed timers. Each kind of read has at most o
 | Spend | After a Health read, when the last spend read is 15 minutes old | `sampleHealth` |
 | Connection try | A TCP connect, not a launcher call; see [Transport](transport.md#connection-card) | `probe` |
 
-The header shows the state of the host from the snapshot and Health reads: `connecting` before the first result, `connected`, `reconnecting` when the last good read is older than 90 s, and `offline` when the last read failed.
+The header shows the state of the host from the snapshot and Health reads: `connecting` before the first result, `connected`, `reconnecting` when the last good read is older than 90 s, `signed out` when the last read failed on an expired AWS sign-in, and `offline` when it failed for another reason. [`problem.ts`](../app/problem.ts) names the cause of a failed read for the problem band.
 
 The app keeps a small amount of state on the Mac.
 

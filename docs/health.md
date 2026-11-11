@@ -15,7 +15,7 @@ It does not change the host, its workloads or its service limits. The spend figu
 | Storage | One bar for each disk that the host reports, used of total | `tokiwa health` |
 | Network · INTERFACE | `Received:` and `Sent:`: the rate now and the total since boot | `tokiwa health`: the interface of the default IPv4 route |
 
-The last line gives the time of the sample and its age, for example `Sampled 14:02:31 · 12s ago`. It adds the state when the state is not `live`. After a failed read, a second line says `Last read failed:` and the error.
+The last line gives the time of the sample and its age, for example `Sampled 14:02:31 · 12s ago`. It adds the state when the state is not `live`. After a failed read, the line says `stale`, the readings show in a quieter colour, and the [problem band](interface.md#problem-band) under the header names the cause.
 
 Missing data shows as `not available` with the reason, never as zero:
 
@@ -61,8 +61,9 @@ A Health read also sets the link state in the header; see [Interface](interface.
 | --- | --- | --- |
 | `live` | The last sample is at most 65 seconds old, and the last read reported no error. | `Sampled HH:MM:SS · Ns ago` |
 | `stale` | The last sample is more than 65 seconds old. | `… · stale`, in amber |
-| `partial` | At least one sample exists, and the last read failed or the host reported errors in its sample. | `… · partial` |
-| `error` | The reads failed, and no sample exists. | `Waiting for the first health reading`, then `Last read failed:` |
+| `partial` | At least one sample exists, and the host reported errors in its last sample. | `… · partial` |
+| failed read | At least one sample exists, and the last read failed. | `… · stale`, in amber; the problem band names the cause |
+| `error` | The reads failed, and no sample exists. | `Waiting for the first health reading`; the problem band names the cause |
 | `recorded` | The reading comes from `--snapshot FILE`. | `… · recorded` |
 
 Before the first read ends, the last line says `Waiting for the first health reading`. `recorded` takes precedence over the other states, and `partial` takes precedence over `stale`.

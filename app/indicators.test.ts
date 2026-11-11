@@ -580,10 +580,8 @@ test("focus mode gives the terminal the full width and shows the other sessions 
     expect(shell.terminal.focused).toBe(true);
     expect(shell.terminal.width).toBeGreaterThan(narrow + 30);
     expect(sizes.at(-1)).toBe(shell.terminal.width);
-    // The strip stands at the right end of the navigation row.
-    expect(w.frame()[2]).toMatch(
-      /Workspace {2}Health {4,}◆ setup2 · ◈ coder-lead · 3 quiet · 1 exited {0,4}$/,
-    );
+    // The strip stands at the right end of the navigation row and names only who needs you.
+    expect(w.frame()[2]).toMatch(/Workspace {2}Health {4,}◈ coder-lead {0,4}$/);
     await searchFocus();
     expect(w.app.focusMode).toBe(false);
     expect(w.app.sessionList.visible).toBe(true);

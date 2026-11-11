@@ -41,6 +41,13 @@ export const KEYMAP: Binding[] = [
     direct: true,
   },
   {
+    id: "details",
+    group: "Workspace",
+    key: "e",
+    label: "Error details",
+    direct: true,
+  },
+  {
     id: "local-shell",
     group: "Workspace",
     key: "t",

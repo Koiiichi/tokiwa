@@ -282,43 +282,42 @@ export function sessionRowText(
 }
 
 /**
- * Describe the sessions outside the pane in one line for focus mode: the sessions with output
- * and the sessions that need you by name, the rest counted by their state. When the line is
- * longer than `width`, the counts join as `N more`, and then the output names join them. The
- * names of sessions that need you stay.
+ * Describe the sessions outside the pane in one line for focus mode. The sessions that need you
+ * stand by name, with the word of their state; the agents that report work are one count. Other
+ * sessions are left out: they need nothing. When the line is longer than `width`, the count goes
+ * first, then the names after the first join as `N more`.
  */
 export function focusStrip(
-  rows: { name: string; state: RowState }[],
+  rows: { name: string; needs: boolean; word?: string; agent?: string }[],
   width: number,
 ): Span[] {
-  const named = (state: RowState) =>
-    rows
-      .filter((r) => r.state === state)
-      .map((r): Span[] => [
-        { text: STATUS_GLYPH[state], tone: STATUS_TONE[state] },
-        { text: ` ${r.name}`, tone: "value" },
-      ]);
-  const rest: RowState[] = ["quiet", "disconnected", "exited", "unknown"];
-  const counted = rest.flatMap((state): Span[][] => {
-    const n = rows.filter((r) => r.state === state).length;
-    const word = state === "unknown" ? "other" : STATUS_WORD[state] || state;
-    return n ? [[{ text: `${n} ${word}`, tone: "dim" }]] : [];
-  });
-  const more = (states: RowState[]): Span[][] => {
-    const n = rows.filter((r) => states.includes(r.state)).length;
-    return n ? [[{ text: `${n} more`, tone: "dim" }]] : [];
-  };
+  const named = rows
+    .filter((r) => r.needs)
+    .map((r): Span[] => [
+      { text: STATUS_GLYPH["needs-you"], tone: STATUS_TONE["needs-you"] },
+      { text: ` ${r.name}${r.word ? ` ${r.word}` : ""}`, tone: "value" },
+    ]);
+  const working = rows.filter((r) => !r.needs && r.agent === "working").length;
+  const count: Span[][] = working
+    ? [[{ text: `${working} working`, tone: "dim" }]]
+    : [];
   const join = (items: Span[][]) =>
     items.flatMap((item, i) =>
       i ? [{ text: " · ", tone: "dim" as Tone }, ...item] : item,
     );
   const cells = (spans: Span[]) => spans.reduce((n, s) => n + s.text.length, 0);
+  const rest = named.length - 1;
   const candidates = [
-    [...named("output"), ...named("needs-you"), ...counted],
-    [...named("output"), ...named("needs-you"), ...more(rest)],
-    [...named("needs-you"), ...more(["output", ...rest])],
-  ].map(join);
-  return candidates.find((c) => cells(c) <= width) ?? candidates.at(-1)!;
+    [...named, ...count],
+    named,
+    [
+      ...named.slice(0, 1),
+      ...(rest > 0 ? [[{ text: `${rest} more`, tone: "dim" as Tone }]] : []),
+    ],
+  ]
+    .filter((c) => c.length)
+    .map(join);
+  return candidates.find((c) => cells(c) <= width) ?? candidates.at(-1) ?? [];
 }
 
 /** What each state means, in a few plain words, for the footer under the pointer. */
