@@ -117,8 +117,8 @@ for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.
 # The command list starts empty; the owner edits it, and a later install never replaces it.
 place_once 0644 commands.json /etc/tokiwa/commands.json
 # The run log, and the run folders on the cache volume (outside the backup).
-run install -d -m 0755 /var/log/tokiwa
-run install -d -m 0755 /srv/development/cache/tokiwa-runs
+dir root root 755 /var/log/tokiwa
+dir root root 755 /srv/development/cache/tokiwa-runs
 place 0755 tokiwa-attention /usr/local/bin/tokiwa-attention
 place 0755 tokiwa-state /usr/local/bin/tokiwa-state
 # Each agent reports its state through its own hooks: working, waiting, idle, limited or error.

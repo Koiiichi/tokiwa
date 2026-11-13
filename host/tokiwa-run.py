@@ -4,6 +4,7 @@ import base64
 import fcntl
 import grp
 import json
+import math
 import os
 import pwd
 import re
@@ -30,18 +31,27 @@ PAGE_BYTES = 15000
 MAX_RUNNING = 4
 KEEP_SECONDS = 14 * 86400
 WAIT_SECONDS = 8
-# The launcher polls Run Command for about 15 seconds.
+# Well inside the 30 seconds that Run Command gives a call.
 START_SECONDS = 12
 SECRETS_BYTES = 1 << 20
 TIMED_OUT = 124
 ID_PATTERN = r"^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
 NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,47}$"
 SECRET_PATTERN = r"^[A-Z_][A-Z0-9_]{0,63}$"
-# The root ExecStopPost hook gets the unit's EnvironmentFile too, so a secret must not name a
-# variable that changes how a loader, an interpreter, systemd or a session behaves.
-RESERVED_PREFIXES = ("LD_", "MALLOC_", "PYTHON", "SYSTEMD_", "TOKIWA_", "TMUX", "LISTEN_")
+# The root ExecStopPost hook starts with env -i, but the loader and the C library of
+# /usr/bin/env still read the unit's environment, EnvironmentFile included. So a secret must not
+# name a variable that changes how a loader, a library, an interpreter, systemd or a session
+# behaves.
+RESERVED_PREFIXES = (
+    "LD_", "MALLOC_", "PYTHON", "SYSTEMD_", "TOKIWA_", "TMUX", "LISTEN_", "OPENSSL_"
+)
 RESERVED_NAMES = {
     "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "NLSPATH",
+    "TZ",
+    "TZDIR",
+    "HOSTALIASES",
     "LOCPATH",
     "PATH",
     "HOME",
@@ -72,6 +82,26 @@ ENTRY_KEYS = {
 ARG_KINDS = ("pattern", "choice", "path_below")
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 ENDS = {"success": "done", "timeout": "timed-out"}
+# Only after these results is ExecMainStatus an exit status; after a signal it is the signal.
+EXITED = ("success", "exit-code")
+# The limits of cloud-workbench.service, for each run unit and each git unit. ProtectHome also
+# hides /run/user, so a run has no Docker engine.
+SANDBOX = (
+    "NoNewPrivileges=yes",
+    "ProtectSystem=strict",
+    "ProtectHome=yes",
+    "PrivateDevices=yes",
+    "ProtectKernelTunables=yes",
+    "ProtectKernelModules=yes",
+    "ProtectControlGroups=yes",
+    "RestrictSUIDSGID=yes",
+    "CapabilityBoundingSet=",
+    "UMask=0077",
+    "TasksMax=512",
+    "MemoryMax=8G",
+    "MemorySwapMax=0",
+    "InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/var/lib/agent-platform",
+)
 VIA_PATTERN = r"^(cli|mcp|app)$"
 ACTOR_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
 
@@ -219,13 +249,18 @@ def check_value(name, arg, value):
         if value not in arg["choice"]:
             raise Refused(f"The value of {name} is not one of the listed choices.")
         return arg["choice"][value]
+    # A path outside the root gets one answer whether it exists or not, so that a caller cannot
+    # probe the host. A value that cannot be resolved (a NUL byte, a link loop) gets it too.
+    outside = Refused(f"The path of {name} is not below its root.")
     root = Path(arg["path_below"]).resolve()
     try:
-        path = (root / value).resolve(strict=True)
+        path = (root / value).resolve()
     except (OSError, RuntimeError, ValueError):
-        raise Refused(f"The path of {name} does not exist.")
+        raise outside
     if not path.is_relative_to(root):
-        raise Refused(f"The path of {name} is not below its root.")
+        raise outside
+    if not path.exists():
+        raise Refused(f"The path of {name} does not exist.")
     return str(path)
 
 
@@ -260,8 +295,7 @@ def command(argv, timeout=20):
     A program that cannot start gives exit 127. One that outlasts timeout seconds is killed with
     its whole process group and gives exit TIMED_OUT.
     """
-    # A clean environment: runuser keeps the caller's, with root's HOME, which git run as
-    # agent-workspace cannot read.
+    # A clean environment, so that no variable of the caller reaches systemctl or systemd-run.
     try:
         process = subprocess.Popen(
             argv,
@@ -309,20 +343,53 @@ def new_id(now):
     return time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + "-" + secrets.token_hex(2)
 
 
-def as_user(*argv):
-    return ["runuser", "-u", USER, "--", *argv]
+def literal(argv):
+    # systemd expands $NAME and ${NAME} in a command line with the unit's environment, secrets
+    # included, and splits a bare $NAME at spaces; $$ is a literal $.
+    return [item.replace("$", "$$") for item in argv]
+
+
+def git_command(clone, work, seconds, *argv):
+    """Return the systemd-run call that runs one git command as agent-workspace in a sandbox.
+
+    The clone belongs to agent-workspace, so its config and its checkout filters are code of
+    that user. git gets the limits of a run, may write only the clone's .git folder and the
+    run's work folder, and runs no hook and no file system monitor. The unit stops after
+    seconds, also when the caller of systemd-run is killed first.
+    """
+    properties = [
+        *SANDBOX,
+        f"ReadWritePaths={clone}/.git {work}",
+        f"RuntimeMaxSec={max(1, math.ceil(seconds))}",
+    ]
+    return [
+        "systemd-run",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--quiet",
+        f"--uid={USER}",
+        f"--gid={USER}",
+        "--slice=agent-sessions.slice",
+        *(f"--property={item}" for item in properties),
+        "--",
+        *literal(
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+             "-C", clone, *argv]
+        ),
+    ]
 
 
 def unit_command(run_id, entry, argv, workdir, env_file):
     """Return the systemd-run call that starts one run as agent-workspace."""
     folder = RUNS / run_id
     workbench = entry.get("home", "none") == "workbench"
+    # UMask also makes the output file, which systemd opens as root, mode 0600.
     properties = [
         f"RuntimeMaxSec={entry['timeout_seconds']}",
         f"StandardOutput=file:{folder}/output",
         "StandardError=inherit",
-        "NoNewPrivileges=yes",
-        "ProtectSystem=strict",
+        *SANDBOX,
         "PrivateTmp=yes",
         f"ReadWritePaths={folder}/work",
     ]
@@ -337,8 +404,11 @@ def unit_command(run_id, entry, argv, workdir, env_file):
     # Secrets travel only in a root-only file: systemctl show prints Environment to every user.
     if env_file is not None:
         properties.append(f"EnvironmentFile={env_file}")
+    # The hook runs as root, so it starts with an empty environment and reads the result from
+    # systemd instead of from variables.
     properties.append(
-        f"ExecStopPost=+/usr/bin/python3 -I {Path(__file__).resolve()} finish {run_id}"
+        "ExecStopPost=+/usr/bin/env -i /usr/bin/python3 -I "
+        f"{Path(__file__).resolve()} finish {run_id}"
     )
     environment = [f"PATH={SAFE_PATH}"]
     if workbench:
@@ -360,9 +430,7 @@ def unit_command(run_id, entry, argv, workdir, env_file):
         *(f"--property={item}" for item in properties),
         *(f"--setenv={item}" for item in environment),
         "--",
-        # systemd expands $NAME and ${NAME} in a command line with the unit's environment,
-        # secrets included, and splits a bare $NAME at spaces; $$ is a literal $.
-        *(item.replace("$", "$$") for item in argv),
+        *literal(argv),
     ]
 
 
@@ -485,8 +553,10 @@ def lock_runs(deadline):
             time.sleep(0.05)
 
 
-def remove_worktree(clone, work):
-    command(as_user("git", "-C", clone, "worktree", "remove", "--force", str(work)))
+def remove_worktree(clone, work, seconds=20):
+    command(
+        git_command(clone, work, seconds, "worktree", "remove", "--force", str(work)), seconds
+    )
 
 
 def start(name, values, via, actor, now=None):
@@ -532,9 +602,12 @@ def start(name, values, via, actor, now=None):
         call = {"entry": name, "output_bytes": entry["output_bytes"], "at": now}
         if entry["cwd"] == "worktree":
             commit = filled[filled_name("commit", entry["args"]["commit"])]
+            left = time_left(deadline)
             found = command(
-                as_user("git", "-C", filled["clone"], "cat-file", "-e", f"{commit}^{{commit}}"),
-                time_left(deadline),
+                git_command(
+                    filled["clone"], work, left, "cat-file", "-e", f"{commit}^{{commit}}"
+                ),
+                left,
             )
             if found.returncode == TIMED_OUT:
                 raise Refused("The call ran out of time.")
@@ -542,11 +615,12 @@ def start(name, values, via, actor, now=None):
                 raise Refused(f"The commit {commit} is not in the clone.")
             # Set before the add, so that a refusal also removes a worktree that is half made.
             clone = call["clone"] = filled["clone"]
+            left = time_left(deadline)
             made = command(
-                as_user(
-                    "git", "-C", clone, "worktree", "add", "--detach", str(work), commit
+                git_command(
+                    clone, work, left, "worktree", "add", "--detach", str(work), commit
                 ),
-                time_left(deadline),
+                left,
             )
             if made.returncode == TIMED_OUT:
                 raise Refused("The call ran out of time.")
@@ -589,7 +663,7 @@ def start(name, values, via, actor, now=None):
     wait_until = min(deadline, clock() + WAIT_SECONDS)
     while not (folder / "end.json").exists() and clock() < wait_until:
         time.sleep(0.25)
-    return status(run_id, 0)
+    return status(run_id, 0, just_started=True)
 
 
 def run_folder(run_id):
@@ -603,11 +677,23 @@ def run_folder(run_id):
     return folder, call
 
 
-def status(run_id, offset):
+def unit_state(run_id):
+    """Return the state word of a run's unit from systemctl is-active, or None without one."""
+    shown = command(["systemctl", "is-active", f"tokiwa-run-{run_id}"])
+    state = shown.stdout.strip()
+    # is-active exits 3 for a unit that is not active, so only a missing word is a failure.
+    if shown.returncode == TIMED_OUT or not re.fullmatch(r"[a-z-]+", state):
+        return None
+    return state
+
+
+def status(run_id, offset, just_started=False):
     """Return the state of a run and the page of its output that starts at a byte offset.
 
-    A run with no end record whose unit is gone reports failed with exit None. Raises Refused
-    for a value that is not the id of a run, or for a negative offset.
+    A run with no end record whose unit is gone reports failed with exit None, and its secrets
+    file is removed. Raises Refused for a value that is not the id of a run, for a negative
+    offset, or when systemd gives no state for a run with no end record. Just after the start
+    (just_started), such a run reports running instead, so that the caller keeps its id.
     """
     folder, call = run_folder(run_id)
     if not is_int(offset, 0, 10**12):
@@ -619,16 +705,20 @@ def status(run_id, offset):
         state, code, truncated = end["state"], end["exit"], end["truncated"]
     else:
         truncated = size > limit
-        active = command(["systemctl", "is-active", f"tokiwa-run-{run_id}"]).stdout.strip()
+        active = unit_state(run_id)
+        if active is None and not just_started:
+            raise Refused(f"The state of run {run_id} could not be read.")
         # deactivating: the unit's process ended and its finish hook is still writing the end.
         # A just-started unit that systemd has not loaded yet reads as inactive for a moment.
         young = time.time() - call["at"] < WAIT_SECONDS + 5
-        if active in ("active", "activating", "deactivating") or (
+        if active in (None, "active", "activating", "deactivating") or (
             active == "inactive" and young
         ):
             state, code = "running", None
         else:
             state, code = "failed", None
+            # No finish hook ran, so nothing else removes the run's secrets file.
+            (RUNS / f"{run_id}.env").unlink(missing_ok=True)
     return {
         "id": run_id,
         "entry": call["entry"],
@@ -642,18 +732,41 @@ def status(run_id, offset):
     }
 
 
+def unit_end(run_id):
+    """Return the Result and the ExecMainStatus of a run's unit, or two empty strings.
+
+    The finish hook reads them from systemd, because a variable of its environment could come
+    from the unit's EnvironmentFile.
+    """
+    shown = command(
+        [
+            "systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "--value",
+            f"tokiwa-run-{run_id}.service",
+        ],
+        5,
+    )
+    # --value prints the values without their names, in systemd's order; only ExecMainStatus
+    # is a number.
+    values = shown.stdout.split()
+    numbers = [value for value in values if re.fullmatch(r"[0-9]+", value)]
+    words = [value for value in values if value not in numbers]
+    if shown.returncode or len(numbers) != 1 or len(words) != 1:
+        return "", ""
+    return words[0], numbers[0]
+
+
 def finish(run_id, service_result, exit_status):
     """Record the end of a run, as its unit's ExecStopPost hook.
 
-    service_result and exit_status are systemd's SERVICE_RESULT and EXIT_STATUS. Removes the
-    run's secret file and worktree and cuts its output to the entry's output_bytes.
+    service_result and exit_status are the Result and ExecMainStatus of the unit (unit_end).
+    The exit is None unless the result is success or exit-code. Removes the run's secret file
+    and worktree and cuts its output to the entry's output_bytes.
     """
     folder, call = run_folder(run_id)
     state = ENDS.get(service_result, "failed")
-    try:
+    code = None
+    if service_result in EXITED and re.fullmatch(r"[0-9]+", exit_status):
         code = int(exit_status)
-    except ValueError:
-        code = None
     output = folder / "output"
     # Recorded here, because the cut below makes the file no larger than output_bytes.
     truncated = output.exists() and output.stat().st_size > call["output_bytes"]
@@ -788,11 +901,9 @@ def main(argv):
                 raise Refused("Use an offset from an earlier result.")
             print(seal(status(run_id, int(offset)), certificate))
         case ["finish", run_id]:
-            finish(
-                run_id,
-                os.environ.get("SERVICE_RESULT", ""),
-                os.environ.get("EXIT_STATUS", ""),
-            )
+            # The id is checked before it names a unit.
+            run_folder(run_id)
+            finish(run_id, *unit_end(run_id))
         case _:
             raise Refused("Use commands, start, status or finish.")
 

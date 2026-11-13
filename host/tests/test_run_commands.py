@@ -91,7 +91,8 @@ class ListAndArguments(unittest.TestCase):
             "TMUX", "TMUX_TMPDIR", "LISTEN_FDS", "GCONV_PATH", "LOCPATH", "PATH", "HOME",
             "SHELL", "USER", "LOGNAME", "PWD", "BROWSER", "PS1", "CLAUDE_CONFIG_DIR",
             "CODEX_HOME", "SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS",
-            "CREDENTIALS_DIRECTORY", "NOTIFY_SOCKET",
+            "CREDENTIALS_DIRECTORY", "NOTIFY_SOCKET", "OPENSSL_CONF", "OPENSSL_MODULES",
+            "NLSPATH", "GLIBC_TUNABLES", "TZ", "TZDIR", "HOSTALIASES",
         ):
             with self.subTest(name):
                 path = self.write_list(json.dumps({"entries": {"a": entry(secrets=[name])}}))
@@ -138,10 +139,21 @@ class ListAndArguments(unittest.TestCase):
         spec_ = entry(
             argv=["cat", "{path}"], args={"path": {"path_below": str(root)}}, cwd="fresh"
         )
-        for value in ("sub/../../outside", "link", "sub/missing"):
+        outside = "The path of path is not below its root. Nothing was run."
+        cases = {
+            "sub/../../outside": outside,
+            "link": outside,
+            # A path outside the root that does not exist gets the same answer, so that a
+            # caller cannot learn which host paths exist.
+            "../missing-outside": outside,
+            "link/missing": outside,
+            "sub/missing": "The path of path does not exist. Nothing was run.",
+        }
+        for value, message in cases.items():
             with self.subTest(value):
-                with self.assertRaises(run.Refused):
+                with self.assertRaises(run.Refused) as caught:
                     run.check_call(spec_, {"path": value})
+                self.assertEqual(str(caught.exception), message)
         self.assertEqual(
             run.check_call(spec_, {"path": "sub/file"}),
             {"path": str(root / "sub/file")},
@@ -190,6 +202,23 @@ TEST_AT = {
     "output_bytes": 30000,
 }
 DAY = 86400
+# The limits of cloud-workbench.service that every run unit and every git unit gets.
+SANDBOX = [
+    "NoNewPrivileges=yes",
+    "ProtectSystem=strict",
+    "ProtectHome=yes",
+    "PrivateDevices=yes",
+    "ProtectKernelTunables=yes",
+    "ProtectKernelModules=yes",
+    "ProtectControlGroups=yes",
+    "RestrictSUIDSGID=yes",
+    "CapabilityBoundingSet=",
+    "UMask=0077",
+    "TasksMax=512",
+    "MemoryMax=8G",
+    "MemorySwapMax=0",
+    "InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/var/lib/agent-platform",
+]
 
 
 class Runs(unittest.TestCase):
@@ -216,6 +245,7 @@ class Runs(unittest.TestCase):
         self.owners = []
         self.units = ""
         self.active = "active"
+        self.shown = "success\n0\n"
         self.commit_known = True
         self.start_code = 0
         self.timeouts = []
@@ -239,12 +269,16 @@ class Runs(unittest.TestCase):
         code, stdout = 0, ""
         if argv[:2] == ["systemctl", "list-units"]:
             stdout = self.units
+        elif argv[:2] == ["systemctl", "show"]:
+            stdout = self.shown
         elif argv[:2] == ["systemctl", "is-active"]:
+            if self.active is None:
+                return subprocess.CompletedProcess(argv, run.TIMED_OUT, "", "")
             stdout = self.active + "\n"
             code = 0 if self.active == "active" else 3
         elif "cat-file" in argv:
             code = 0 if self.commit_known else 1
-        elif argv[0] == "systemd-run":
+        elif argv[0] == "systemd-run" and argv[1].startswith("--unit="):
             code = self.start_code
             with open(run.RUNS / ".lock", "a") as lock:
                 try:
@@ -262,6 +296,22 @@ class Runs(unittest.TestCase):
 
     def calls_to(self, program):
         return [argv for argv in self.calls if argv[0] == program]
+
+    def run_units(self):
+        """The systemd-run calls that start a run, without the git calls."""
+        return [argv for argv in self.calls_to("systemd-run") if argv[1].startswith("--unit=")]
+
+    def git(self, seconds, *argv, clone="/w/repo-a", work=None):
+        """The systemd-run call that runs one git command in the run's sandbox."""
+        return [
+            "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--uid=agent-workspace",
+            "--gid=agent-workspace", "--slice=agent-sessions.slice",
+            *(f"--property={item}" for item in SANDBOX),
+            f"--property=ReadWritePaths={clone}/.git {work}",
+            f"--property=RuntimeMaxSec={seconds}",
+            "--", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+            "-C", clone, *argv,
+        ]
 
     def start(self, name="echo-pr", values=None, **keywords):
         values = {"pr": "42"} if values is None else values
@@ -302,11 +352,22 @@ class Runs(unittest.TestCase):
         self.assertFalse([item for item in unit if "EnvironmentFile" in item])
         runner = Path(run.__file__).resolve()
         self.assertIn(
-            f"--property=ExecStopPost=+/usr/bin/python3 -I {runner} finish "
+            f"--property=ExecStopPost=+/usr/bin/env -i /usr/bin/python3 -I {runner} finish "
             "20261112T183000-7f3a",
             unit,
         )
         self.assertEqual(unit[unit.index("--") + 1 :], argv)
+
+    def test_every_run_unit_has_the_limits_of_the_session_unit(self):
+        folder = run.RUNS / "20261112T183000-7f3a"
+        for spec_ in (ECHO_PR, REVIEW_PR):
+            with self.subTest(home=spec_.get("home", "none")):
+                unit = run.unit_command(
+                    "20261112T183000-7f3a", spec_, ["x"], folder / "work", None
+                )
+                options = unit[: unit.index("--")]
+                for item in SANDBOX:
+                    self.assertIn(f"--property={item}", options)
 
     def test_unit_command_keeps_each_dollar_literal(self):
         unit = run.unit_command(
@@ -500,6 +561,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(self.run_ids(), [])
 
     def test_unknown_commit_is_refused(self):
+        self.use_fake_clock()
         self.commit_known = False
         with self.assertRaises(run.Refused) as caught:
             self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
@@ -507,30 +569,33 @@ class Runs(unittest.TestCase):
             str(caught.exception),
             "The commit 1a2b3c4 is not in the clone. Nothing was run.",
         )
-        self.assertIn(
-            [
-                "runuser", "-u", "agent-workspace", "--", "git", "-C", "/w/repo-a",
-                "cat-file", "-e", "1a2b3c4^{commit}",
-            ],
-            self.calls,
-        )
+        work = self.base / "runs" / self.refused_id() / "work"
+        self.assertIn(self.git(12, "cat-file", "-e", "1a2b3c4^{commit}", work=work), self.calls)
         self.assertFalse([argv for argv in self.calls if "worktree" in argv])
-        self.assertFalse(self.calls_to("systemd-run"))
+        self.assertFalse(self.run_units())
         self.assertEqual(self.run_ids(), [])
 
+    def refused_id(self):
+        """The id of the run folder that a refused worktree call made and removed."""
+        (git,) = [argv for argv in self.calls if "cat-file" in argv]
+        (paths,) = [item for item in git if item.startswith("--property=ReadWritePaths=")]
+        return Path(paths.split()[-1]).parent.name
+
     def test_worktree_is_made_and_removed(self):
+        self.use_fake_clock()
         result = self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
         work = run.RUNS / result["id"] / "work"
-        git = ["runuser", "-u", "agent-workspace", "--", "git", "-C", "/w/repo-a"]
         self.assertIn(
-            git + ["worktree", "add", "--detach", str(work), "1a2b3c4"], self.calls
+            self.git(12, "worktree", "add", "--detach", str(work), "1a2b3c4", work=work),
+            self.calls,
         )
-        (unit,) = self.calls_to("systemd-run")
+        (unit,) = self.run_units()
         self.assertIn(f"--working-directory={work}", unit)
         self.assertEqual(self.owners, [(work, "agent-workspace")])
         run.finish(result["id"], "success", "0")
         self.assertEqual(
-            self.calls[-1], git + ["worktree", "remove", "--force", str(work)]
+            self.calls[-1],
+            self.git(20, "worktree", "remove", "--force", str(work), work=work),
         )
 
     def test_finish_records_the_end(self):
@@ -553,6 +618,33 @@ class Runs(unittest.TestCase):
         run.finish(result["id"], "exit-code", "2")
         self.assertEqual(run.status(result["id"], 0)["state"], "failed")
         self.assertEqual(run.status(result["id"], 0)["exit"], 2)
+        # After a signal, ExecMainStatus is the signal number and not an exit status.
+        run.finish(result["id"], "signal", "9")
+        self.assertEqual(
+            (run.status(result["id"], 0)["state"], run.status(result["id"], 0)["exit"]),
+            ("failed", None),
+        )
+
+    def test_unit_end_reads_the_result_from_systemd(self):
+        cases = {
+            "success\n0\n": ("success", "0"),
+            "exit-code\n3\n": ("exit-code", "3"),
+            "3\nexit-code\n": ("exit-code", "3"),
+            "": ("", ""),
+            "success\n": ("", ""),
+        }
+        for shown, expected in cases.items():
+            with self.subTest(shown=shown):
+                self.shown = shown
+                self.assertEqual(run.unit_end("20261112T183000-7f3a"), expected)
+        self.assertEqual(
+            self.calls[-1],
+            [
+                "systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "--value",
+                "tokiwa-run-20261112T183000-7f3a.service",
+            ],
+        )
+        self.assertEqual(self.timeouts[-1], 5)
 
     def test_finish_removes_the_secret_file(self):
         run.SECRETS.parent.mkdir(parents=True)
@@ -567,6 +659,32 @@ class Runs(unittest.TestCase):
         self.assertEqual((result["state"], result["exit"]), ("failed", None))
         status = run.status(result["id"], 0)
         self.assertEqual((status["state"], status["exit"]), ("failed", None))
+
+    def test_a_lost_run_removes_its_secrets_file(self):
+        run.SECRETS.parent.mkdir(parents=True)
+        run.SECRETS.write_text("export API_KEY='v a l'\n")
+        self.active = "inactive"
+        result = self.start("echo-secret", now=time.time() - 60)
+        self.assertEqual(result["state"], "failed")
+        self.assertFalse((run.RUNS / f"{result['id']}.env").exists())
+
+    def test_a_state_that_systemd_does_not_give_is_refused(self):
+        result = self.start()
+        for active in (None, ""):
+            with self.subTest(active=active):
+                self.active = active
+                with self.assertRaises(run.Refused) as caught:
+                    run.status(result["id"], 0)
+                self.assertEqual(
+                    str(caught.exception),
+                    f"The state of run {result['id']} could not be read. Nothing was run.",
+                )
+        self.assertFalse((run.RUNS / result["id"] / "end.json").exists())
+
+    def test_a_start_whose_state_systemd_does_not_give_is_running(self):
+        self.active = None
+        result = self.start()
+        self.assertEqual((result["state"], result["exit"]), ("running", None))
 
     def test_a_unit_whose_finish_hook_runs_is_still_running(self):
         result = self.start()
@@ -655,6 +773,14 @@ class Runs(unittest.TestCase):
             steps,
             {"list-units": 12, "cat-file": 12, "add": 7, "systemd-run": 7, "is-active": 20},
         )
+        limits = [
+            item for argv in self.calls for item in argv if item.startswith("--property=Runtime")
+        ]
+        self.assertEqual(
+            limits,
+            ["--property=RuntimeMaxSec=12", "--property=RuntimeMaxSec=7",
+             "--property=RuntimeMaxSec=600"],
+        )
 
     def test_a_start_that_runs_out_of_time_is_refused_and_cleaned(self):
         self.use_fake_clock()
@@ -662,7 +788,7 @@ class Runs(unittest.TestCase):
         with self.assertRaises(run.Refused) as caught:
             self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
         self.assertEqual(str(caught.exception), "The call ran out of time. Nothing was run.")
-        self.assertFalse(self.calls_to("systemd-run"))
+        self.assertFalse(self.run_units())
         self.assertIn("remove", self.calls[-1])
         self.assertEqual(self.run_ids(), [])
         self.assertIn("refused", self.log_lines()[-1])
@@ -764,14 +890,22 @@ class Cli(unittest.TestCase):
     def payload(self, value):
         return base64.b64encode(json.dumps(value).encode()).decode()
 
-    def test_finish_reads_the_result_from_the_environment(self):
+    def test_finish_reads_the_result_from_systemd_and_not_the_environment(self):
         finished = []
-        self.enterContext(
-            mock.patch.object(run, "finish", lambda *call: finished.append(call))
-        )
-        os.environ.update(SERVICE_RESULT="exit-code", EXIT_STATUS="3")
+        for name, value in (
+            ("finish", lambda *call: finished.append(call)),
+            ("unit_end", lambda run_id: ("exit-code", "3")),
+            ("run_folder", lambda run_id: (None, {})),
+        ):
+            self.enterContext(mock.patch.object(run, name, value))
+        os.environ.update(SERVICE_RESULT="success", EXIT_STATUS="0")
         self.main("finish", "20261112T183000-7f3a")
         self.assertEqual(finished, [("20261112T183000-7f3a", "exit-code", "3")])
+
+    def test_finish_checks_the_id_before_it_asks_systemd(self):
+        with self.assertRaises(run.Refused):
+            self.main("finish", "../x")
+        self.assertEqual(self.calls, [])
 
     def test_start_reads_the_payload_and_prints_the_sealed_result(self):
         os.environ.update(TOKIWA_VIA="mcp", TOKIWA_ACTOR="orchestrator-a")
