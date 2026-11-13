@@ -756,11 +756,15 @@ esac
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f'Tokiwa: The run call returned {status}. A run may have started: use tokiwa run-status with its id.',
                               result.stderr)
-        # A Failed call ended on the host without a refusal line.
+        # A Failed call without a refusal line: the runner can fail after systemd-run started the run.
         self.env['TEST_STATUS'] = 'Failed'
+        self.env['TEST_STDERR'] = 'Traceback (most recent call last):\nOSError: [Errno 28] No space left on device\n'
         result = self.run_cli('run', 'review-pr', 'pr=42')
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn('may have started', result.stderr)
+        self.assertTrue(result.stderr.endswith('Tokiwa: The run call returned Failed. A run may have started: '
+                                               'use tokiwa run-status with its id.\n'), result.stderr)
+        # Other modes keep their text for the same failure.
+        self.assertIn('No service was started', self.run_cli('commands').stderr)
 
     def test_a_failed_run_status_call_changed_nothing(self):
         self.stub_sleep()

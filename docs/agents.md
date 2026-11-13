@@ -121,7 +121,7 @@ To read a long output, call `tokiwa_run_status` with the last `next_offset` as `
 
 At most 4 runs are active at one time. A start has one 12-second deadline: when another start holds the host's lock past it, the call is refused as busy. When systemd gives no state for a run that has not ended, `run-status` is refused with `The state of run ID could not be read. Nothing was run.`; call it again later.
 
-The launcher waits up to 40 seconds for a `run` or `run-status` call to end on the host. A call that the host refused fails with the host's own line, which ends `Nothing was run.` A `run` call that did not end (`TimedOut`, `Cancelled`, or no end after 40 seconds) says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.` The run log on the host has the id. A `run-status` call that failed says `The run-status call returned STATUS. Nothing was changed.`
+The launcher waits up to 40 seconds for a `run` or `run-status` call to end on the host. A call that the host refused fails with the host's own line, which ends `Nothing was run.` A `run` call that failed in another way (`Failed` without that line, `TimedOut`, `Cancelled`, or no end after 40 seconds) says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.` The run log on the host has the id. A `run-status` call that failed says `The run-status call returned STATUS. Nothing was changed.`
 
 ## Limits
 

@@ -377,8 +377,9 @@ for r in rows:
   # A refusal of the command runner names its cause in its last line.
   refusal=$(printf '%s\n' "$errors" | sed '/^[[:space:]]*$/d' | tail -n 1)
   [[ $refusal != *'Nothing was run.' ]] || fail "$refusal"
-  # A run call that did not end may have started a run after the host checked the call.
-  [[ $mode != run || $status == Failed ]] || fail "The run call returned $status. A run may have started: use tokiwa run-status with its id."
+  # A run call that the host did not refuse may have started a run: the runner can also fail
+  # after systemd-run started it.
+  [[ $mode != run ]] || fail "The run call returned $status. A run may have started: use tokiwa run-status with its id."
   [[ $mode != run-status ]] || fail "The run-status call returned $status. Nothing was changed."
   fail "The workbench check returned $status. No service was started."
  fi

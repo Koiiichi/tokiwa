@@ -69,7 +69,7 @@ The launcher polls `get-command-invocation` one second apart, up to 15 times, an
 
 | Command | Status | Message |
 | --- | --- | --- |
-| `run` | Not `Failed`: `TimedOut`, `Cancelled`, or no end after 40 polls | `The run call returned <status>. A run may have started: use tokiwa run-status with its id.` |
+| `run` | Any other than `Success`, also `Failed` without a refusal line, or no end after 40 polls | `The run call returned <status>. A run may have started: use tokiwa run-status with its id.` |
 | `run-status` | Any other than `Success` | `The run-status call returned <status>. Nothing was changed.` |
 
 On the host, each command runs as `sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 /opt/agent-platform/rootless/terminal-session.sh <mode> …`. Except for `health`, the command first checks `systemctl is-active` for `cloud-workbench.service`; Run Command calls also check `user@2200.service`.
