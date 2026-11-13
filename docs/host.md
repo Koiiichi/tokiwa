@@ -292,6 +292,7 @@ The runner, [`tokiwa-run.py`](../host/tokiwa-run.py), runs as root through Run C
 | `cwd` | `fresh`: an empty folder. `worktree`: a detached `git worktree` of a clone at a commit, made before the unit starts and removed when it ends. It needs a `choice` argument with `as: clone` and an argument named `commit`. The runner checks the commit in the clone, never fetches, and refuses an unknown commit. The clone must be a normal clone with a `.git` folder, and its path must not contain a space. git checks the commit and adds and removes the worktree as `agent-workspace`, in a unit with the limits of a run that can write only the clone's `.git` folder and the run's `work` folder, and git runs no hook and no file system monitor (`core.hooksPath=/dev/null`, `core.fsmonitor=false`). |
 | `home` | `none` (the default): `HOME` is the run's `work` folder, and `/srv/development/private` is hidden from a read by path. `workbench`: `HOME` is the workbench home, with `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, for an entry that needs the model sign-ins. `~/.tokiwa` and the peermesh folder stay hidden in this mode. |
 | `secrets` | Names from `~/.tokiwa/secrets.env` that the program gets as environment variables. Default none. |
+| `writable` | A list of folders that the run may also write, default none. Each item is an absolute path that the owner writes, or a whole-item placeholder `{name}` that names a `choice` argument (a placeholder of a `pattern` or `path_below` argument makes the list invalid). The caller never types a writable path. Every fixed path and every value of a named `choice` must be absolute and normal (no `..`, no repeated or trailing `/`), hold no space, tab, `$` or `%`, and be below `/srv/development/state/workspaces` but not that folder itself. At each call the runner resolves each path, and refuses the call with one text when the result is missing, is not a folder or is not below that folder, so a refusal does not tell whether a path exists. The unit gets one `ReadWritePaths` item for each resolved path. The git units do not. `InaccessiblePaths` still win and file permissions still apply, so the folder must be writable by `agent-workspace`. |
 | `timeout_seconds` | From 1 to 86400. The unit stops at this time and the run is `timed-out`. |
 | `output_bytes` | From 1 to 10,000,000. The runner keeps the first part of the output and marks `truncated`. |
 
@@ -333,6 +334,29 @@ An example entry, with neutral names. It runs the review script of one clone for
 ```
 
 An agent then runs `tokiwa run review-pr repo=repo-a pr=42 commit=1a2b3c4`. Here the unit starts in a worktree of `repo-a` at the commit, and `{clone}` is the path behind `repo-a`. With `cwd: fresh`, an entry has an empty folder instead.
+
+An entry that updates one clone names it in `writable`. This entry pulls one clone:
+
+```json
+{
+  "entries": {
+    "pull-repo": {
+      "description": "Pull one clone.",
+      "argv": ["/usr/bin/git", "-C", "{clone}", "pull", "--ff-only"],
+      "args": {
+        "repo": {"choice": {"repo-a": "/srv/development/state/workspaces/workbench/repo-a"}, "as": "clone"}
+      },
+      "cwd": "fresh",
+      "home": "workbench",
+      "writable": ["{clone}"],
+      "timeout_seconds": 300,
+      "output_bytes": 100000
+    }
+  }
+}
+```
+
+A fetch or a pull needs `home: workbench`, because the Git credentials are in the workbench home. The git hooks of that clone run inside the run's sandbox, as `agent-workspace`, and the run can write the folders of `writable` and nothing else outside its own folder and the workbench home.
 
 To edit the list, open `tokiwa admin`, edit the file and save it. The next call reads the new list. Check it with `tokiwa commands`: an invalid list refuses with the reason. Then reconnect a local agent with `tokiwa mcp --allow commands`.
 

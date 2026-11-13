@@ -109,7 +109,8 @@ One entry, as an example:
   - `workbench`: the workbench home, with `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, for an entry that needs the model sign-ins. `~/.tokiwa/secrets.env` stays hidden in both modes.
 - `secrets`: names from `~/.tokiwa/secrets.env` that the process gets as environment variables. Default none. The root runner reads the file, passes only the named values, and never prints one.
 - `PATH` is fixed (`/usr/local/bin:/usr/bin:/bin`), and no other variable from the caller passes.
-- The unit's writable paths are its run folder and, for `home: workbench`, the workbench home. Every other path is read-only, as in `cloud-workbench.service` (`ProtectSystem=strict`, `NoNewPrivileges=yes`).
+- The unit's writable paths are its run folder, for `home: workbench` the workbench home, and the folders of `writable`. Every other path is read-only, as in `cloud-workbench.service` (`ProtectSystem=strict`, `NoNewPrivileges=yes`).
+- `writable`: a list of folders that the run may also write, default none. An item is an absolute path that the owner writes, or a whole-item `{name}` placeholder of a `choice` argument; the caller never types a path. The runner checks each fixed path and each choice value when it loads the list (absolute, normal, no whitespace, `$` or `%`, below `/srv/development/state/workspaces` and not that folder). At each call it resolves each path and refuses the call, with one text, when the result is missing, is not a folder or is not below the workspace folder. The run unit gets one `ReadWritePaths` item for each resolved path, and the git units get none. An entry that pulls or fetches one clone names that clone here.
 - The list file is checked at each call: a list that fails to parse, or an entry that fails these rules, refuses the call.
 
 ### Calls
@@ -134,7 +135,7 @@ One entry, as an example:
 - At most 4 runs at a time. A fifth call is refused.
 - Run folders older than 14 days are deleted at the start of each call.
 - Run folders live on the cache volume, which the hourly backup leaves out, so a worktree or a large output never enters a backup. The named secrets reach the unit through a root-only `EnvironmentFile` in the run's root folder, never through `--setenv`, because `systemctl show` prints a unit's `Environment` to every user. My calls.
-- `cwd: worktree` needs the commit in the clone. The runner checks it with `git cat-file -e <commit>^{commit}` and refuses an unknown commit before the run. It never fetches. The owner adds a fetch entry when one is needed (for example `git fetch origin pull/{pr}/head` in one clone). My call: fetching needs network access and Git credentials and can outlast the wait.
+- `cwd: worktree` needs the commit in the clone. The runner checks it with `git cat-file -e <commit>^{commit}` and refuses an unknown commit before the run. It never fetches. The owner adds a fetch entry when one is needed (for example `git fetch origin pull/{pr}/head` in one clone), and the entry names that clone in `writable`. My call: fetching needs network access and Git credentials and can outlast the wait.
 
 ### Log
 
@@ -154,6 +155,7 @@ Each refusal names the cause and ends with `Nothing was run.`: unknown entry, mi
 - A new MCP class `commands` for `tokiwa_run` (owner, 2026-11-12).
 - A run can reach the model sign-ins and the saved secrets through the processes of the sessions, because it runs as the same user. `home: none` hides them only from a read by path. The owner lists only commands that they would run in a session (Owner, 2026-11-13).
 - The list is on the host and only the owner changes it from a root terminal (request).
+- An entry can name the folders its run may also write, in `writable`, so that a `git pull` or `git fetch` entry can update one clone. The caller never types a writable path (owner, 2026-11-13).
 - The first entries the owner wants, as examples: a review script of a coordination repository for a pull request at a commit; a repository's test suite at a commit; read a file below the workspace root; `git pull` in one fixed clone (request).
 
 ## My calls (check these)
