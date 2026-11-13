@@ -39,12 +39,14 @@ async function connect(
 }
 const screen = { name: "web-lead", identity: "1:$2:3" };
 
-test("the server lists six read-only tools", async () => {
+test("the server lists eight read-only tools", async () => {
   const { client } = await connect(() => "");
   const { tools } = await client.listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
+    "tokiwa_commands",
     "tokiwa_digest",
     "tokiwa_health",
+    "tokiwa_run_status",
     "tokiwa_screen",
     "tokiwa_search",
     "tokiwa_sessions",
@@ -218,8 +220,10 @@ test("the read tools are the read entries of the capability table", async () => 
 
 test("a control tool needs --allow control, and a run tool needs --allow run", async () => {
   const read = [
+    "tokiwa_commands",
     "tokiwa_digest",
     "tokiwa_health",
+    "tokiwa_run_status",
     "tokiwa_screen",
     "tokiwa_search",
     "tokiwa_sessions",
@@ -272,6 +276,82 @@ test("--allow takes control and run, and refuses anything else", () => {
     ["--other"],
   ])
     expect(() => parseAllow(bad)).toThrow();
+});
+
+test("--allow takes commands, and refuses a class that does not exist", () => {
+  expect(parseAllow(["--allow", "commands,control"])).toEqual([
+    "commands",
+    "control",
+  ]);
+  expect(() => parseAllow(["--allow", "shell"])).toThrow(
+    "Use tokiwa mcp, or tokiwa mcp --allow with control, run or commands, joined by commas.",
+  );
+});
+
+test("--allow commands offers tokiwa_run and not tokiwa_launch", async () => {
+  const { client } = await connect(() => "", { allow: ["commands"] });
+  const found = await names(client);
+  expect(found).toContain("tokiwa_run");
+  expect(found).not.toContain("tokiwa_launch");
+  expect(found).toContain("tokiwa_commands");
+  expect(found).toContain("tokiwa_run_status");
+});
+
+test("--allow run alone does not offer tokiwa_run", async () => {
+  const { client } = await connect(() => "", { allow: ["run"] });
+  const found = await names(client);
+  expect(found).not.toContain("tokiwa_run");
+  expect(found).toContain("tokiwa_launch");
+});
+
+test("tokiwa_run expands its pairs and marks the output as data", async () => {
+  const { calls, call } = await connect(() => '{"state":"done"}', {
+    allow: ["commands"],
+  });
+  const result = await call("tokiwa_run", {
+    entry: "review-pr",
+    args: { pr: "42", commit: "1a2b3c4" },
+  });
+  expect(calls).toEqual([["run", "review-pr", "commit=1a2b3c4", "pr=42"]]);
+  expect(result.text.startsWith(SCREEN_NOTICE)).toBe(true);
+});
+
+test("tokiwa_run with no pairs passes only the entry", async () => {
+  const { calls, call } = await connect(() => "{}", { allow: ["commands"] });
+  await call("tokiwa_run", { entry: "pull-repo-a", args: {} });
+  expect(calls).toEqual([["run", "pull-repo-a"]]);
+});
+
+test("a pair that the launcher would refuse is refused before the launcher", async () => {
+  const { calls, call } = await connect(() => "", { allow: ["commands"] });
+  const bad = [
+    { entry: "review-pr", args: { "Bad Name": "1" } },
+    { entry: "review-pr", args: { pr: "" } },
+    { entry: "review-pr", args: { pr: "x".repeat(1001) } },
+    { entry: "review-pr", args: { pr: "a\nb" } },
+    { entry: "Review", args: {} },
+    {
+      entry: "review-pr",
+      args: Object.fromEntries(
+        Array.from({ length: 17 }, (_, i) => [`k${i}`, "v"]),
+      ),
+    },
+  ];
+  for (const args of bad) expect((await call("tokiwa_run", args)).isError).toBe(true);
+  expect(calls).toEqual([]);
+});
+
+test("tokiwa_run_status checks its id and offset", async () => {
+  const { calls, call } = await connect(() => "{}");
+  await call("tokiwa_run_status", { id: "20261112T183000-7f3a" });
+  expect(calls).toEqual([["run-status", "20261112T183000-7f3a", "0"]]);
+  for (const args of [
+    { id: "../x" },
+    { id: "20261112T183000-7f3a", offset: -1 },
+    { id: "20261112T183000-7f3a", offset: 1000000001 },
+  ])
+    expect((await call("tokiwa_run_status", args)).isError).toBe(true);
+  expect(calls).toHaveLength(1);
 });
 
 test("the real control tools appear only with --allow control", async () => {

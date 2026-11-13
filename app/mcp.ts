@@ -17,6 +17,8 @@ export const SCREEN_NOTICE =
 
 type Argument =
   | { type: "string"; pattern?: string }
+  /** An object of NAME to VALUE strings, for a command list entry. It expands to NAME=VALUE items. */
+  | { type: "pairs" }
   | { type: "integer"; minimum: number; maximum: number; default?: number };
 interface Tool {
   name: string;
@@ -44,16 +46,16 @@ export interface Table {
 }
 
 /** The classes that --allow can add. Read tools need no flag; human commands are never tools. */
-const OPT_IN = ["control", "run"];
+const OPT_IN = ["control", "run", "commands"];
 
-/** Read `--allow control,run` from the arguments of `tokiwa mcp`. */
+/** Read `--allow control,run,commands` from the arguments of `tokiwa mcp`. */
 export function parseAllow(argv: string[]) {
   if (!argv.length) return [];
   const classes =
     argv.length === 2 && argv[0] === "--allow" ? argv[1].split(",") : [];
   if (!classes.length || classes.some((c) => !OPT_IN.includes(c)))
     throw new Error(
-      "Use tokiwa mcp, or tokiwa mcp --allow control, run or control,run.",
+      "Use tokiwa mcp, or tokiwa mcp --allow with control, run or commands, joined by commas.",
     );
   return classes;
 }
@@ -69,6 +71,20 @@ function schema(
 ) {
   return Object.fromEntries(
     Object.entries(args).map(([name, spec]) => {
+      if (spec.type === "pairs") {
+        // The launcher refuses these shapes too: a name, a value of 1 to 1,000 printable characters, 16 pairs.
+        const value = z
+          .string()
+          .min(1)
+          .max(1000)
+          .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), "no control characters");
+        return [
+          name,
+          z
+            .record(z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/), value)
+            .refine((o) => Object.keys(o).length <= 16, "at most 16 pairs"),
+        ];
+      }
       if (spec.type === "integer") {
         const number = z.number().int().min(spec.minimum).max(spec.maximum);
         return [
@@ -130,9 +146,17 @@ export function createServer(
       },
       (values: Record<string, unknown>) =>
         run(
-          tool.argv.map((part) =>
-            part.startsWith("{") ? String(values[part.slice(1, -1)]) : part,
-          ),
+          tool.argv.flatMap((part) => {
+            if (!part.startsWith("{")) return [part];
+            // {name...} is one NAME=VALUE item per pair, in key order.
+            if (part.endsWith("...}"))
+              return Object.entries(
+                (values[part.slice(1, -4)] ?? {}) as Record<string, string>,
+              )
+                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                .map(([k, v]) => `${k}=${v}`);
+            return [String(values[part.slice(1, -1)])];
+          }),
           tool.untrusted_output
             ? (out) => `${SCREEN_NOTICE}\n${out}`
             : undefined,

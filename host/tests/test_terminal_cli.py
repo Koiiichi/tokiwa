@@ -527,8 +527,13 @@ esac
         self.stub_app()
         result = self.run_cli('mcp', '--allow', 'control,run')
         self.assertEqual((result.returncode, result.stdout), (0, 'app mcp --allow control,run'), result.stderr)
+        for classes in ['commands', 'commands,control', 'run,commands,control']:
+            result = self.run_cli('mcp', '--allow', classes)
+            self.assertEqual((result.returncode, result.stdout), (0, f'app mcp --allow {classes}'), result.stderr)
         # A person or a terminal is needed for the human commands, so no flag offers them.
-        for args in [('mcp', '--allow'), ('mcp', '--allow', 'human'), ('mcp', '--allow', 'control;x'), ('mcp', 'x')]:
+        for args in [('mcp', '--allow'), ('mcp', '--allow', 'human'), ('mcp', '--allow', 'control;x'), ('mcp', 'x'),
+                     ('mcp', '--allow', 'run,run'), ('mcp', '--allow', 'control,run,commands,run'),
+                     ('mcp', '--allow', 'shell')]:
             self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
 
     def test_mcp_needs_the_installed_app(self):

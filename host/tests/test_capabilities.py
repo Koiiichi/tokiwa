@@ -43,6 +43,13 @@ class Capabilities(unittest.TestCase):
         for capability, tool in TOOLS:
             with self.subTest(tool=tool['name']):
                 argv, example = tool['argv'], tool.get('example', capability.get('example'))
+                if argv and argv[-1].endswith('...}'):
+                    # A {name...} part matches every remaining example item, each as NAME=VALUE.
+                    name, rest = argv[-1][1:-4], example[len(argv) - 1:]
+                    self.assertEqual(tool['args'][name]['type'], 'pairs')
+                    for item in rest:
+                        self.assertRegex(item, r'^[a-z][a-z0-9_-]{0,47}=.+$')
+                    argv, example = argv[:-1], example[:len(argv) - 1]
                 self.assertEqual(len(argv), len(example))
                 for part, value in zip(argv, example):
                     if part.startswith('{'):
@@ -62,6 +69,16 @@ class Capabilities(unittest.TestCase):
                     self.assertNotIn('tools', capability)
                 if 'run_option' in capability:
                     self.assertEqual(capability['class'], 'control')
+
+    def test_commands_class_is_separate_from_run(self):
+        by_name = {t['name']: (c, t) for c, t in TOOLS}
+        for capability, tool in TOOLS:
+            if tool.get('class', capability['class']) == 'commands':
+                self.assertNotEqual(tool.get('class', capability['class']), 'run')
+        self.assertEqual(by_name['tokiwa_run'][0]['class'], 'commands')
+        self.assertEqual(by_name['tokiwa_launch'][1].get('class', by_name['tokiwa_launch'][0]['class']), 'run')
+        self.assertEqual(by_name['tokiwa_commands'][0]['class'], 'read')
+        self.assertEqual(by_name['tokiwa_run_status'][0]['class'], 'read')
 
 
 if __name__ == '__main__':

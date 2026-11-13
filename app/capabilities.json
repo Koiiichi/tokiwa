@@ -10,7 +10,9 @@
     "name": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$",
     "identity": "^[0-9]+:\\$[0-9]+:[0-9]+$",
     "project": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,47}){0,5}$",
-    "directory": "^/[^\\u0000-\\u001f\\u007f]{0,500}$"
+    "directory": "^/[^\\u0000-\\u001f\\u007f]{0,500}$",
+    "run_id": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$",
+    "entry": "^[a-z][a-z0-9_-]{0,47}$"
   },
   "capabilities": [
     {
@@ -347,17 +349,56 @@
     {
       "command": "commands",
       "class": "read",
-      "example": ["commands"]
+      "example": ["commands"],
+      "tool": {
+        "name": "tokiwa_commands",
+        "description": "List the commands that the owner allows on the host: each entry's name, description and argument shapes.",
+        "argv": ["commands"],
+        "args": {}
+      }
     },
     {
       "command": "run",
       "class": "commands",
-      "example": ["run", "review-pr", "pr=42"]
+      "example": ["run", "review-pr", "pr=42"],
+      "tool": {
+        "name": "tokiwa_run",
+        "description": "Run one entry of the owner's command list on the host and return its state and the first page of output as JSON. Take the entry and the argument shapes from tokiwa_commands. A run that is not done after about 10 seconds returns an id for tokiwa_run_status.",
+        "argv": ["run", "{entry}", "{args...}"],
+        "args": {
+          "entry": {
+            "type": "string",
+            "pattern": "entry"
+          },
+          "args": {
+            "type": "pairs"
+          }
+        },
+        "untrusted_output": true
+      }
     },
     {
       "command": "run-status",
       "class": "read",
-      "example": ["run-status", "20261112T183000-7f3a", "0"]
+      "example": ["run-status", "20261112T183000-7f3a", "0"],
+      "tool": {
+        "name": "tokiwa_run_status",
+        "description": "Read the state of a run and one page of its output as JSON, from a byte offset. Use next_offset from the last result to read on.",
+        "argv": ["run-status", "{id}", "{offset}"],
+        "args": {
+          "id": {
+            "type": "string",
+            "pattern": "run_id"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000,
+            "default": 0
+          }
+        },
+        "untrusted_output": true
+      }
     },
     {
       "command": "attach",

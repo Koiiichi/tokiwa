@@ -185,9 +185,14 @@ PY_RUN
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
  health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|audit) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
  mcp)
-  # --allow adds the tools that change a session (control) or run a command on the host (run).
-  [[ $# -eq 1 || ( $# -eq 3 && $2 == --allow && $3 =~ ^(control|run)(,(control|run))?$ ) ]] \
-   || fail 'Use mcp, or mcp --allow control, run or control,run.' ;;
+  # --allow adds the tools that change a session (control), run a command line on the host (run) or
+  # run an entry of the owner's command list (commands): one to three distinct classes.
+  if [[ $# -ne 1 ]]; then
+   [[ $# -eq 3 && $2 == --allow && $3 =~ ^(control|run|commands)(,(control|run|commands)){0,2}$ ]] \
+    && IFS=, read -ra picked <<<"$3" \
+    && [[ $(printf '%s\n' "${picked[@]}" | sort -u | wc -l) -eq ${#picked[@]} ]] \
+    || fail 'Use mcp, or mcp --allow with control, run or commands, joined by commas.'
+  fi ;;
  *) usage >&2; exit 2 ;;
 esac
 # The MCP server reports a missing host setting as a tool error, so it starts without the settings.
