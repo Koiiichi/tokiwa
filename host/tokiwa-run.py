@@ -25,7 +25,14 @@ LOG = Path("/var/log/tokiwa/run.jsonl")
 HOME = Path("/srv/development/private/homes/workbench")
 SECRETS = HOME / ".tokiwa/secrets.env"
 PRIVATE = Path("/srv/development/private")
-WORKSPACES = Path("/srv/development/state/workspaces")
+# Clones that the owner makes as root. A session cannot swap one, so a run may write one.
+RUNNER_CLONES = Path("/srv/development/state/runner-clones")
+# A path of a runner clone holds only these characters, so that systemd's list splitting and
+# unquoting cannot change it.
+CLONE_CHARS = r"^[A-Za-z0-9._@+/-]+$"
+ROOT_UID = 0
+# The folders above this one are not checked; only a test changes it.
+TRUST_ROOT = Path("/")
 USER = "agent-workspace"
 SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
 PAGE_BYTES = 15000
@@ -154,14 +161,14 @@ def filled_name(name, arg):
     return arg.get("as", name)
 
 
-def check_writable_path(path):
-    """Refuse a path that systemd could read wrongly or that is not inside WORKSPACES."""
+def check_clone_path(path, what):
+    """Refuse a path that is not a safe path below RUNNER_CLONES."""
     if not (isinstance(path, str) and path.startswith("/") and path == os.path.normpath(path)):
-        raise ValueError(f"writable path {path!r} is not an absolute normal path")
-    if re.search(r"[\s$%]", path):
-        raise ValueError(f"writable path {path} holds a space, a $ or a %")
-    if not Path(path).is_relative_to(WORKSPACES) or Path(path) == WORKSPACES:
-        raise ValueError(f"writable path {path} is not below the workspace folder")
+        raise ValueError(f"{what} {path!r} is not an absolute normal path")
+    if not re.fullmatch(CLONE_CHARS, path):
+        raise ValueError(f"{what} {path} holds a character other than A-Za-z0-9._@+/-")
+    if not Path(path).is_relative_to(RUNNER_CLONES) or Path(path) == RUNNER_CLONES:
+        raise ValueError(f"{what} {path} is not below the runner clones folder")
 
 
 def check_writable(writable, args):
@@ -176,12 +183,12 @@ def check_writable(writable, args):
         if placeholder is None:
             if isinstance(item, str) and ("{" in item or "}" in item):
                 raise ValueError(f"writable item {item} is not a whole placeholder")
-            check_writable_path(item)
+            check_clone_path(item, "writable path")
         elif placeholder.group(1) not in choices:
             raise ValueError(f"writable placeholder {item} is not a choice argument")
         else:
             for value in choices[placeholder.group(1)].values():
-                check_writable_path(value)
+                check_clone_path(value, "writable path")
 
 
 def check_entry(entry):
@@ -233,6 +240,8 @@ def check_entry(entry):
         ]
         if not (clone and "choice" in clone[0] and "commit" in args):
             raise ValueError("cwd worktree needs a choice filled as clone and a commit")
+        for value in clone[0]["choice"].values():
+            check_clone_path(value, "clone path")
 
 
 def load_list(path=LIST):
@@ -315,23 +324,62 @@ def check_call(entry, values):
     return filled
 
 
+def runner_clone(path):
+    """Return the real path of a runner clone, or None when it is not one.
+
+    A runner clone is a folder below RUNNER_CLONES whose every ancestor is a real folder that
+    root owns and nobody else can write, so that a session cannot swap any part of the path.
+    The folder itself may belong to agent-workspace but must not be a link.
+    """
+    real = os.path.realpath(path)
+    root = os.path.realpath(RUNNER_CLONES)
+    if not (
+        re.fullmatch(CLONE_CHARS, real)
+        and Path(real).is_relative_to(root)
+        and real != root
+    ):
+        return None
+    try:
+        if not stat.S_ISDIR(os.lstat(real).st_mode):
+            return None
+        for ancestor in reversed(Path(real).parents):
+            if ancestor != TRUST_ROOT and TRUST_ROOT not in ancestor.parents:
+                continue
+            info = os.lstat(ancestor)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != ROOT_UID
+                or info.st_mode & 0o022
+            ):
+                return None
+    except OSError:
+        return None
+    return real
+
+
 def resolve_writable(name, entry, filled):
     """Return the real path of each writable folder of the call, or refuse the call.
 
-    One text covers a missing path, a file and a link that leaves WORKSPACES, so that a refusal
-    does not tell whether a path exists. A link can change after the list was loaded, so the
-    path that the run gets is the resolved one.
+    One text covers a missing path, a file, a link and an unsafe ancestor, so that a refusal does
+    not tell whether a path exists.
     """
-    outside = Refused(f"The writable folder of {name} is not below the workspace folder.")
-    root = os.path.realpath(WORKSPACES)
     paths = []
     for item in entry.get("writable", []):
         placeholder = PLACEHOLDER.fullmatch(item)
-        path = os.path.realpath(filled[placeholder.group(1)] if placeholder else item)
-        if not (os.path.isdir(path) and Path(path).is_relative_to(root) and path != root):
-            raise outside
-        paths.append(path)
+        real = runner_clone(filled[placeholder.group(1)] if placeholder else item)
+        if real is None:
+            raise Refused(f"The writable folder of {name} is not a runner clone.")
+        paths.append(real)
     return paths
+
+
+def resolve_clone(name, entry, filled):
+    """Replace the clone of a worktree entry by its real path, or refuse the call."""
+    if entry["cwd"] == "worktree":
+        real = runner_clone(filled["clone"])
+        if real is None:
+            raise Refused(f"The clone of {name} is not a runner clone.")
+        filled["clone"] = real
 
 
 def fill_argv(argv, filled):
@@ -635,6 +683,7 @@ def start(name, values, via, actor, now=None):
             raise Refused("The entry is not in the command list.")
         entry = entries[name]
         filled = check_call(entry, values)
+        resolve_clone(name, entry, filled)
         writable = resolve_writable(name, entry, filled)
         RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
         # Held until systemd-run returns, so that two calls cannot both pass the count before
