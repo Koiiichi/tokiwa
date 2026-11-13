@@ -322,6 +322,21 @@ test("tokiwa_run with no pairs passes only the entry", async () => {
   expect(calls).toEqual([["run", "pull-repo-a"]]);
 });
 
+test("tokiwa_run without args, for an entry with no arguments, passes only the entry", async () => {
+  const { calls, call } = await connect(() => "{}", { allow: ["commands"] });
+  const result = await call("tokiwa_run", { entry: "pull-repo-a" });
+  expect(result.isError).toBeFalsy();
+  expect(calls).toEqual([["run", "pull-repo-a"]]);
+});
+
+test("tokiwa_run says how long the host waits for a run", async () => {
+  const { client } = await connect(() => "", { allow: ["commands"] });
+  const { tools } = await client.listTools();
+  const run = tools.find((t) => t.name === "tokiwa_run");
+  expect(run?.description).toContain("up to 8 seconds");
+  expect(run?.inputSchema.required).toEqual(["entry"]);
+});
+
 test("a pair that the launcher would refuse is refused before the launcher", async () => {
   const { calls, call } = await connect(() => "", { allow: ["commands"] });
   const bad = [

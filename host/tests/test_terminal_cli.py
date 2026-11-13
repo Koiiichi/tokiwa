@@ -55,7 +55,7 @@ case "$*" in
   else
    echo 'Workbench server ready.'
   fi ;;
- *get-command-invocation*StandardErrorContent*) echo 'Workbench unavailable.' ;;
+ *get-command-invocation*StandardErrorContent*) printf '%s\n' "${TEST_STDERR:-Workbench unavailable.}" ;;
  *get-command-invocation*) echo "${TEST_STATUS:-Success}" ;;
  *start-session*)
   # The local terminal as the Session Manager plugin finds it.
@@ -715,14 +715,73 @@ esac
         self.run_cli('run-status', '20261112T183000-7f3a')
         self.assertRegex(self.sent(), r'tokiwa-run\.py status 20261112T183000-7f3a 0 ')
 
-    def test_failed_run_call_says_a_run_may_have_started(self):
+    def stub_sleep(self):
+        """Make the launcher's one-second waits between polls instant."""
+        sleep = self.home / '.local/lib/cloud-access/sleep'
+        sleep.write_text('#!/bin/sh\nexit 0\n')
+        sleep.chmod(0o755)
+
+    def polls(self):
+        return len([c for c in self.run_calls().splitlines() if 'get-command-invocation' in c and '--query Status' in c])
+
+    def test_sealed_calls_poll_until_run_command_ends_them(self):
+        # Run Command stops a call after 30 seconds, so 40 polls see the end of each sealed call.
+        self.stub_sleep()
+        self.env['TEST_STATUS'] = 'InProgress'
+        cases = [(('run', 'review-pr', 'pr=42'), 40), (('run-status', '20261112T183000-7f3a'), 40),
+                 (('capture', 'backend', '1:$2:3'), 40), (('status',), 15), (('commands',), 15)]
+        for args, polls in cases:
+            with self.subTest(args=args):
+                (self.home / 'calls').unlink(missing_ok=True)
+                self.assertNotEqual(self.run_cli(*args).returncode, 0)
+                self.assertEqual(self.polls(), polls)
+
+    def test_a_refusal_of_the_host_fails_with_its_own_line(self):
         self.env['TEST_STATUS'] = 'Failed'
-        for args in [('run', 'review-pr', 'pr=42'), ('run-status', '20261112T183000-7f3a')]:
+        self.env['TEST_STDERR'] = 'The entry is not in the command list. Nothing was run.\n'
+        for args in [('run', 'review-pr', 'pr=42'), ('run-status', '20261112T183000-7f3a'), ('commands',)]:
             with self.subTest(args=args):
                 result = self.run_cli(*args)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('The run call returned Failed. A run may have started: use tokiwa run-status with its id.', result.stderr)
-                self.assertNotIn('No service was started', result.stderr)
+                self.assertTrue(result.stderr.endswith('Tokiwa: The entry is not in the command list. Nothing was run.\n'),
+                                result.stderr)
+                self.assertNotIn('returned', result.stderr)
+
+    def test_a_run_call_that_did_not_end_may_have_started_a_run(self):
+        self.stub_sleep()
+        for status in ['TimedOut', 'Cancelled', 'InProgress']:
+            with self.subTest(status=status):
+                self.env['TEST_STATUS'] = status
+                result = self.run_cli('run', 'review-pr', 'pr=42')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'Tokiwa: The run call returned {status}. A run may have started: use tokiwa run-status with its id.',
+                              result.stderr)
+        # A Failed call ended on the host without a refusal line.
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('run', 'review-pr', 'pr=42')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('may have started', result.stderr)
+
+    def test_a_failed_run_status_call_changed_nothing(self):
+        self.stub_sleep()
+        for status in ['Failed', 'TimedOut', 'InProgress']:
+            with self.subTest(status=status):
+                self.env['TEST_STATUS'] = status
+                result = self.run_cli('run-status', '20261112T183000-7f3a')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(result.stderr.endswith(f'Tokiwa: The run-status call returned {status}. Nothing was changed.\n'),
+                                result.stderr)
+                self.assertNotIn('may have started', result.stderr)
+
+    def test_a_value_with_shell_characters_reaches_the_host_only_in_the_payload(self):
+        result = self.run_cli('run', 'review-pr', 'pr=$(id);x')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('$(', self.sent())
+        self.assertNotIn(';x', self.sent())
+        self.assertEqual(self.run_payload(), {'entry': 'review-pr', 'args': {'pr': '$(id);x'}})
+
+    def test_help_names_each_class_of_mcp(self):
+        self.assertIn('mcp [--allow control,run,commands]', self.run_cli('--help').stdout)
 
     def test_commands_is_plain(self):
         result = self.run_cli('commands')

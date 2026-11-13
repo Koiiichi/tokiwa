@@ -17,7 +17,10 @@ export const SCREEN_NOTICE =
 
 type Argument =
   | { type: "string"; pattern?: string }
-  /** An object of NAME to VALUE strings, for a command list entry. It expands to NAME=VALUE items. */
+  /**
+   * An optional object of NAME to VALUE strings, for a command list entry. It expands to
+   * NAME=VALUE items; without it, to none, for an entry with no arguments.
+   */
   | { type: "pairs" }
   | { type: "integer"; minimum: number; maximum: number; default?: number };
 interface Tool {
@@ -82,7 +85,8 @@ function schema(
           name,
           z
             .record(z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/), value)
-            .refine((o) => Object.keys(o).length <= 16, "at most 16 pairs"),
+            .refine((o) => Object.keys(o).length <= 16, "at most 16 pairs")
+            .optional(),
         ];
       }
       if (spec.type === "integer") {
