@@ -1,6 +1,7 @@
 """Test the command list and the argument checks of the root runner."""
 
 import base64
+import fcntl
 import importlib.util
 import json
 import os
@@ -194,6 +195,8 @@ class Runs(unittest.TestCase):
         self.units = ""
         self.active = "active"
         self.commit_known = True
+        self.start_code = 0
+        self.lock_free_during_start = None
         self.write_list(
             {
                 "echo-pr": ECHO_PR,
@@ -213,6 +216,14 @@ class Runs(unittest.TestCase):
             code = 0 if self.active == "active" else 3
         elif "cat-file" in argv:
             code = 0 if self.commit_known else 1
+        elif argv[0] == "systemd-run":
+            code = self.start_code
+            with open(run.RUNS / ".lock", "a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.lock_free_during_start = True
+                except BlockingIOError:
+                    self.lock_free_during_start = False
         return subprocess.CompletedProcess(argv, code, stdout, "")
 
     def write_list(self, entries):
@@ -249,15 +260,16 @@ class Runs(unittest.TestCase):
                 "--slice=agent-sessions.slice",
                 f"--working-directory={folder}/work",
                 "--collect",
-                "--no-block",
+                "--property=RuntimeMaxSec=60",
             ],
         )
+        self.assertNotIn("--no-block", unit)
         self.assertIn("--property=InaccessiblePaths=/srv/development/private", unit)
-        self.assertIn(f"--property=ReadWritePaths={folder}", unit)
+        self.assertIn(f"--property=ReadWritePaths={folder}/work", unit)
+        self.assertNotIn(f"--property=ReadWritePaths={folder}", unit)
         self.assertIn(f"--property=StandardOutput=file:{folder}/output", unit)
-        self.assertIn("--property=RuntimeMaxSec=60", unit)
         self.assertIn("--setenv=PATH=/usr/local/bin:/usr/bin:/bin", unit)
-        self.assertIn(f"--setenv=HOME={folder}", unit)
+        self.assertIn(f"--setenv=HOME={folder}/work", unit)
         self.assertFalse([item for item in unit if "CLAUDE_CONFIG_DIR" in item])
         self.assertFalse([item for item in unit if "EnvironmentFile" in item])
         runner = Path(run.__file__).resolve()
@@ -284,6 +296,9 @@ class Runs(unittest.TestCase):
             "--property=InaccessiblePaths=/srv/development/private", options
         )
         self.assertIn(f"--property=ReadWritePaths={run.HOME}", options)
+        self.assertIn(f"--property=ReadWritePaths={folder}/work", options)
+        self.assertNotIn(f"--property=ReadWritePaths={folder}", options)
+        self.assertNotIn("--no-block", options)
         self.assertIn(f"--property=EnvironmentFile={env_file}", options)
         self.assertIn(f"--setenv=HOME={run.HOME}", options)
         self.assertIn(f"--setenv=CLAUDE_CONFIG_DIR={run.HOME}/.claude", options)
@@ -297,7 +312,7 @@ class Runs(unittest.TestCase):
         run.SECRETS.write_text("export API_KEY='v a l'\nexport OTHER='x'\n")
         result = self.start("echo-secret")
         env_file = run.RUNS / f"{result['id']}.env"
-        self.assertEqual(env_file.read_text(), "API_KEY=v a l\n")
+        self.assertEqual(env_file.read_text(), 'API_KEY="v a l"\n')
         self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
         self.assertNotIn("v a l", run.LOG.read_text())
         self.assertFalse([argv for argv in self.calls if "v a l" in " ".join(argv)])
@@ -306,10 +321,27 @@ class Runs(unittest.TestCase):
 
     def test_a_secret_with_quotes_is_quoted_for_the_environment_file(self):
         run.SECRETS.parent.mkdir(parents=True)
-        run.SECRETS.write_text("export API_KEY='say \"hi\" $x'\n")
+        run.SECRETS.write_text("export API_KEY='say \"hi\" $x \\ y'\n")
         result = self.start("echo-secret")
         env_file = run.RUNS / f"{result['id']}.env"
-        self.assertEqual(env_file.read_text(), 'API_KEY="say \\"hi\\" \\$x"\n')
+        self.assertEqual(env_file.read_text(), 'API_KEY="say \\"hi\\" $x \\\\ y"\n')
+
+    def test_a_secret_with_a_newline_or_nul_is_refused(self):
+        run.SECRETS.parent.mkdir(parents=True)
+        for value in ("line-one\nline-two", "part-one\0part-two"):
+            with self.subTest(repr(value)):
+                run.SECRETS.write_text(f"export API_KEY='{value}'\n")
+                with self.assertRaises(run.Refused) as caught:
+                    self.start("echo-secret")
+                self.assertEqual(
+                    str(caught.exception),
+                    "The secret API_KEY cannot be passed. Nothing was run.",
+                )
+                self.assertNotIn("part-one", run.LOG.read_text())
+                self.assertNotIn("line-one", run.LOG.read_text())
+                self.assertFalse(self.calls_to("systemd-run"))
+                self.assertEqual(list(run.RUNS.glob("*.env")), [])
+                self.assertEqual(self.run_ids(), [])
 
     def test_a_missing_secret_is_refused(self):
         run.SECRETS.parent.mkdir(parents=True)
@@ -318,7 +350,8 @@ class Runs(unittest.TestCase):
             self.start("echo-secret")
         self.assertIn("API_KEY", str(caught.exception))
         self.assertFalse(self.calls_to("systemd-run"))
-        self.assertEqual(list(run.RUNS.iterdir()), [])
+        self.assertEqual(list(run.RUNS.glob("*.env")), [])
+        self.assertEqual(self.run_ids(), [])
 
     def test_start_logs_and_starts_the_unit(self):
         result = self.start()
@@ -344,9 +377,26 @@ class Runs(unittest.TestCase):
         (unit,) = self.calls_to("systemd-run")
         self.assertEqual(unit[unit.index("--") + 1 :], ["/bin/echo", "42"])
         folder = run.RUNS / result["id"]
-        self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
-        self.assertIn((folder, "agent-workspace"), self.owners)
-        self.assertTrue((folder / "work").is_dir())
+        self.assertEqual(folder.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((folder / "work").stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.owners, [(folder / "work", "agent-workspace")])
+        self.assertIs(self.lock_free_during_start, False)
+        self.assertIn(
+            [
+                "systemctl", "list-units", "tokiwa-run-*", "--no-legend", "--plain",
+                "--state=activating,active,deactivating",
+            ],
+            self.calls,
+        )
+
+    def test_a_unit_that_could_not_start_is_failed(self):
+        self.start_code = 1
+        self.active = "inactive"
+        result = self.start()
+        self.assertEqual((result["state"], result["exit"]), ("failed", None))
+        self.assertEqual(
+            [line.get("state") for line in self.log_lines()], ["running", "failed"]
+        )
 
     def test_refusals_are_logged(self):
         with self.assertRaises(run.Refused):
@@ -395,6 +445,7 @@ class Runs(unittest.TestCase):
         )
         (unit,) = self.calls_to("systemd-run")
         self.assertIn(f"--working-directory={work}", unit)
+        self.assertEqual(self.owners, [(work, "agent-workspace")])
         run.finish(result["id"], "success", "0")
         self.assertEqual(
             self.calls[-1], git + ["worktree", "remove", "--force", str(work)]
@@ -435,6 +486,12 @@ class Runs(unittest.TestCase):
         status = run.status(result["id"], 0)
         self.assertEqual((status["state"], status["exit"]), ("failed", None))
 
+    def test_a_unit_whose_finish_hook_runs_is_still_running(self):
+        result = self.start()
+        self.active = "deactivating"
+        status = run.status(result["id"], 0)
+        self.assertEqual((status["state"], status["exit"]), ("running", None))
+
     def test_a_unit_that_systemd_has_not_loaded_yet_is_running(self):
         self.active = "inactive"
         result = self.start()
@@ -444,14 +501,17 @@ class Runs(unittest.TestCase):
         result = self.start()
         output = run.RUNS / result["id"] / "output"
         output.write_bytes(b"a" * 40000)
+        # Two bytes of each page go to the quotes of its JSON form.
         first = run.status(result["id"], 0)
         self.assertEqual(
             (first["offset"], first["next_offset"], first["size"], first["truncated"]),
-            (0, 15000, 40000, True),
+            (0, 14998, 40000, True),
         )
-        self.assertEqual(len(first["text"]), 15000)
-        second = run.status(result["id"], 15000)
-        self.assertEqual((second["next_offset"], len(second["text"])), (None, 15000))
+        self.assertEqual(len(first["text"]), 14998)
+        second = run.status(result["id"], 14998)
+        self.assertEqual(second["next_offset"], 29996)
+        last = run.status(result["id"], 29996)
+        self.assertEqual((last["next_offset"], last["text"]), (None, "aaaa"))
         past = run.status(result["id"], 30000)
         self.assertEqual((past["next_offset"], past["text"]), (None, ""))
         run.finish(result["id"], "success", "0")
@@ -459,10 +519,29 @@ class Runs(unittest.TestCase):
 
     def test_page_splits_inside_a_character(self):
         path = self.base / "output"
+        path.write_bytes("a\U0001f600".encode())
+        # The whole four-byte character needs 7 bytes of JSON; one U+FFFD needs 6.
+        self.assertEqual(run.page(path, 0, 6), ("a\ufffd", 4, 5))
+        self.assertEqual(run.page(path, 4, 6), ("\ufffd", None, 5))
         path.write_bytes("aé".encode())
-        self.assertEqual(run.page(path, 0, 2), ("a\ufffd", 2, 3))
-        self.assertEqual(run.page(path, 2, 2), ("\ufffd", None, 3))
-        self.assertEqual(run.page(self.base / "missing", 0, 2), ("", None, 0))
+        self.assertEqual(run.page(path, 0, 5), ("aé", None, 3))
+        self.assertEqual(run.page(self.base / "missing", 0, 6), ("", None, 0))
+
+    def test_pages_of_bad_bytes_fit_and_cover_the_file(self):
+        path = self.base / "output"
+        path.write_bytes(b"\xff" * 40000)
+        offset, covered = 0, 0
+        while offset is not None:
+            text, next_offset, size = run.page(path, offset, run.PAGE_BYTES)
+            self.assertLessEqual(
+                len(json.dumps(text, ensure_ascii=False).encode()), run.PAGE_BYTES
+            )
+            consumed = (size if next_offset is None else next_offset) - offset
+            self.assertGreater(consumed, 0)
+            self.assertEqual(len(text), consumed)
+            covered += consumed
+            offset = next_offset
+        self.assertEqual(covered, 40000)
 
     def test_status_refuses_a_bad_id(self):
         for value in ("../x", "20261112T183000-7f3a/../..", "20261112T183000-7f3a"):
@@ -474,19 +553,6 @@ class Runs(unittest.TestCase):
                     "Use a run id from tokiwa run. Nothing was run.",
                 )
         self.assertEqual(self.calls, [])
-
-    def test_planted_links_in_the_run_folder_are_not_followed(self):
-        result = self.start()
-        folder = run.RUNS / result["id"]
-        target = self.base / "root-only"
-        target.write_text("private")
-        (folder / "output").symlink_to(target)
-        (folder / "end.json").symlink_to(target)
-        self.assertEqual(run.status(result["id"], 0)["text"], "")
-        self.assertEqual(run.status(result["id"], 0)["state"], "running")
-        run.finish(result["id"], "success", "0")
-        self.assertEqual(target.read_text(), "private")
-        self.assertFalse((folder / "end.json").is_symlink())
 
     def test_old_runs_are_pruned(self):
         now = time.time()

@@ -1,6 +1,7 @@
 """Run commands that the owner listed, as root, on the host."""
 
 import base64
+import fcntl
 import grp
 import json
 import os
@@ -9,7 +10,6 @@ import re
 import secrets
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -267,7 +267,7 @@ def unit_command(run_id, entry, argv, workdir, env_file):
         "NoNewPrivileges=yes",
         "ProtectSystem=strict",
         "PrivateTmp=yes",
-        f"ReadWritePaths={folder}",
+        f"ReadWritePaths={folder}/work",
     ]
     if workbench:
         properties += [
@@ -291,7 +291,7 @@ def unit_command(run_id, entry, argv, workdir, env_file):
             f"CODEX_HOME={HOME}/.codex",
         ]
     else:
-        environment.append(f"HOME={folder}")
+        environment.append(f"HOME={folder}/work")
     return [
         "systemd-run",
         f"--unit=tokiwa-run-{run_id}",
@@ -300,7 +300,6 @@ def unit_command(run_id, entry, argv, workdir, env_file):
         "--slice=agent-sessions.slice",
         f"--working-directory={workdir}",
         "--collect",
-        "--no-block",
         *(f"--property={item}" for item in properties),
         *(f"--setenv={item}" for item in environment),
         "--",
@@ -315,37 +314,11 @@ def log(line):
         f.write(json.dumps(line) + "\n")
 
 
-def open_plain(path, flags):
-    # The run folder belongs to agent-workspace, so any name in it can be a planted link, a FIFO
-    # or a hard link to a root file. O_NONBLOCK keeps a FIFO from stopping the open.
-    descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
-    info = os.fstat(descriptor)
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        os.close(descriptor)
-        raise OSError(f"{path} is not a plain file")
-    return descriptor
-
-
 def read_record(path):
-    # Only a record that this runner wrote counts; agent-workspace can replace any file there.
     try:
-        descriptor = open_plain(path, os.O_RDONLY)
-    except OSError:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
         return None
-    with os.fdopen(descriptor, "rb") as f:
-        if os.fstat(f.fileno()).st_uid != os.geteuid():
-            return None
-        try:
-            return json.loads(f.read())
-        except ValueError:
-            return None
-
-
-def write_record(path, record):
-    path.unlink(missing_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(descriptor, "w") as f:
-        json.dump(record, f)
 
 
 def read_secrets(names):
@@ -364,20 +337,27 @@ def read_secrets(names):
     for name in names:
         if name not in found:
             raise Refused(f"The secret {name} is not in the secrets file.")
+        # An EnvironmentFile line cannot hold either one as data.
+        if "\n" in found[name] or "\0" in found[name]:
+            raise Refused(f"The secret {name} cannot be passed.")
     return found
 
 
 def environment_line(name, value):
-    # systemd reads a plain value as written, apart from its outer spaces; any other value goes
-    # in double quotes, where a backslash escapes these four characters.
-    if re.fullmatch(r"[^\s\\\"'$`]([^\n\\\"'$`]*[^\s\\\"'$`])?", value):
-        return f"{name}={value}\n"
-    return f'{name}="{re.sub(r"([\\\"$`])", r"\\\1", value)}"\n'
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{name}="{escaped}"\n'
 
 
 def count_active():
     listed = command(
-        ["systemctl", "list-units", "tokiwa-run-*", "--state=active", "--no-legend", "--plain"]
+        [
+            "systemctl",
+            "list-units",
+            "tokiwa-run-*",
+            "--no-legend",
+            "--plain",
+            "--state=activating,active,deactivating",
+        ]
     )
     if listed.returncode:
         raise Refused("The active runs could not be counted.")
@@ -385,7 +365,6 @@ def count_active():
 
 
 def prune(now):
-    RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
     for path in RUNS.iterdir():
         name = path.name.removesuffix(".env")
         if not re.fullmatch(ID_PATTERN, name):
@@ -412,32 +391,37 @@ def start(name, values, via, actor, now=None):
     line = {"at": int(now), "entry": name, "args": values, "via": via}
     if actor:
         line["actor"] = actor
-    folder = env_file = clone = None
+    folder = env_file = clone = lock = None
     try:
         entries = load_list(LIST)
         if name not in entries:
             raise Refused("The entry is not in the command list.")
         entry = entries[name]
         filled = check_call(entry, values)
+        RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
+        # Held until systemd-run returns, so that two calls cannot both pass the count before
+        # either unit is listed.
+        lock = os.open(RUNS / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         if count_active() >= MAX_RUNNING:
             raise Refused(f"{MAX_RUNNING} runs are active, the most at one time.")
         prune(now)
         while True:
             run_id = new_id(now)
             try:
-                (RUNS / run_id).mkdir(mode=0o700)
+                (RUNS / run_id).mkdir()
                 folder = RUNS / run_id
                 break
             except FileExistsError:
                 continue
+        # Only work belongs to agent-workspace. Root writes the records and systemd opens the
+        # output file as root, so no name beside them may be one that agent-workspace can plant.
+        os.chmod(folder, 0o755)
         work = folder / "work"
+        work.mkdir(mode=0o700)
+        chown(work, USER)
         call = {"entry": name, "output_bytes": entry["output_bytes"], "at": now}
-        if entry["cwd"] == "fresh":
-            work.mkdir(mode=0o700)
-            chown(work, USER)
-            chown(folder, USER)
-        else:
-            chown(folder, USER)
+        if entry["cwd"] == "worktree":
             commit = filled[filled_name("commit", entry["args"]["commit"])]
             found = command(
                 as_user("git", "-C", filled["clone"], "cat-file", "-e", f"{commit}^{{commit}}")
@@ -455,13 +439,13 @@ def start(name, values, via, actor, now=None):
         named = read_secrets(entry.get("secrets", []))
         if named:
             env_file = RUNS / f"{run_id}.env"
-            descriptor = os.open(
-                env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-            )
+            descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w") as f:
                 f.write("".join(environment_line(k, v) for k, v in named.items()))
-        write_record(folder / "call.json", call)
+        (folder / "call.json").write_text(json.dumps(call))
         log({**line, "id": run_id, "state": "running"})
+        argv = fill_argv(entry["argv"], filled)
+        started = command(unit_command(run_id, entry, argv, work, env_file))
     except (Refused, OSError, KeyError) as error:
         # KeyError: the agent-workspace user or group is missing.
         refusal = error
@@ -478,9 +462,11 @@ def start(name, values, via, actor, now=None):
         except OSError:
             pass
         raise refusal from None
-    argv = fill_argv(entry["argv"], filled)
-    started = command(unit_command(run_id, entry, argv, work, env_file))
-    if started.returncode:
+    finally:
+        if lock is not None:
+            os.close(lock)
+    # A unit that started and then failed has already run its finish hook.
+    if started.returncode and not (folder / "end.json").exists():
         finish(run_id, "start-failed", "")
     deadline = time.monotonic() + WAIT_SECONDS
     while not (folder / "end.json").exists() and time.monotonic() < deadline:
@@ -509,13 +495,13 @@ def status(run_id, offset):
     if not is_int(offset, 0, 10**12):
         raise Refused("Use an offset from an earlier result.")
     end = read_record(folder / "end.json")
-    if isinstance(end, dict) and end.get("state") in ("done", "failed", "timed-out"):
-        state, code = end["state"], end.get("exit")
+    if isinstance(end, dict):
+        state, code = end["state"], end["exit"]
     else:
         active = command(["systemctl", "is-active", f"tokiwa-run-{run_id}"]).stdout.strip()
         # deactivating: the unit's process ended and its finish hook is still writing the end.
         # A just-started unit that systemd has not loaded yet reads as inactive for a moment.
-        young = time.time() - call.get("at", 0) < WAIT_SECONDS + 5
+        young = time.time() - call["at"] < WAIT_SECONDS + 5
         if active in ("active", "activating", "deactivating") or (
             active == "inactive" and young
         ):
@@ -523,11 +509,7 @@ def status(run_id, offset):
         else:
             state, code = "failed", None
     limit = call["output_bytes"]
-    text, next_offset, size = page(
-        folder / "output", offset, max(0, min(PAGE_BYTES, limit - offset))
-    )
-    if next_offset is not None and next_offset >= limit:
-        next_offset = None
+    text, next_offset, size = page(folder / "output", offset, PAGE_BYTES, stop=limit)
     return {
         "id": run_id,
         "entry": call["entry"],
@@ -554,39 +536,58 @@ def finish(run_id, service_result, exit_status):
     except ValueError:
         code = None
     try:
-        write_record(folder / "end.json", {"state": state, "exit": code})
+        (folder / "end.json").write_text(json.dumps({"state": state, "exit": code}))
         log({"at": int(time.time()), "id": run_id, "state": state, "exit": code})
     finally:
         (RUNS / f"{run_id}.env").unlink(missing_ok=True)
         if "clone" in call:
             remove_worktree(call["clone"], folder / "work")
-        try:
-            descriptor = open_plain(folder / "output", os.O_WRONLY)
-        except OSError:
-            pass
-        else:
-            if os.fstat(descriptor).st_size > call["output_bytes"]:
-                os.ftruncate(descriptor, call["output_bytes"])
-            os.close(descriptor)
+        output = folder / "output"
+        if output.exists() and output.stat().st_size > call["output_bytes"]:
+            os.truncate(output, call["output_bytes"])
 
 
-def page(path, offset, limit):
-    """Read up to limit bytes of a file from a byte offset.
+def encoded_size(text):
+    return len(json.dumps(text, ensure_ascii=False).encode())
 
-    Returns the text, the offset of the next page or None at the end, and the file size. A page
-    can end inside a multibyte character: the cut character decodes as U+FFFD, and the next page
-    starts at the exact byte. A missing file, a link or a file that is not plain reads as empty.
+
+def page(path, offset, limit, stop=None):
+    """Read the text of a file from a byte offset, as much as fits in limit bytes of JSON.
+
+    The JSON form of the text, with its quotes, is at most limit bytes. stop is the byte where
+    reading ends, or None for the file's end. Returns the text, the offset of the next page or
+    None at the end, and the file size. The page takes as many raw bytes as fit, so it can end
+    inside a multibyte character: the cut part decodes as U+FFFD, and the next page starts at
+    the exact byte. A missing file reads as empty.
     """
     try:
-        descriptor = open_plain(path, os.O_RDONLY)
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            f.seek(offset)
+            stop = size if stop is None else min(stop, size)
+            # Each raw byte takes at least one byte of JSON, so limit bytes are enough to read.
+            data = f.read(max(0, min(limit, stop - offset)))
     except OSError:
         return "", None, 0
-    with os.fdopen(descriptor, "rb") as f:
-        size = os.fstat(f.fileno()).st_size
-        f.seek(offset)
-        data = f.read(limit)
-    end = offset + len(data)
-    return data.decode("utf-8", errors="replace"), end if end < size else None, size
+
+    def fits(count):
+        return encoded_size(data[:count].decode("utf-8", errors="replace")) <= limit
+
+    low, high = 0, len(data)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle - 1
+    # The size is not monotonic in the byte count: completing a character can shrink one
+    # U+FFFD (3 bytes) to the character (2 bytes). A larger count fits at most 3 bytes later.
+    for count in range(low + 1, min(low + 4, len(data) + 1)):
+        if fits(count):
+            low = count
+    end = offset + low
+    text = data[:low].decode("utf-8", errors="replace")
+    return text, end if end < stop else None, size
 
 
 def seal(result, certificate_b64):
