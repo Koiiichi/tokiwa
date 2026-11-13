@@ -173,7 +173,7 @@ def check_value(name, arg, value):
     root = Path(arg["path_below"]).resolve()
     try:
         path = (root / value).resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         raise Refused(f"The path of {name} does not exist.")
     if not path.is_relative_to(root):
         raise Refused(f"The path of {name} is not below its root.")

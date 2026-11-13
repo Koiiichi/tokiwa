@@ -127,7 +127,7 @@ One entry, as an example:
 
 ### Runs
 
-- The id is the time and a random part, for example `20261112T1830-7f3a`. The unit is `tokiwa-run-<id>`.
+- The id is the time and a random part, for example `20261112T183000-7f3a`. The unit is `tokiwa-run-<id>`.
 - Output (stdout and stderr together) goes to `<run folder>/output`. The runner keeps the first `output_bytes` and marks `truncated`.
 - `RuntimeMaxSec` enforces the timeout; the result says `timed-out`.
 - The unit runs in `agent-sessions.slice`, so the slice limits apply.

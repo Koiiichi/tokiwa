@@ -119,6 +119,16 @@ class ListAndArguments(unittest.TestCase):
             {"path": str(root / "sub/file")},
         )
 
+    def test_path_below_refuses_a_nul_byte(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        spec_ = entry(
+            argv=["cat", "{path}"], args={"path": {"path_below": folder.name}}, cwd="fresh"
+        )
+        with self.assertRaises(run.Refused) as caught:
+            run.check_call(spec_, {"path": "a\x00b"})
+        self.assertTrue(str(caught.exception).endswith("Nothing was run."))
+
     def test_fill_argv_keeps_each_value_whole(self):
         filled = {"clone": "/w/repo-a", "pr": "4 2"}
         self.assertEqual(
