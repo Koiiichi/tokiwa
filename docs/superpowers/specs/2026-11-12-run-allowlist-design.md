@@ -13,7 +13,7 @@ Success: a local agent runs, for example, "the review script of repository A for
 1. Run a named entry from an allowlist on the host. Never run free shell text.
 2. Each entry fixes the program and the shape of each argument. Refuse a value that does not match. Pass the arguments as a list, with no shell.
 3. Each call runs as its own process in a new working folder, not in a session pane or a session's working tree.
-4. Each entry states the environment that the process gets. By default the process can reach no credential: no variable holds one, and the files that hold them are hidden from it. No result prints a secret value.
+4. Each entry states the environment that the process gets. By default no variable holds a credential, and the files that hold them are hidden from a read by path. The process runs as the same user as the sessions, so it can still reach the model sign-ins and the saved secrets through the processes of the sessions; the owner lists only commands that they would run in a session. Owner, 2026-11-13. No result prints a secret value.
 5. Return the exit status and the output, with a size limit and a timeout for each entry. A long command runs detached, and a second call reads its state and output by id.
 6. Log each call and each run's end on the host: time, caller, entry, arguments, exit status. The owner can read the log; an agent cannot change it.
 7. Return output as data, with the same warning line that `tokiwa_screen` gives.
@@ -152,13 +152,14 @@ Each refusal names the cause and ends with `Nothing was run.`: unknown entry, mi
 
 - Approach 1. Commands run as `agent-workspace` (owner, 2026-11-12).
 - A new MCP class `commands` for `tokiwa_run` (owner, 2026-11-12).
+- A run can reach the model sign-ins and the saved secrets through the processes of the sessions, because it runs as the same user. `home: none` hides them only from a read by path. The owner lists only commands that they would run in a session (Owner, 2026-11-13).
 - The list is on the host and only the owner changes it from a root terminal (request).
 - The first entries the owner wants, as examples: a review script of a coordination repository for a pull request at a commit; a repository's test suite at a commit; read a file below the workspace root; `git pull` in one fixed clone (request).
 
 ## My calls (check these)
 
 - Paged output, 15,000 bytes per page.
-- `home: none` hides `/srv/development/private`; `secrets.env` is hidden in every mode.
+- `home: none` hides `/srv/development/private` from a read by path, not from a process of the same user, which reaches it through the processes of the sessions (Owner, 2026-11-13); `secrets.env` is hidden from a read by path in every mode.
 - No fetch in the runner; an unknown commit is refused.
 - A root `ExecStopPost=+` hook writes the end line and removes the worktree.
 - `tokiwa_run_status` is in the `read` class.

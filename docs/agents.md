@@ -82,7 +82,7 @@ With `--allow commands`:
 
 | Tool | Input | Result |
 | --- | --- | --- |
-| `tokiwa_run` | `entry`, `args` (an object of strings) | The output of `tokiwa run ENTRY NAME=VALUE…`: a run of one entry of the command list, with its state and the first page of its output. Encrypted on the way, and marked as data. |
+| `tokiwa_run` | `entry`, optional `args` (an object of strings; leave it out for an entry with no arguments) | The output of `tokiwa run ENTRY NAME=VALUE…`: a run of one entry of the command list, with its state and the first page of its output. Encrypted on the way, and marked as data. |
 
 ## Read a screen
 
@@ -119,7 +119,9 @@ The call waits up to 8 seconds for the run to end. A longer run returns `state` 
 
 To read a long output, call `tokiwa_run_status` with the last `next_offset` as `offset` until `next_offset` is null. A page can end inside a multibyte character: that part shows as U+FFFD, and the next page starts at the exact byte, so `text` of two pages may not join into the original text at that point.
 
-At most 4 runs are active at one time. A start has one 12-second deadline: when another start holds the host's lock past it, the call is refused as busy. If a `run` or `run-status` call fails, it says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.`
+At most 4 runs are active at one time. A start has one 12-second deadline: when another start holds the host's lock past it, the call is refused as busy. When systemd gives no state for a run that has not ended, `run-status` is refused with `The state of run ID could not be read. Nothing was run.`; call it again later.
+
+The launcher waits up to 40 seconds for a `run` or `run-status` call to end on the host. A call that the host refused fails with the host's own line, which ends `Nothing was run.` A `run` call that did not end (`TimedOut`, `Cancelled`, or no end after 40 seconds) says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.` The run log on the host has the id. A `run-status` call that failed says `The run-status call returned STATUS. Nothing was changed.`
 
 ## Limits
 
@@ -142,7 +144,7 @@ Tokiwa trusts each program that can run it as it trusts you. The command and the
 | Has no shell, only the MCP server | The `--allow` classes of its server, and its client's approval of each call |
 | Has a shell | Its own tool's approval of each command. It can go around Tokiwa, so Tokiwa adds no limit of its own |
 
-`--allow commands` alone gives no free command line. The tool runs only what the owner listed on the host, with arguments of the shape that the entry fixes, and `tokiwa_launch` stays in the `run` class. But an entry runs as `agent-workspace`, the same user as the sessions, so a listed command has the trust of a command that you type in a session. Write entries with that in mind; see [the command list](host.md#the-command-list).
+`--allow commands` alone gives no free command line. The tool runs only what the owner listed on the host, with arguments of the shape that the entry fixes, and `tokiwa_launch` stays in the `run` class. But an entry runs as `agent-workspace`, the same user as the sessions, so a listed command has the trust of a command that you type in a session. It can reach the model sign-ins and the saved secrets through the processes of the sessions, also with `home: none`, which hides them only from a read by path. List only commands that you would run in a session; see [the command list](host.md#the-command-list).
 
 Allow the read commands and tools without a question if you like. Keep each `control`, `run` and `commands` command asking: an agent that reads a screen can meet text that tries to steer it, so your approval is the check before it changes a session.
 

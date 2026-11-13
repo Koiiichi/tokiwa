@@ -65,7 +65,12 @@ The launcher picks the path from its command. `tokiwa --help` lists the commands
 
 `commands`, `run` and `run-status` run the root command runner, [`tokiwa-run.py`](../host/tokiwa-run.py), and not the helper; see [the command list](host.md#the-command-list).
 
-The launcher polls `get-command-invocation` up to 15 times, one second apart. A status other than `Success` fails the call with `The workbench check returned <status>. No service was started.`
+The launcher polls `get-command-invocation` one second apart, up to 15 times, and up to 40 times for the encrypted calls (`capture`, `search`, `run` and `run-status`), which Run Command stops after 30 seconds. When the host refused the call, the launcher fails with the host's last line, which ends `Nothing was run.` Otherwise a status other than `Success` fails the call with `The workbench check returned <status>. No service was started.`, except for two commands:
+
+| Command | Status | Message |
+| --- | --- | --- |
+| `run` | Not `Failed`: `TimedOut`, `Cancelled`, or no end after 40 polls | `The run call returned <status>. A run may have started: use tokiwa run-status with its id.` |
+| `run-status` | Any other than `Success` | `The run-status call returned <status>. Nothing was changed.` |
 
 On the host, each command runs as `sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 /opt/agent-platform/rootless/terminal-session.sh <mode> …`. Except for `health`, the command first checks `systemctl is-active` for `cloud-workbench.service`; Run Command calls also check `user@2200.service`.
 
@@ -181,4 +186,4 @@ The app keeps a small amount of state on the Mac.
 | The tmux server is down | Every helper call fails; no call starts a new server |
 | The AWS sign-in expired | App reads fail with `AWS authentication failed.` The session list offers `l`, which runs `tokiwa login` in a local view. Attached sessions keep running on the host |
 | The host is stopped | Every host command fails; the launcher never starts the host |
-| A Run Command call takes longer than 15 polls | The call fails with the last status, for example `Pending` |
+| A Run Command call takes longer than its polls (15, or 40 for an encrypted call) | The call fails with the last status, for example `Pending` |
