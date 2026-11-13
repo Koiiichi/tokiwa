@@ -40,13 +40,22 @@ place() {
  run install -D -m "$mode" "$source" "$target"
 }
 
+# Install a file only when its target does not exist, so an edit by the owner stays.
+# The tests point the existence check at the stand-in folder.
+place_once() {
+ local mode=$1 source=$2 target=$3
+ [[ -e $check$target ]] && return 0
+ run install -D -m "$mode" "$source" "$target"
+}
+
 rootless=/opt/agent-platform/rootless
 units=/etc/systemd/system
 workspaces=/srv/development/state/workspaces
 home=/srv/development/private/homes/workbench
 
-# Preflight: read only. The tests point the two system paths at a stand-in folder.
 check=${TOKIWA_INSTALL_CHECK_ROOT:-}
+
+# Preflight: read only. The tests point the two system paths at a stand-in folder.
 (( dry )) || [[ $(id -u) == 0 ]] || fail 'Run as root, for example with sudo, or add --dry-run.'
 [[ -r $check/etc/os-release ]] && . "$check/etc/os-release"
 [[ ${ID:-} == ubuntu ]] || fail 'This installer supports Ubuntu.'
@@ -104,7 +113,12 @@ dir agent-workspace agent-workspace 700 /srv/development/private/peermesh
 
 # The helpers and the units.
 for file in start-workbench.sh terminal-session.sh tokiwa-open; do place 0755 "$file" "$rootless/$file"; done
-for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft; do place 0644 "$file" "$rootless/$file"; done
+for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft tokiwa-run.py; do place 0644 "$file" "$rootless/$file"; done
+# The command list starts empty; the owner edits it, and a later install never replaces it.
+place_once 0644 commands.json /etc/tokiwa/commands.json
+# The run log, and the run folders on the cache volume (outside the backup).
+run install -d -m 0755 /var/log/tokiwa
+run install -d -m 0755 /srv/development/cache/tokiwa-runs
 place 0755 tokiwa-attention /usr/local/bin/tokiwa-attention
 place 0755 tokiwa-state /usr/local/bin/tokiwa-state
 # Each agent reports its state through its own hooks: working, waiting, idle, limited or error.

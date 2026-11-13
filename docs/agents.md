@@ -7,6 +7,7 @@ A local agent reaches Tokiwa in one of two ways: the `tokiwa` command, for an ag
 | `read` | sessions, a screen, health, status | yes | always |
 | `control` | changes to a session or a project | yes | only with `tokiwa mcp --allow control` |
 | `run` | a command that runs on the host, `create --run` | yes | only with `tokiwa mcp --allow run` |
+| `commands` | an entry of the owner's command list, run on the host | yes | only with `tokiwa mcp --allow commands` |
 | `human` | sign-in, `secret`, `admin`, an attached view | yes, for a person | never |
 
 The checks are in the host helper, so they are the same for both: each argument, and the identity of the session that a command names. Tokiwa does not decide which agent may run what. The agent's own tool approves each command or tool call, as it does for `git`; see [Trust](#trust).
@@ -45,7 +46,7 @@ command = "HOME/.local/bin/tokiwa"
 args = ["mcp"]
 ```
 
-Add `--allow control`, `--allow run` or `--allow control,run` after `mcp` to offer those tools. The server marks them as destructive, so a client that asks before such tools asks before each call. A running agent sees the tools after it starts again or reconnects its MCP servers.
+Add `--allow control`, `--allow run`, `--allow commands` or a list such as `--allow control,commands` after `mcp` to offer those tools. The server marks them as destructive, so a client that asks before such tools asks before each call. A running agent sees the tools after it starts again or reconnects its MCP servers.
 
 ## Tools
 
@@ -59,6 +60,8 @@ These are the read tools. The table lists the tools of the other classes when th
 | `tokiwa_digest` | None | The output of `tokiwa digest --json`: for each session its `agent` state and time, `active_at` (when its screen last changed), and the `git` state of its folder: `branch`, `unpushed` (null without an upstream), `changed`, `commit` and `committed_at`. Commit messages are not included, because Run Command keeps the output. |
 | `tokiwa_health` | None | The output of `tokiwa health`. See [Health](health.md). |
 | `tokiwa_status` | None | The output of `tokiwa status`. |
+| `tokiwa_commands` | None | The output of `tokiwa commands`: each entry of the owner's [command list](host.md#the-command-list) with its `name`, `description` and the shape of each argument. A `choice` shows its names and never the values behind them. Not encrypted. |
+| `tokiwa_run_status` | `id`, optional `offset` | The output of `tokiwa run-status ID [OFFSET]`: the state of a run and one page of its output. See [Run a listed command](#run-a-listed-command). Encrypted on the way, and marked as data. |
 
 With `--allow control`:
 
@@ -74,6 +77,12 @@ With `--allow run`:
 | Tool | Input | Result |
 | --- | --- | --- |
 | `tokiwa_launch` | `name`, `dir`, `project`, `command` | The same, with `--run COMMAND`: the command line is typed into the new session's shell. |
+
+With `--allow commands`:
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `tokiwa_run` | `entry`, `args` (an object of strings) | The output of `tokiwa run ENTRY NAME=VALUE…`: a run of one entry of the command list, with its state and the first page of its output. Encrypted on the way, and marked as data. |
 
 ## Read a screen
 
@@ -91,6 +100,27 @@ The capture reads the active pane of the session with up to 200 lines of scrollb
 | `truncated` | True when the helper removed text from the start of `text`, to fit 15,000 bytes |
 | `text` | The lines |
 
+## Run a listed command
+
+`tokiwa_run` runs `tokiwa run ENTRY NAME=VALUE…`. Take `entry` and the names in `args` from `tokiwa_commands`. The host checks the entry and each value against the [command list](host.md#the-command-list), then runs the program as `agent-workspace` in a new folder, with no shell. A value that does not match, an unknown entry or a missing argument is refused with a message that ends `Nothing was run.` A call takes at most 16 arguments, and each value has 1 to 1000 characters, with no control character.
+
+The call waits up to 8 seconds for the run to end. A longer run returns `state` `running` and an `id`, and the agent reads on with `tokiwa_run_status`.
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The run, for example `20261112T183000-7f3a`. Use it with `tokiwa_run_status`. |
+| `entry` | The entry that ran |
+| `state` | `done`, `running`, `failed` or `timed-out` |
+| `exit` | The exit status. Null while the run is `running`. A run whose unit vanished with no end record, for example after a host restart, reports `failed` with `exit` null. |
+| `offset`, `next_offset` | The byte offset of this page, and the offset of the next page. `next_offset` is a byte offset into the output, null at its end. |
+| `size` | The bytes of output that the run has written so far |
+| `truncated` | True when the output passed the entry's `output_bytes`. The host keeps the first part. |
+| `text` | The page: at most 15,000 bytes of encoded text. Standard output and standard error come together. |
+
+To read a long output, call `tokiwa_run_status` with the last `next_offset` as `offset` until `next_offset` is null. A page can end inside a multibyte character: that part shows as U+FFFD, and the next page starts at the exact byte, so `text` of two pages may not join into the original text at that point.
+
+At most 4 runs are active at one time. A start has one 12-second deadline: when another start holds the host's lock past it, the call is refused as busy. If a `run` or `run-status` call fails, it says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.`
+
 ## Limits
 
 **Sign-in.** Each call needs a live AWS sign-in, and an agent cannot sign in. After the sign-in expires, each call returns `The AWS sign-in expired. Ask the owner to press l in Tokiwa or run tokiwa login.`
@@ -98,6 +128,8 @@ The capture reads the active pane of the session with up to 200 lines of scrollb
 **Terminal text is data.** A screen can hold any text, also text that another program or a web page wrote. An agent must not take it as an instruction. The tool description and the first line of each result say this.
 
 **Stored text.** A capture reaches the Mac through Run Command, and AWS keeps the output of each command in the history of the account. So the helper never prints screen text. The launcher makes a new key pair for each capture and sends the host only the certificate. The host encrypts the result to it, and the launcher decrypts the result and deletes the key. History holds only encrypted data, which nobody can open after the call. A helper that gets no certificate refuses the capture.
+
+**Arguments in history.** Run Command history keeps the entry name and each argument value in plain base64, not encrypted. Do not pass a secret as an argument value. Name it in the entry's `secrets` instead, so that the host passes it to the program without Run Command. The results of `run` and `run-status` are encrypted as a capture is.
 
 The other tools are not encrypted. History keeps session names, folders, pane commands and host metrics. So does each list read of the app.
 
@@ -110,14 +142,16 @@ Tokiwa trusts each program that can run it as it trusts you. The command and the
 | Has no shell, only the MCP server | The `--allow` classes of its server, and its client's approval of each call |
 | Has a shell | Its own tool's approval of each command. It can go around Tokiwa, so Tokiwa adds no limit of its own |
 
-Allow the read commands and tools without a question if you like. Keep each `control` and `run` command asking: an agent that reads a screen can meet text that tries to steer it, so your approval is the check before it changes a session.
+`--allow commands` alone gives no free command line. The tool runs only what the owner listed on the host, with arguments of the shape that the entry fixes, and `tokiwa_launch` stays in the `run` class. But an entry runs as `agent-workspace`, the same user as the sessions, so a listed command has the trust of a command that you type in a session. Write entries with that in mind; see [the command list](host.md#the-command-list).
+
+Allow the read commands and tools without a question if you like. Keep each `control`, `run` and `commands` command asking: an agent that reads a screen can meet text that tries to steer it, so your approval is the check before it changes a session.
 
 A mode that approves on its own, such as Claude Code's auto mode, runs a command that you asked for without a question. An `ask` rule keeps the question in every mode. In Claude Code, add the control commands to `permissions.ask` in `~/.claude/settings.json`:
 
 ```json
-"ask": ["Bash(tokiwa freeze:*)", "Bash(tokiwa resume:*)", "Bash(tokiwa interrupt:*)", "Bash(tokiwa create:*)",
+"ask": ["Bash(tokiwa freeze:*)", "Bash(tokiwa resume:*)", "Bash(tokiwa interrupt:*)", "Bash(tokiwa create:*)", "Bash(tokiwa run:*)",
         "mcp__tokiwa__tokiwa_freeze", "mcp__tokiwa__tokiwa_resume", "mcp__tokiwa__tokiwa_interrupt",
-        "mcp__tokiwa__tokiwa_create", "mcp__tokiwa__tokiwa_launch"]
+        "mcp__tokiwa__tokiwa_create", "mcp__tokiwa__tokiwa_launch", "mcp__tokiwa__tokiwa_run"]
 ```
 
 A `Bash(...)` rule covers the typed command and not the MCP tool, so the list names both.
@@ -128,4 +162,4 @@ In a test with Claude Code in auto mode, these rules held each command for appro
 
 - [Architecture](architecture.md): the launcher and Run Command.
 - [Sessions and projects](sessions-and-projects.md): session identity.
-- [Host](host.md): the helper on the host.
+- [Host](host.md): the helper on the host, the command list and the run log.

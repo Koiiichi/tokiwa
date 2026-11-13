@@ -95,6 +95,8 @@ systemctl start cloud-workbench.service
 | `tokiwa-bashrc` | `/opt/agent-platform/rootless/tokiwa-bashrc` | 0644 | The startup file of each shell: the owner's `~/.bashrc`, then Tokiwa's prompt and `BROWSER`. |
 | `tokiwa-state` | `/usr/local/bin/tokiwa-state` | 0755 | Records the state that an agent's hook reports, for the session list. See [Agent state](#agent-state). |
 | `agent-hooks.py` | `/opt/agent-platform/rootless/agent-hooks.py` | 0644 | Adds Tokiwa's state hooks to the Claude Code and Codex settings of the workbench user, or removes them. |
+| `tokiwa-run.py` | `/opt/agent-platform/rootless/tokiwa-run.py` | 0644 | The command runner. Run Command starts it as root with `python3 -I`. See [The command list](#the-command-list). |
+| `commands.json` | `/etc/tokiwa/commands.json` | 0644 | The owner's command list. The installer copies an empty list (`{"entries": {}}`) only when no file exists, and never replaces it. |
 | `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
@@ -115,6 +117,8 @@ The installer also makes these paths:
 | --- | --- | --- |
 | `/srv/development/state/workspaces/workbench` | `agent-workspace`, 0750, ACLs for UID 2200 (`rwx`) and UID 1049575 (`r-x`) | The `workbench/` folder: project files. |
 | `/srv/development/private/homes/workbench` | `agent-workspace`, 0700 | The home of the sessions, with `.claude/` and `.codex/` (0700). |
+| `/var/log/tokiwa` | root, 0755 | The [run log](#run-log). |
+| `/srv/development/cache/tokiwa-runs` | root, 0755 | The run folders of the command runner, on the cache volume, so the hourly backup leaves them out. |
 | `/srv/development/cache/rootless-home` | `cloud-containers`, 0700 | The home of the engine user. |
 | `/srv/development/cache/rootless-engine.ext4` | root | A 24 GiB ext4 image. |
 | `/srv/development/cache/rootless-engine` | `cloud-containers`, 0700 | The mount point of that image (`loop,nosuid,nodev,noatime`, `nofail` in `/etc/fstab`). |
@@ -133,7 +137,7 @@ sudo bash install.sh --with-docker  # the core and the rootless Docker engine
 
 | Part | What it installs |
 | --- | --- |
-| Core | `tmux`, `python3`, `acl`, `nftables` and `openssl`; the user `agent-workspace` (UID 2100); the folders under `/srv/development`; the helpers in `/opt/agent-platform/rootless`; `agent.slice`, `agent-sessions.slice` and `cloud-workbench.service`; the `cloud_workspace` firewall table, which keeps sessions away from the instance metadata service. It enables the service and starts it when it is not running. |
+| Core | `tmux`, `python3`, `acl`, `nftables` and `openssl`; the user `agent-workspace` (UID 2100); the folders under `/srv/development`; the helpers and the command runner in `/opt/agent-platform/rootless`; an empty command list when none exists; the run log and run folders; `agent.slice`, `agent-sessions.slice` and `cloud-workbench.service`; the `cloud_workspace` firewall table, which keeps sessions away from the instance metadata service. It enables the service and starts it when it is not running. |
 | `--with-docker` | `docker.io`, `docker-compose-v2`, `rootlesskit`, `slirp4netns` and `uidmap`; the user `cloud-containers` (UID 2200) with the subordinate IDs 1048576–1114111; a 24 GiB ext4 image for the engine, mounted at boot; the engine's user unit, slices and drop-ins; the `rootless_workspace` firewall table; and `cloud-workbench.service.d/docker.conf`, which gives sessions the engine's socket. It needs 28 GiB free in `/srv/development/cache`. |
 
 Each step reads the host first and changes only what is missing, so a second run changes nothing. A folder that exists keeps its owner and mode; the installer reports a difference. It stops before any change when the host is not Ubuntu, when systemd does not run, when cgroup v2 is missing, or when `agent-workspace` or `cloud-containers` exists with another UID.
@@ -273,6 +277,80 @@ The helper records each control action after it succeeds: `create`, `end`, `rena
 ```
 
 `via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
+
+## The command list
+
+The command list names the commands that a local agent may run on the host with `tokiwa run` or `tokiwa_run` (see [Run a listed command](agents.md#run-a-listed-command)). It is `/etc/tokiwa/commands.json`, owned by root, mode 0644: a session can read it and cannot change it. Only the owner edits it, from a root shell (`tokiwa admin`). No tool, no MCP call and no session adds or widens an entry. The installer creates `{"entries": {}}` when the file is absent and never replaces it. The runner reads the list at each call, and a list or an entry that breaks a rule refuses the call with `Nothing was run.`
+
+The runner, [`tokiwa-run.py`](../host/tokiwa-run.py), runs as root through Run Command and is the only place that checks an entry and its values. It never runs free shell text: it passes `argv` as a list to `systemd-run`, so no value is split or given to a shell. It writes each `$` in `argv` as `$$`, so systemd never expands a value. The program runs as `agent-workspace`, in its own unit `tokiwa-run-ID.service` in `agent-sessions.slice`, with `ProtectSystem=strict`, `NoNewPrivileges=yes` and a private `/tmp`.
+
+| Key | Meaning |
+| --- | --- |
+| `description` | A sentence that `tokiwa commands` shows. |
+| `argv` | The program and its arguments, a list of strings. A `{name}` placeholder is replaced by the checked value of the argument of that name, or of the argument that has `as: name`. A placeholder with no argument makes the list invalid. |
+| `args` | An object. Each key is an argument name (`^[a-z][a-z0-9_-]{0,47}$`), and the caller gives each argument exactly once. |
+| `cwd` | `fresh`: an empty folder. `worktree`: a detached `git worktree` of a clone at a commit, made before the unit starts and removed when it ends. It needs a `choice` argument with `as: clone` and an argument named `commit`. The runner checks the commit in the clone, never fetches, and refuses an unknown commit. |
+| `home` | `none` (the default): `HOME` is the run's `work` folder, and `/srv/development/private` is hidden. `workbench`: `HOME` is the workbench home, with `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, for an entry that needs the model sign-ins. `~/.tokiwa` and the peermesh folder stay hidden in this mode. |
+| `secrets` | Names from `~/.tokiwa/secrets.env` that the program gets as environment variables. Default none. |
+| `timeout_seconds` | From 1 to 86400. The unit stops at this time and the run is `timed-out`. |
+| `output_bytes` | From 1 to 10,000,000. The runner keeps the first part of the output and marks `truncated`. |
+
+The kinds of argument:
+
+| Kind | Value | Check |
+| --- | --- | --- |
+| `pattern` | A string | The whole value matches an anchored regular expression (it starts with `^` and ends with `$`). The pattern alone decides whether a value may start with `-`: write it so that it cannot, so that a value never becomes an option of the program. |
+| `choice` | A public name | A map from a public name to a value. The caller gives the name and never a path. `tokiwa commands` lists the names and not the values. |
+| `path_below` | A path, relative to the fixed root | After the runner joins the value to the root and resolves it, the path must exist and stay below the root. A `..` or a link that leaves the root is refused. |
+
+`PATH` is `/usr/local/bin:/usr/bin:/bin`, and no variable from the caller reaches the unit. The runner reads `secrets.env` without following links, and requires a regular file owned by the workbench user. It writes the named values to a root-only file (`/srv/development/cache/tokiwa-runs/ID.env`, mode 0600) that the unit loads as its `EnvironmentFile`, and never through `--setenv`, because `systemctl show` prints a unit's `Environment` to every user. It refuses a secret name that a loader or a shell relies on: names that start with `LD_`, `MALLOC_`, `PYTHON`, `SYSTEMD_`, `TOKIWA_`, `TMUX` or `LISTEN_`, and names such as `PATH`, `HOME`, `SHELL`, `PWD`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. The full set is `RESERVED_PREFIXES` and `RESERVED_NAMES` in `tokiwa-run.py`.
+
+A run folder `/srv/development/cache/tokiwa-runs/ID/` is owned by root, mode 0755, and holds `call.json`, `output` and `end.json`. Only `ID/work` belongs to `agent-workspace` (mode 0700): the program runs there. The runner deletes run folders older than 14 days at the start of each call. At most 4 runs are active at one time, and a start has one 12-second deadline.
+
+Because a listed command runs as `agent-workspace`, it can read what a session can read, also with `home: none`. The `home` and `secrets` keys limit what the environment hands to the program and which private paths it can reach by name; they do not make it a sandbox against code that the entry runs. Run Command history keeps the entry name and each argument value in plain base64: use `pattern` and `choice` for ordinary values, and name a secret in `secrets`, never in an argument.
+
+An example entry, with neutral names. It runs the review script of one clone for a pull request at a commit:
+
+```json
+{
+  "entries": {
+    "review-pr": {
+      "description": "Run the review script of one repository for a pull request at a commit.",
+      "argv": ["{clone}/scripts/review.sh", "--pr", "{pr}", "--commit", "{commit}"],
+      "args": {
+        "repo":   {"choice": {"repo-a": "/srv/development/state/workspaces/workbench/repo-a"}, "as": "clone"},
+        "pr":     {"pattern": "^[1-9][0-9]{0,6}$"},
+        "commit": {"pattern": "^[0-9a-f]{7,40}$"}
+      },
+      "cwd": "worktree",
+      "home": "none",
+      "secrets": [],
+      "timeout_seconds": 1800,
+      "output_bytes": 200000
+    }
+  }
+}
+```
+
+An agent then runs `tokiwa run review-pr repo=repo-a pr=42 commit=1a2b3c4`. Here the unit starts in a worktree of `repo-a` at the commit, and `{clone}` is the path behind `repo-a`. With `cwd: fresh`, an entry has an empty folder instead.
+
+To edit the list, open `tokiwa admin`, edit the file and save it. The next call reads the new list. Check it with `tokiwa commands`: an invalid list refuses with the reason. Then reconnect a local agent with `tokiwa mcp --allow commands`.
+
+## Run log
+
+The runner writes `/var/log/tokiwa/run.jsonl` (root, mode 0644), one JSON object for each line. Only the runner writes it. The log never holds output or a secret value. Each call adds a line, and each run that ends adds one more:
+
+```json
+{"at": 1794280000, "entry": "review-pr", "args": {"repo": "repo-a", "pr": "42", "commit": "1a2b3c4"}, "via": "mcp", "id": "20261112T183000-7f3a", "state": "running"}
+{"at": 1794280060, "id": "20261112T183000-7f3a", "state": "done", "exit": 0}
+```
+
+| Line | Fields |
+| --- | --- |
+| A call | `at`, `entry`, `args`, `via`, `id` and `state` (`running`); `actor` when the caller set one. A refused call has `refused`, with the reason, in place of `id` and `state`. |
+| An end | `at`, `id`, `state` (`done`, `failed` or `timed-out`) and `exit` (null when there is none). A hook of the unit writes it as root, so the exit status is there also for a run that ended after the call returned. |
+
+`via` and `actor` are what the caller says, as in the [audit log](#audit-log). The owner reads the log on the host, from `tokiwa admin`. `tokiwa audit` does not show it.
 
 ## Stuck connections
 

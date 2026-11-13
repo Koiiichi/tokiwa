@@ -67,6 +67,21 @@ class HostInstall(unittest.TestCase):
         self.assertNotIn('docker', out.lower().replace('dry run', ''))
         self.assertIn('nothing changed', out)
 
+    def test_runner_and_empty_list_are_installed(self):
+        out = self.install().stdout
+        self.assertIn('install -D -m 0644 tokiwa-run.py /opt/agent-platform/rootless/tokiwa-run.py', out)
+        self.assertIn('install -D -m 0644 commands.json /etc/tokiwa/commands.json', out)
+        self.assertIn('install -d -m 0755 /var/log/tokiwa', out)
+        self.assertIn('install -d -m 0755 /srv/development/cache/tokiwa-runs', out)
+
+    def test_an_existing_list_is_never_replaced(self):
+        list_file = Path(self.temp.name) / 'check/etc/tokiwa/commands.json'
+        list_file.parent.mkdir(parents=True)
+        list_file.write_text('{"entries": {"a": {}}}\n')
+        out = self.install().stdout
+        self.assertNotIn('commands.json', out)
+        self.assertIn('tokiwa-run.py', out)
+
     def test_package_changes_never_restart_the_service(self):
         rule = (ROOT / 'needrestart.conf').read_text()
         self.assertIn('$nrconf{override_rc}{qr(^cloud-workbench)} = 0;', rule)
