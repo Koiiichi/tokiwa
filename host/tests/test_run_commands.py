@@ -442,7 +442,8 @@ class Runs(unittest.TestCase):
             "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--uid=agent-workspace",
             "--gid=agent-workspace", "--slice=agent-sessions.slice",
             *(f"--property={item}" for item in SANDBOX),
-            f"--property=ReadWritePaths={clone}/.git {work}",
+            f"--property=ReadWritePaths={clone} {work}",
+            f"--property=InaccessiblePaths={run.PRIVATE}",
             f"--property=RuntimeMaxSec={seconds}",
             "--", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
             "-C", clone, *argv,
@@ -569,6 +570,17 @@ class Runs(unittest.TestCase):
                 self.assertEqual(self.run_units(), [])
                 self.assertEqual(self.run_ids(), [])
                 self.assertIn("refused", self.log_lines()[-1])
+
+    def test_the_git_units_mount_the_whole_clone_and_hide_the_private_volume(self):
+        self.use_fake_clock()
+        result = self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
+        work = run.RUNS / result["id"] / "work"
+        gits = [a for a in self.calls_to("systemd-run") if "--wait" in a]
+        self.assertTrue(gits)
+        for argv in gits:
+            self.assertIn(f"--property=ReadWritePaths={self.clone} {work}", argv)
+            self.assertNotIn(".git", " ".join(argv).replace("--property=", "").split(" -- ")[0])
+            self.assertIn("--property=InaccessiblePaths=/srv/development/private", argv)
 
     def test_a_link_to_a_folder_with_a_space_is_refused(self):
         spaced = self.clones / "x /var/crash"

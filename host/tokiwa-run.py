@@ -453,13 +453,15 @@ def git_command(clone, work, seconds, *argv):
     """Return the systemd-run call that runs one git command as agent-workspace in a sandbox.
 
     The clone belongs to agent-workspace, so its config and its checkout filters are code of
-    that user. git gets the limits of a run, may write only the clone's .git folder and the
-    run's work folder, and runs no hook and no file system monitor. The unit stops after
+    that user. git gets the limits of a run, may write only the clone folder and the run's work
+    folder, cannot reach /srv/development/private, and runs no hook and no file system monitor.
+    The unit mounts the whole clone, because .git is an entry that a run could swap for a link. The unit stops after
     seconds, also when the caller of systemd-run is killed first.
     """
     properties = [
         *SANDBOX,
-        f"ReadWritePaths={clone}/.git {work}",
+        f"ReadWritePaths={clone} {work}",
+        f"InaccessiblePaths={PRIVATE}",
         f"RuntimeMaxSec={max(1, math.ceil(seconds))}",
     ]
     return [
