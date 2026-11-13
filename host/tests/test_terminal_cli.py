@@ -39,6 +39,11 @@ case "$*" in
   if grep -q 'terminal-session.sh digest' "$HOME/calls"; then
    now=$(date +%s)
    printf '{"sampled_at": %s, "sessions": [{"name": "lead-a", "identity": "1:$2:3", "active_at": %s, "agent": {"state": "waiting", "at": %s}, "git": {"branch": "main", "unpushed": 2, "changed": 1, "commit": "abc1234", "committed_at": %s}}, {"name": "notes", "identity": "1:$3:3", "active_at": %s, "agent": null, "git": null}]}\n' "$now" "$now" "$((now - 180))" "$((now - 7200))" "$((now - 86400))"
+  elif grep -q 'tokiwa-run.py \(start\|status\)' "$HOME/calls"; then
+   cert=$(grep -oE 'tokiwa-run.py (start [A-Za-z0-9+/=]+|status [^ ]+ [0-9]+) [A-Za-z0-9+/=]+' "$HOME/calls" | tail -1 | awk '{print $NF}')
+   printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
+   printf '{"id": "20261112T183000-7f3a", "state": "done", "exit": 0, "text": "ok"}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\\n'
+   echo
   elif grep -q 'terminal-session.sh capture' "$HOME/calls"; then
    ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
    # Act as the host: encrypt to the certificate that the launcher sent.
@@ -654,6 +659,63 @@ esac
 
     def test_help_lists_spend(self):
         self.assertIn('spend', self.run_cli('--help').stdout)
+
+    def run_calls(self):
+        return (self.home / 'calls').read_text()
+
+    def run_payload(self):
+        found = re.search(r'tokiwa-run\.py start ([A-Za-z0-9+/=]+) ', self.sent())
+        self.assertIsNotNone(found, self.sent())
+        return json.loads(base64.b64decode(found.group(1)))
+
+    def test_run_sends_the_entry_and_pairs_encoded(self):
+        result = self.run_cli('run', 'review-pr', 'pr=42', 'commit=1a2b3c4')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_payload(), {'entry': 'review-pr', 'args': {'pr': '42', 'commit': '1a2b3c4'}})
+        self.assertNotIn('runuser', self.sent())
+        self.assertIn('env TOKIWA_VIA=cli python3 -I /opt/agent-platform/rootless/tokiwa-run.py start ', self.sent())
+
+    def test_run_decrypts_the_result(self):
+        result = self.run_cli('run', 'review-pr', 'pr=42')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'id': '20261112T183000-7f3a', 'state': 'done', 'exit': 0, 'text': 'ok'})
+
+    def test_run_refuses_bad_arguments(self):
+        cases = [('Bad',), ('review-pr', 'pr'), ('review-pr', 'pr=a\tb'), ('review-pr', 'Pr=1'), ('review-pr', 'pr='),
+                 ('review-pr', 'pr=' + 'x' * 1001), ('review-pr', *[f'a{n}=1' for n in 'abcdefghijklmnopq'])]
+        self.assertEqual(len(cases[-1]), 18)
+        for args in cases:
+            with self.subTest(args=args):
+                (self.home / 'calls').unlink(missing_ok=True)
+                result = self.run_cli('run', *args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.home / 'calls').exists())
+
+    def test_run_accepts_sixteen_pairs_and_a_value_of_1000_characters(self):
+        result = self.run_cli('run', 'review-pr', 'pr=' + 'x' * 1000, *[f'a{n}=1' for n in 'abcdefghijklmno'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.run_payload()['args']), 16)
+
+    def test_run_status_checks_the_id(self):
+        result = self.run_cli('run-status', '../x')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / 'calls').exists())
+        for args in [('20261112T183000-7f3a', '-1'), ('20261112T183000-7f3a', 'x'), ('20261112T183000-7f3a', '1', '2')]:
+            self.assertNotEqual(self.run_cli('run-status', *args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+        result = self.run_cli('run-status', '20261112T183000-7f3a', '15000')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(self.sent(), r'tokiwa-run\.py status 20261112T183000-7f3a 15000 [A-Za-z0-9+/=]+')
+        self.assertEqual(json.loads(result.stdout)['state'], 'done')
+        self.run_cli('run-status', '20261112T183000-7f3a')
+        self.assertRegex(self.sent(), r'tokiwa-run\.py status 20261112T183000-7f3a 0 ')
+
+    def test_commands_is_plain(self):
+        result = self.run_cli('commands')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(self.sent(), r'tokiwa-run\.py commands(?!\s+[A-Za-z0-9+/=])')
+        self.assertFalse((self.home / 'recipient.pem').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

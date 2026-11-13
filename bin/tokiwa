@@ -9,9 +9,12 @@ extra=
 lines=
 query=
 digest_json=0
+run_payload=
+run_id=
+run_offset=
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|mcp|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -42,6 +45,11 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 Find the latest lines that hold TEXT in a session's whole scrollback, with context, as JSON
   capture NAME IDENTITY [LINES]
                 Read the last lines of a session as JSON (1 to 200, default 60), encrypted on the way; only that exact session
+  commands      List the entries of the owner's command list on the host, as JSON
+  run ENTRY [NAME=VALUE]...
+                Run an entry of the command list on the host; the result is encrypted on the way
+  run-status ID [OFFSET]
+                Read a run's state and the output from byte OFFSET (default 0), encrypted on the way
   secret NAME   Save a secret on the host, for example an API key; new shells load it as NAME.
                 The host reads it with hidden input; it is never stored on this Mac or in AWS
   secret --remove NAME
@@ -135,6 +143,28 @@ PY_CREATE
   [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ && ! $name =~ ^(PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_.*|TMUX.*)$ ]] \
    || fail 'Use a secret name of letters, digits and underscores, for example OPENAI_API_KEY. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  secrets) [[ $# -le 1 ]] || fail 'Use secrets.' ;;
+ commands) [[ $# -eq 1 ]] || fail 'Use commands.' ;;
+ run)
+  run_usage='Use run ENTRY NAME=VALUE…, with names from tokiwa commands.'
+  [[ $# -ge 2 && $# -le 18 && $name =~ ^[a-z][a-z0-9_-]{0,47}$ ]] || fail "$run_usage"
+  for pair in "${@:3}"; do
+   key=${pair%%=*} value=${pair#*=}
+   [[ $pair == *=* && $key =~ ^[a-z][a-z0-9_-]{0,47}$ && -n $value && ${#value} -le 1000 && $value != *[[:cntrl:]]* ]] || fail "$run_usage"
+  done
+  run_payload=$(python3 - "$name" "${@:3}" <<'PY_RUN'
+import base64, json, sys
+entry, args = sys.argv[1], {}
+for pair in sys.argv[2:]:
+    key, value = pair.split('=', 1)
+    args[key] = value
+print(base64.b64encode(json.dumps({"entry": entry, "args": args}).encode()).decode())
+PY_RUN
+) || fail "$run_usage"
+  name= ;;
+ run-status)
+  [[ $# -ge 2 && $# -le 3 && $name =~ ^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$ && ${3:-0} =~ ^[0-9]{1,12}$ ]] || fail 'Use run-status ID [OFFSET], with the id from tokiwa run.'
+  run_id=$name run_offset=${3:-0}
+  name= ;;
  interrupt|freeze|resume)
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail "Use $mode NAME IDENTITY, with the identity from tokiwa sessions --json."
@@ -237,23 +267,50 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit || $mode == digest ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
   quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"})
   remote="$remote $quoted"
  fi
- # Run Command keeps its output in the account, so the host encrypts a capture to a key that
+ # Run Command keeps its output in the account, so the host encrypts a result to a key that
  # exists only on this Mac and only for this call.
- if [[ $mode == capture ]]; then
-  command -v openssl >/dev/null || fail 'A capture needs openssl.'
+ sealed_key() {
+  command -v openssl >/dev/null || fail "A $what needs openssl."
   umask 077
-  work=$(mktemp -d "${TMPDIR:-/tmp}/tokiwa-capture.XXXXXX") || fail 'A capture needs a temporary folder.'
+  work=$(mktemp -d "${TMPDIR:-/tmp}/tokiwa-capture.XXXXXX") || fail "A $what needs a temporary folder."
   trap 'rm -rf "$work"' EXIT
   openssl req -x509 -newkey rsa:3072 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -subj /CN=tokiwa-capture -days 1 >/dev/null 2>&1 \
-   || fail 'The capture key could not be made.'
-  remote="$remote $(base64 < "$work/cert.pem" | tr -d '\n')${query:+ $query}"
+   || fail "The $what key could not be made."
+  cert64=$(base64 < "$work/cert.pem" | tr -d '\n')
+ }
+ # Read the sealed result of Run Command call $1 and decrypt it to stdout.
+ open_sealed() {
+  aws_call ssm get-command-invocation --command-id "$1" --instance-id "$instance" --query StandardOutputContent --output text > "$work/sealed" \
+   || fail "The $what could not be read."
+  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(open(sys.argv[1]).read()))' "$work/sealed" > "$work/sealed.der" 2>/dev/null \
+   || fail "The $what could not be decrypted."
+  # To stdout, so that the decrypted text is never in a file.
+  openssl smime -decrypt -binary -inform DER -inkey "$work/key.pem" -recip "$work/cert.pem" -in "$work/sealed.der" 2>/dev/null \
+   || fail "The $what could not be decrypted."
+ }
+ what=capture
+ sealed=0
+ runner="env TOKIWA_VIA=$via${actor:+ TOKIWA_ACTOR=$actor} python3 -I /opt/agent-platform/rootless/tokiwa-run.py"
+ if [[ $mode == capture ]]; then
+  sealed=1
+  sealed_key
+  remote="$remote $cert64${query:+ $query}"
+ elif [[ $mode == commands ]]; then
+  remote="$runner commands"
+ elif [[ $mode == run || $mode == run-status ]]; then
+  # Run Command runs the runner as root; the payload is base64, the id and offset are checked above.
+  sealed=1
+  what='run result'
+  sealed_key
+  if [[ $mode == run ]]; then remote="$runner start $run_payload $cert64"
+  else remote="$runner status $run_id $run_offset $cert64"; fi
  fi
  parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$remote")
  id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'
@@ -263,14 +320,8 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
   sleep 1
  done
- if [[ $mode == capture && $status == Success ]]; then
-  aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text > "$work/sealed" \
-   || fail 'The capture could not be read.'
-  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(open(sys.argv[1]).read()))' "$work/sealed" > "$work/sealed.der" 2>/dev/null \
-   || fail 'The capture could not be decrypted.'
-  # To stdout, so that the decrypted text is never in a file.
-  openssl smime -decrypt -binary -inform DER -inkey "$work/key.pem" -recip "$work/cert.pem" -in "$work/sealed.der" 2>/dev/null \
-   || fail 'The capture could not be decrypted.'
+ if [[ $sealed == 1 && $status == Success ]]; then
+  open_sealed "$id"
   exit 0
  fi
  if [[ $mode == digest && $digest_json == 0 ]]; then
@@ -309,7 +360,7 @@ for r in rows:
     print("  ".join(r[i].ljust(width[i]) for i in range(3)) + "  " + r[3])
 ' || true
  else
-  [[ $mode == capture ]] || aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
+  [[ $sealed == 1 ]] || aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text || true
  fi
  if [[ $status != Success ]]; then
   aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text >&2 || true

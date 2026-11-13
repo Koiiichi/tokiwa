@@ -3,6 +3,7 @@
     "read": "Reads only. The MCP server offers its tool by default.",
     "control": "Changes a session or a project. The MCP server offers its tool only with --allow control.",
     "run": "Runs a command on the host. The MCP server offers it only with --allow run.",
+    "commands": "Runs an entry of the owner's command list on the host. The MCP server offers its tool only with --allow commands.",
     "human": "Needs a person or a terminal: a browser sign-in, hidden input, a root shell or an attached view. Never an MCP tool."
   },
   "patterns": {
@@ -342,6 +343,21 @@
     {
       "command": "new",
       "class": "human"
+    },
+    {
+      "command": "commands",
+      "class": "read",
+      "example": ["commands"]
+    },
+    {
+      "command": "run",
+      "class": "commands",
+      "example": ["run", "review-pr", "pr=42"]
+    },
+    {
+      "command": "run-status",
+      "class": "read",
+      "example": ["run-status", "20261112T183000-7f3a", "0"]
     },
     {
       "command": "attach",
