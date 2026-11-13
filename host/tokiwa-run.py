@@ -1,7 +1,19 @@
 """Run commands that the owner listed, as root, on the host."""
 
+import base64
+import grp
 import json
+import os
+import pwd
 import re
+import secrets
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 
 LIST = Path("/etc/tokiwa/commands.json")
@@ -9,6 +21,9 @@ RUNS = Path("/srv/development/cache/tokiwa-runs")
 LOG = Path("/var/log/tokiwa/run.jsonl")
 HOME = Path("/srv/development/private/homes/workbench")
 SECRETS = HOME / ".tokiwa/secrets.env"
+PRIVATE = Path("/srv/development/private")
+USER = "agent-workspace"
+SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
 PAGE_BYTES = 15000
 MAX_RUNNING = 4
 KEEP_SECONDS = 14 * 86400
@@ -28,6 +43,9 @@ ENTRY_KEYS = {
 }
 ARG_KINDS = ("pattern", "choice", "path_below")
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+ENDS = {"success": "done", "timeout": "timed-out"}
+VIA_PATTERN = r"^(cli|mcp|app)$"
+ACTOR_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
 
 
 class Refused(Exception):
@@ -203,3 +221,461 @@ def fill_argv(argv, filled):
     return [
         PLACEHOLDER.sub(lambda match: filled[match.group(1)], item) for item in argv
     ]
+
+
+def command(argv):
+    """Run a program without a shell; one that cannot start or outlasts 20 s gives exit 127."""
+    # A clean environment: runuser keeps the caller's, with root's HOME, which git run as
+    # agent-workspace cannot read.
+    try:
+        return subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env={"PATH": SAFE_PATH, "LC_ALL": "C"},
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(argv, 127, "", "")
+
+
+def chown(path, user):
+    """Give a path to a user and the group of the same name, without following a link."""
+    os.chown(
+        path, pwd.getpwnam(user).pw_uid, grp.getgrnam(user).gr_gid, follow_symlinks=False
+    )
+
+
+def new_id(now):
+    """Make a run id from a UTC time and a random part."""
+    return time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + "-" + secrets.token_hex(2)
+
+
+def as_user(*argv):
+    return ["runuser", "-u", USER, "--", *argv]
+
+
+def unit_command(run_id, entry, argv, workdir, env_file):
+    """Return the systemd-run call that starts one run as agent-workspace."""
+    folder = RUNS / run_id
+    workbench = entry.get("home", "none") == "workbench"
+    properties = [
+        f"RuntimeMaxSec={entry['timeout_seconds']}",
+        f"StandardOutput=file:{folder}/output",
+        "StandardError=inherit",
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "PrivateTmp=yes",
+        f"ReadWritePaths={folder}",
+    ]
+    if workbench:
+        properties += [
+            f"ReadWritePaths={HOME}",
+            f"InaccessiblePaths={HOME}/.tokiwa",
+            f"InaccessiblePaths={PRIVATE}/peermesh",
+        ]
+    else:
+        properties.append(f"InaccessiblePaths={PRIVATE}")
+    # Secrets travel only in a root-only file: systemctl show prints Environment to every user.
+    if env_file is not None:
+        properties.append(f"EnvironmentFile={env_file}")
+    properties.append(
+        f"ExecStopPost=+/usr/bin/python3 -I {Path(__file__).resolve()} finish {run_id}"
+    )
+    environment = [f"PATH={SAFE_PATH}"]
+    if workbench:
+        environment += [
+            f"HOME={HOME}",
+            f"CLAUDE_CONFIG_DIR={HOME}/.claude",
+            f"CODEX_HOME={HOME}/.codex",
+        ]
+    else:
+        environment.append(f"HOME={folder}")
+    return [
+        "systemd-run",
+        f"--unit=tokiwa-run-{run_id}",
+        f"--uid={USER}",
+        f"--gid={USER}",
+        "--slice=agent-sessions.slice",
+        f"--working-directory={workdir}",
+        "--collect",
+        "--no-block",
+        *(f"--property={item}" for item in properties),
+        *(f"--setenv={item}" for item in environment),
+        "--",
+        *argv,
+    ]
+
+
+def log(line):
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    with os.fdopen(descriptor, "a") as f:
+        f.write(json.dumps(line) + "\n")
+
+
+def open_plain(path, flags):
+    # The run folder belongs to agent-workspace, so any name in it can be a planted link, a FIFO
+    # or a hard link to a root file. O_NONBLOCK keeps a FIFO from stopping the open.
+    descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        os.close(descriptor)
+        raise OSError(f"{path} is not a plain file")
+    return descriptor
+
+
+def read_record(path):
+    # Only a record that this runner wrote counts; agent-workspace can replace any file there.
+    try:
+        descriptor = open_plain(path, os.O_RDONLY)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as f:
+        if os.fstat(f.fileno()).st_uid != os.geteuid():
+            return None
+        try:
+            return json.loads(f.read())
+        except ValueError:
+            return None
+
+
+def write_record(path, record):
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(descriptor, "w") as f:
+        json.dump(record, f)
+
+
+def read_secrets(names):
+    if not names:
+        return {}
+    # The file is the session's `export NAME='value'` lines, and a quoted value can span lines.
+    try:
+        words = shlex.split(SECRETS.read_text(), comments=True)
+    except (OSError, ValueError):
+        raise Refused("The secrets file could not be read.")
+    found = {}
+    for word in words:
+        name, sign, value = word.partition("=")
+        if sign and name in names:
+            found[name] = value
+    for name in names:
+        if name not in found:
+            raise Refused(f"The secret {name} is not in the secrets file.")
+    return found
+
+
+def environment_line(name, value):
+    # systemd reads a plain value as written, apart from its outer spaces; any other value goes
+    # in double quotes, where a backslash escapes these four characters.
+    if re.fullmatch(r"[^\s\\\"'$`]([^\n\\\"'$`]*[^\s\\\"'$`])?", value):
+        return f"{name}={value}\n"
+    return f'{name}="{re.sub(r"([\\\"$`])", r"\\\1", value)}"\n'
+
+
+def count_active():
+    listed = command(
+        ["systemctl", "list-units", "tokiwa-run-*", "--state=active", "--no-legend", "--plain"]
+    )
+    if listed.returncode:
+        raise Refused("The active runs could not be counted.")
+    return len([line for line in listed.stdout.splitlines() if line.strip()])
+
+
+def prune(now):
+    RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
+    for path in RUNS.iterdir():
+        name = path.name.removesuffix(".env")
+        if not re.fullmatch(ID_PATTERN, name):
+            continue
+        if now - path.lstat().st_mtime <= KEEP_SECONDS:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+
+def remove_worktree(clone, work):
+    command(as_user("git", "-C", clone, "worktree", "remove", "--force", str(work)))
+
+
+def start(name, values, via, actor, now=None):
+    """Check a call, start it in its own unit and return its first status.
+
+    Waits up to WAIT_SECONDS for the run to end. Each call writes one log line, also a refused
+    call. Raises Refused, after the log line, when a check fails; then no unit was started.
+    """
+    now = time.time() if now is None else now
+    line = {"at": int(now), "entry": name, "args": values, "via": via}
+    if actor:
+        line["actor"] = actor
+    folder = env_file = clone = None
+    try:
+        entries = load_list(LIST)
+        if name not in entries:
+            raise Refused("The entry is not in the command list.")
+        entry = entries[name]
+        filled = check_call(entry, values)
+        if count_active() >= MAX_RUNNING:
+            raise Refused(f"{MAX_RUNNING} runs are active, the most at one time.")
+        prune(now)
+        while True:
+            run_id = new_id(now)
+            try:
+                (RUNS / run_id).mkdir(mode=0o700)
+                folder = RUNS / run_id
+                break
+            except FileExistsError:
+                continue
+        work = folder / "work"
+        call = {"entry": name, "output_bytes": entry["output_bytes"], "at": now}
+        if entry["cwd"] == "fresh":
+            work.mkdir(mode=0o700)
+            chown(work, USER)
+            chown(folder, USER)
+        else:
+            chown(folder, USER)
+            commit = filled[filled_name("commit", entry["args"]["commit"])]
+            found = command(
+                as_user("git", "-C", filled["clone"], "cat-file", "-e", f"{commit}^{{commit}}")
+            )
+            if found.returncode:
+                raise Refused(f"The commit {commit} is not in the clone.")
+            made = command(
+                as_user(
+                    "git", "-C", filled["clone"], "worktree", "add", "--detach", str(work), commit
+                )
+            )
+            if made.returncode:
+                raise Refused("The worktree could not be made.")
+            clone = call["clone"] = filled["clone"]
+        named = read_secrets(entry.get("secrets", []))
+        if named:
+            env_file = RUNS / f"{run_id}.env"
+            descriptor = os.open(
+                env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+            )
+            with os.fdopen(descriptor, "w") as f:
+                f.write("".join(environment_line(k, v) for k, v in named.items()))
+        write_record(folder / "call.json", call)
+        log({**line, "id": run_id, "state": "running"})
+    except (Refused, OSError, KeyError) as error:
+        # KeyError: the agent-workspace user or group is missing.
+        refusal = error
+        if not isinstance(error, Refused):
+            refusal = Refused("The run could not be prepared.")
+        if clone is not None:
+            remove_worktree(clone, folder / "work")
+        if folder is not None:
+            shutil.rmtree(folder, ignore_errors=True)
+        if env_file is not None:
+            env_file.unlink(missing_ok=True)
+        try:
+            log({**line, "refused": str(refusal)})
+        except OSError:
+            pass
+        raise refusal from None
+    argv = fill_argv(entry["argv"], filled)
+    started = command(unit_command(run_id, entry, argv, work, env_file))
+    if started.returncode:
+        finish(run_id, "start-failed", "")
+    deadline = time.monotonic() + WAIT_SECONDS
+    while not (folder / "end.json").exists() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    return status(run_id, 0)
+
+
+def run_folder(run_id):
+    # The id is checked before it becomes part of a path.
+    if not (isinstance(run_id, str) and re.fullmatch(ID_PATTERN, run_id)):
+        raise Refused("Use a run id from tokiwa run.")
+    folder = RUNS / run_id
+    call = read_record(folder / "call.json")
+    if not isinstance(call, dict):
+        raise Refused("Use a run id from tokiwa run.")
+    return folder, call
+
+
+def status(run_id, offset):
+    """Return the state of a run and the page of its output that starts at a byte offset.
+
+    A run with no end record whose unit is gone reports failed with exit None. Raises Refused
+    for a value that is not the id of a run, or for a negative offset.
+    """
+    folder, call = run_folder(run_id)
+    if not is_int(offset, 0, 10**12):
+        raise Refused("Use an offset from an earlier result.")
+    end = read_record(folder / "end.json")
+    if isinstance(end, dict) and end.get("state") in ("done", "failed", "timed-out"):
+        state, code = end["state"], end.get("exit")
+    else:
+        active = command(["systemctl", "is-active", f"tokiwa-run-{run_id}"]).stdout.strip()
+        # deactivating: the unit's process ended and its finish hook is still writing the end.
+        # A just-started unit that systemd has not loaded yet reads as inactive for a moment.
+        young = time.time() - call.get("at", 0) < WAIT_SECONDS + 5
+        if active in ("active", "activating", "deactivating") or (
+            active == "inactive" and young
+        ):
+            state, code = "running", None
+        else:
+            state, code = "failed", None
+    limit = call["output_bytes"]
+    text, next_offset, size = page(
+        folder / "output", offset, max(0, min(PAGE_BYTES, limit - offset))
+    )
+    if next_offset is not None and next_offset >= limit:
+        next_offset = None
+    return {
+        "id": run_id,
+        "entry": call["entry"],
+        "state": state,
+        "exit": code,
+        "offset": offset,
+        "next_offset": next_offset,
+        "size": size,
+        "truncated": size > limit,
+        "text": text,
+    }
+
+
+def finish(run_id, service_result, exit_status):
+    """Record the end of a run, as its unit's ExecStopPost hook.
+
+    service_result and exit_status are systemd's SERVICE_RESULT and EXIT_STATUS. Removes the
+    run's secret file and worktree and cuts its output to the entry's output_bytes.
+    """
+    folder, call = run_folder(run_id)
+    state = ENDS.get(service_result, "failed")
+    try:
+        code = int(exit_status)
+    except ValueError:
+        code = None
+    try:
+        write_record(folder / "end.json", {"state": state, "exit": code})
+        log({"at": int(time.time()), "id": run_id, "state": state, "exit": code})
+    finally:
+        (RUNS / f"{run_id}.env").unlink(missing_ok=True)
+        if "clone" in call:
+            remove_worktree(call["clone"], folder / "work")
+        try:
+            descriptor = open_plain(folder / "output", os.O_WRONLY)
+        except OSError:
+            pass
+        else:
+            if os.fstat(descriptor).st_size > call["output_bytes"]:
+                os.ftruncate(descriptor, call["output_bytes"])
+            os.close(descriptor)
+
+
+def page(path, offset, limit):
+    """Read up to limit bytes of a file from a byte offset.
+
+    Returns the text, the offset of the next page or None at the end, and the file size. A page
+    can end inside a multibyte character: the cut character decodes as U+FFFD, and the next page
+    starts at the exact byte. A missing file, a link or a file that is not plain reads as empty.
+    """
+    try:
+        descriptor = open_plain(path, os.O_RDONLY)
+    except OSError:
+        return "", None, 0
+    with os.fdopen(descriptor, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        f.seek(offset)
+        data = f.read(limit)
+    end = offset + len(data)
+    return data.decode("utf-8", errors="replace"), end if end < size else None, size
+
+
+def seal(result, certificate_b64):
+    """Encrypt a result to the caller's one-time certificate, as a capture is, and return base64.
+
+    Raises ValueError when the certificate is unusable.
+    """
+    try:
+        certificate = base64.b64decode(certificate_b64, validate=True)
+    except ValueError:
+        raise ValueError("The result could not be encrypted.")
+    sealed = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pem") as pem:
+            pem.write(certificate)
+            pem.flush()
+            sealed = subprocess.run(
+                ["openssl", "smime", "-encrypt", "-aes256", "-binary", "-outform", "DER",
+                 pem.name],
+                input=json.dumps(result, ensure_ascii=False).encode(),
+                capture_output=True,
+                timeout=10,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if sealed is None or sealed.returncode or not sealed.stdout:
+        raise ValueError("The result could not be encrypted.")
+    return base64.b64encode(sealed.stdout).decode()
+
+
+def read_payload(text):
+    try:
+        payload = json.loads(base64.b64decode(text, validate=True))
+    except ValueError:
+        payload = None
+    if not (
+        isinstance(payload, dict)
+        and set(payload) == {"entry", "args"}
+        and isinstance(payload["entry"], str)
+        and isinstance(payload["args"], dict)
+        and all(isinstance(v, str) for v in payload["args"].values())
+    ):
+        raise Refused("The call is not base64 JSON with entry and args.")
+    return payload
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        raise Refused("The command runner needs root.")
+    match argv:
+        case ["commands"]:
+            print(json.dumps(public_view(load_list(LIST))))
+        case ["start", payload, certificate]:
+            call = read_payload(payload)
+            # A certificate that fails here would leave a started run with no id for the caller.
+            try:
+                seal({}, certificate)
+            except ValueError as error:
+                raise Refused(str(error))
+            via = os.environ.get("TOKIWA_VIA", "cli")
+            actor = os.environ.get("TOKIWA_ACTOR", "")
+            print(
+                seal(
+                    start(
+                        call["entry"],
+                        call["args"],
+                        via if re.fullmatch(VIA_PATTERN, via) else "cli",
+                        actor if re.fullmatch(ACTOR_PATTERN, actor) else "",
+                    ),
+                    certificate,
+                )
+            )
+        case ["status", run_id, offset, certificate]:
+            if not re.fullmatch(r"[0-9]{1,12}", offset):
+                raise Refused("Use an offset from an earlier result.")
+            print(seal(status(run_id, int(offset)), certificate))
+        case ["finish", run_id]:
+            finish(
+                run_id,
+                os.environ.get("SERVICE_RESULT", ""),
+                os.environ.get("EXIT_STATUS", ""),
+            )
+        case _:
+            raise Refused("Use commands, start, status or finish.")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except (Refused, ValueError) as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
