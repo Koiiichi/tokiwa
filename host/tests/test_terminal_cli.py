@@ -55,7 +55,10 @@ case "$*" in
   else
    echo 'Workbench server ready.'
   fi ;;
- *get-command-invocation*StandardErrorContent*) printf '%s\n' "${TEST_STDERR:-Workbench unavailable.}" ;;
+ *get-command-invocation*StandardErrorContent*)
+  printf '%s\n' "${TEST_STDERR:-Workbench unavailable.}"
+  # The SSM agent adds this line after a script that exits non-zero.
+  [ "${TEST_STATUS:-}" != Failed ] || echo 'failed to run commands: exit status 1' ;;
  *get-command-invocation*) echo "${TEST_STATUS:-Success}" ;;
  *start-session*)
   # The local terminal as the Session Manager plugin finds it.
@@ -746,6 +749,9 @@ esac
                 self.assertTrue(result.stderr.endswith('Tokiwa: The entry is not in the command list. Nothing was run.\n'),
                                 result.stderr)
                 self.assertNotIn('returned', result.stderr)
+                self.assertNotIn('A run may have started', result.stderr)
+                # The whole stderr of the host is still shown.
+                self.assertIn('failed to run commands: exit status 1\n', result.stderr)
 
     def test_a_run_call_that_did_not_end_may_have_started_a_run(self):
         self.stub_sleep()

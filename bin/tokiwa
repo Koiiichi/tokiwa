@@ -374,8 +374,9 @@ for r in rows:
  if [[ $status != Success ]]; then
   errors=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text) || errors=
   [[ -z $errors ]] || printf '%s\n' "$errors" >&2
-  # A refusal of the command runner names its cause in its last line.
-  refusal=$(printf '%s\n' "$errors" | sed '/^[[:space:]]*$/d' | tail -n 1)
+  # A refusal of the command runner names its cause in its last line. The SSM agent adds
+  # "failed to run commands: exit status N" after it when the script exits non-zero.
+  refusal=$(printf '%s\n' "$errors" | sed -E '/^[[:space:]]*$/d; /^failed to run commands: exit status [0-9]+$/d' | tail -n 1)
   [[ $refusal != *'Nothing was run.' ]] || fail "$refusal"
   # A run call that the host did not refuse may have started a run: the runner can also fail
   # after systemd-run started it.
