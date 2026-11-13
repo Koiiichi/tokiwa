@@ -181,6 +181,77 @@ class ListAndArguments(unittest.TestCase):
         self.assertEqual(view[0]["args"]["repo"], {"choice": ["repo-a"]})
         self.assertNotIn("/w/", json.dumps(view))
 
+    def writable_entry(self, writable, **changes):
+        return entry(
+            argv=["/usr/bin/git", "-C", "{clone}", "pull"],
+            args={
+                "repo": {"choice": {"repo-a": "/ws/a/repo-a"}, "as": "clone"},
+                "pr": {"pattern": "^[1-9][0-9]{0,6}$"},
+                "path": {"path_below": "/ws/a"},
+            },
+            writable=writable,
+            **changes,
+        )
+
+    def load_writable(self, writable, **changes):
+        text = json.dumps({"entries": {"a": self.writable_entry(writable, **changes)}})
+        with mock.patch.object(run, "WORKSPACES", Path("/ws")):
+            return run.load_list(self.write_list(text))["a"]
+
+    def test_a_valid_writable_list_loads(self):
+        self.assertEqual(self.load_writable([])["writable"], [])
+        loaded = self.load_writable(["/ws/shared/repo-b", "{clone}"])
+        self.assertEqual(loaded["writable"], ["/ws/shared/repo-b", "{clone}"])
+
+    def test_an_entry_without_writable_loads(self):
+        path = self.write_list(json.dumps({"entries": {"a": REVIEW_PR}}))
+        self.assertNotIn("writable", run.load_list(path)["a"])
+
+    def test_invalid_writable_lists_are_refused(self):
+        cases = {
+            "not a list": "/ws/a",
+            "item not a string": [5],
+            "relative path": ["ws/a"],
+            "dot dot": ["/ws/a/../b"],
+            "not normal": ["/ws//a"],
+            "trailing slash": ["/ws/a/"],
+            "space": ["/ws/my repo"],
+            "tab": ["/ws/my\trepo"],
+            "dollar": ["/ws/$HOME"],
+            "percent": ["/ws/%h"],
+            "workspaces itself": ["/ws"],
+            "outside": ["/etc"],
+            "beside": ["/ws-other/a"],
+            "pattern argument": ["{pr}"],
+            "path_below argument": ["{path}"],
+            "no argument": ["{missing}"],
+            "partial placeholder": ["/ws/{clone}"],
+            "argument name instead of as": ["{repo}"],
+        }
+        for label, writable in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(run.Refused) as caught:
+                    self.load_writable(writable)
+                text = str(caught.exception)
+                self.assertTrue(text.startswith("The command list is invalid: entry a: "))
+                self.assertTrue(text.endswith("Nothing was run."))
+
+    def test_a_choice_value_that_a_placeholder_names_is_checked(self):
+        for label, value in {
+            "outside": "/etc/repo-a",
+            "workspaces itself": "/ws",
+            "space": "/ws/my repo",
+            "relative": "repo-a",
+        }.items():
+            with self.subTest(label):
+                spec_ = self.writable_entry(["{clone}"])
+                spec_["args"]["repo"]["choice"]["repo-a"] = value
+                path = self.write_list(json.dumps({"entries": {"a": spec_}}))
+                with mock.patch.object(run, "WORKSPACES", Path("/ws")):
+                    with self.assertRaises(run.Refused) as caught:
+                        run.load_list(path)
+                self.assertIn("writable", str(caught.exception))
+
 
 ECHO_PR = {
     "description": "Print a pull request number.",
@@ -232,6 +303,7 @@ class Runs(unittest.TestCase):
             "LOG": self.base / "log/run.jsonl",
             "LIST": self.base / "commands.json",
             "HOME": home,
+            "WORKSPACES": self.base / "ws",
             "SECRETS": home / ".tokiwa/secrets.env",
             "WAIT_SECONDS": 0,
             "command": self.fake_command,
@@ -241,6 +313,8 @@ class Runs(unittest.TestCase):
             patcher = mock.patch.object(run, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        (self.base / "ws/repo-a").mkdir(parents=True)
+        (self.base / "ws/repo-b").mkdir()
         self.calls = []
         self.owners = []
         self.units = ""
@@ -257,8 +331,22 @@ class Runs(unittest.TestCase):
                 "review-pr": REVIEW_PR,
                 "test-at": TEST_AT,
                 "echo-secret": {**ECHO_PR, "secrets": ["API_KEY"]},
+                "pull-repo": self.pull_entry(),
             }
         )
+
+    def pull_entry(self, writable=("{clone}", "FIXED")):
+        ws = self.base / "ws"
+        return {
+            "description": "Pull one clone.",
+            "argv": ["/usr/bin/git", "-C", "{clone}", "pull", "--ff-only"],
+            "args": {"repo": {"choice": {"repo-a": str(ws / "repo-a")}, "as": "clone"}},
+            "cwd": "fresh",
+            "home": "workbench",
+            "writable": [str(ws / "repo-b") if w == "FIXED" else w for w in writable],
+            "timeout_seconds": 300,
+            "output_bytes": 100000,
+        }
 
     def fake_command(self, argv, timeout=20):
         self.calls.append(list(argv))
@@ -357,6 +445,88 @@ class Runs(unittest.TestCase):
             unit,
         )
         self.assertEqual(unit[unit.index("--") + 1 :], argv)
+
+    def test_a_run_unit_gets_each_writable_folder_after_the_other_paths(self):
+        ws = self.base / "ws"
+        result = self.start("pull-repo", {"repo": "repo-a"})
+        (unit,) = self.run_units()
+        folder = run.RUNS / result["id"]
+        paths = [item for item in unit if item.startswith("--property=ReadWritePaths=")]
+        self.assertEqual(
+            paths,
+            [
+                f"--property=ReadWritePaths={folder}/work",
+                f"--property=ReadWritePaths={run.HOME}",
+                f"--property=ReadWritePaths={ws / 'repo-a'}",
+                f"--property=ReadWritePaths={ws / 'repo-b'}",
+            ],
+        )
+
+    def test_an_entry_without_writable_adds_no_path(self):
+        self.start()
+        (unit,) = self.run_units()
+        self.assertEqual(
+            [item for item in unit if "ReadWritePaths" in item],
+            [f"--property=ReadWritePaths={run.RUNS / self.run_ids()[0]}/work"],
+        )
+
+    def test_a_symlinked_writable_folder_gives_its_resolved_path(self):
+        ws = self.base / "ws"
+        (ws / "link").symlink_to(ws / "repo-a")
+        self.write_list({"pull-repo": self.pull_entry(["{clone}", "LINK"])})
+        spec_ = json.loads(run.LIST.read_text())
+        spec_["entries"]["pull-repo"]["writable"][1] = str(ws / "link")
+        run.LIST.write_text(json.dumps(spec_))
+        self.start("pull-repo", {"repo": "repo-a"})
+        (unit,) = self.run_units()
+        self.assertIn(f"--property=ReadWritePaths={ws / 'repo-a'}", unit)
+        self.assertNotIn(f"--property=ReadWritePaths={ws / 'link'}", unit)
+
+    def test_the_git_units_get_no_writable_folder(self):
+        self.write_list({"pull-repo": {**self.pull_entry(), "cwd": "worktree"}})
+        spec_ = json.loads(run.LIST.read_text())
+        entry_ = spec_["entries"]["pull-repo"]
+        entry_["args"]["commit"] = {"pattern": "^[0-9a-f]{7,40}$"}
+        run.LIST.write_text(json.dumps(spec_))
+        self.use_fake_clock()
+        self.start("pull-repo", {"repo": "repo-a", "commit": "1a2b3c4"})
+        gits = [a for a in self.calls_to("systemd-run") if "--wait" in a]
+        self.assertTrue(gits)
+        for argv in gits:
+            self.assertEqual(
+                [item for item in argv if "ReadWritePaths" in item],
+                [item for item in argv if item.startswith("--property=ReadWritePaths=")
+                 and "/.git " in item],
+            )
+            self.assertNotIn(str(self.base / "ws/repo-b"), " ".join(argv))
+
+    def test_a_writable_folder_that_escapes_the_workspace_is_refused(self):
+        ws = self.base / "ws"
+        outside = self.base / "outside"
+        outside.mkdir()
+        def link_out():
+            (ws / "repo-a").symlink_to(outside)
+
+        def write_file():
+            (ws / "repo-a").write_text("x")
+
+        cases = {"link out": link_out, "missing": lambda: None, "a file": write_file}
+        for label, break_it in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(ws / "repo-a", ignore_errors=True)
+                (ws / "repo-a").unlink(missing_ok=True)
+                break_it()
+                self.calls.clear()
+                with self.assertRaises(run.Refused) as caught:
+                    self.start("pull-repo", {"repo": "repo-a"})
+                self.assertEqual(
+                    str(caught.exception),
+                    "The writable folder of pull-repo is not below the workspace folder. "
+                    "Nothing was run.",
+                )
+                self.assertEqual(self.run_units(), [])
+                self.assertEqual(self.run_ids(), [])
+                self.assertIn("refused", self.log_lines()[-1])
 
     def test_every_run_unit_has_the_limits_of_the_session_unit(self):
         folder = run.RUNS / "20261112T183000-7f3a"

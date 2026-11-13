@@ -25,6 +25,7 @@ LOG = Path("/var/log/tokiwa/run.jsonl")
 HOME = Path("/srv/development/private/homes/workbench")
 SECRETS = HOME / ".tokiwa/secrets.env"
 PRIVATE = Path("/srv/development/private")
+WORKSPACES = Path("/srv/development/state/workspaces")
 USER = "agent-workspace"
 SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
 PAGE_BYTES = 15000
@@ -78,6 +79,7 @@ ENTRY_KEYS = {
     "secrets",
     "timeout_seconds",
     "output_bytes",
+    "writable",
 }
 ARG_KINDS = ("pattern", "choice", "path_below")
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
@@ -152,6 +154,36 @@ def filled_name(name, arg):
     return arg.get("as", name)
 
 
+def check_writable_path(path):
+    """Refuse a path that systemd could read wrongly or that is not inside WORKSPACES."""
+    if not (isinstance(path, str) and path.startswith("/") and path == os.path.normpath(path)):
+        raise ValueError(f"writable path {path!r} is not an absolute normal path")
+    if re.search(r"[\s$%]", path):
+        raise ValueError(f"writable path {path} holds a space, a $ or a %")
+    if not Path(path).is_relative_to(WORKSPACES) or Path(path) == WORKSPACES:
+        raise ValueError(f"writable path {path} is not below the workspace folder")
+
+
+def check_writable(writable, args):
+    """Check the writable list of an entry: fixed paths and placeholders of choice arguments."""
+    if not isinstance(writable, list):
+        raise ValueError("writable is not a list")
+    choices = {
+        filled_name(name, arg): arg["choice"] for name, arg in args.items() if "choice" in arg
+    }
+    for item in writable:
+        placeholder = PLACEHOLDER.fullmatch(item) if isinstance(item, str) else None
+        if placeholder is None:
+            if isinstance(item, str) and ("{" in item or "}" in item):
+                raise ValueError(f"writable item {item} is not a whole placeholder")
+            check_writable_path(item)
+        elif placeholder.group(1) not in choices:
+            raise ValueError(f"writable placeholder {item} is not a choice argument")
+        else:
+            for value in choices[placeholder.group(1)].values():
+                check_writable_path(value)
+
+
 def check_entry(entry):
     unknown = set(entry) - ENTRY_KEYS
     if unknown:
@@ -194,6 +226,7 @@ def check_entry(entry):
         raise ValueError("timeout_seconds is not an integer from 1 to 86400")
     if not is_int(entry.get("output_bytes"), 1, 10_000_000):
         raise ValueError("output_bytes is not an integer from 1 to 10000000")
+    check_writable(entry.get("writable", []), args)
     if entry["cwd"] == "worktree":
         clone = [
             arg for name, arg in args.items() if filled_name(name, arg) == "clone"
@@ -280,6 +313,25 @@ def check_call(entry, values):
             raise Refused(f"The value of {name} is not a string.")
         filled[filled_name(name, arg)] = check_value(name, arg, value)
     return filled
+
+
+def resolve_writable(name, entry, filled):
+    """Return the real path of each writable folder of the call, or refuse the call.
+
+    One text covers a missing path, a file and a link that leaves WORKSPACES, so that a refusal
+    does not tell whether a path exists. A link can change after the list was loaded, so the
+    path that the run gets is the resolved one.
+    """
+    outside = Refused(f"The writable folder of {name} is not below the workspace folder.")
+    root = os.path.realpath(WORKSPACES)
+    paths = []
+    for item in entry.get("writable", []):
+        placeholder = PLACEHOLDER.fullmatch(item)
+        path = os.path.realpath(filled[placeholder.group(1)] if placeholder else item)
+        if not (os.path.isdir(path) and Path(path).is_relative_to(root) and path != root):
+            raise outside
+        paths.append(path)
+    return paths
 
 
 def fill_argv(argv, filled):
@@ -380,8 +432,12 @@ def git_command(clone, work, seconds, *argv):
     ]
 
 
-def unit_command(run_id, entry, argv, workdir, env_file):
-    """Return the systemd-run call that starts one run as agent-workspace."""
+def unit_command(run_id, entry, argv, workdir, env_file, writable=()):
+    """Return the systemd-run call that starts one run as agent-workspace.
+
+    writable holds the resolved folders that the entry names. Each gets a ReadWritePaths item,
+    and InaccessiblePaths and file permissions still apply.
+    """
     folder = RUNS / run_id
     workbench = entry.get("home", "none") == "workbench"
     # UMask also makes the output file, which systemd opens as root, mode 0600.
@@ -401,6 +457,7 @@ def unit_command(run_id, entry, argv, workdir, env_file):
         ]
     else:
         properties.append(f"InaccessiblePaths={PRIVATE}")
+    properties += [f"ReadWritePaths={path}" for path in writable]
     # Secrets travel only in a root-only file: systemctl show prints Environment to every user.
     if env_file is not None:
         properties.append(f"EnvironmentFile={env_file}")
@@ -578,6 +635,7 @@ def start(name, values, via, actor, now=None):
             raise Refused("The entry is not in the command list.")
         entry = entries[name]
         filled = check_call(entry, values)
+        writable = resolve_writable(name, entry, filled)
         RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
         # Held until systemd-run returns, so that two calls cannot both pass the count before
         # either unit is listed.
@@ -635,7 +693,7 @@ def start(name, values, via, actor, now=None):
         (folder / "call.json").write_text(json.dumps(call))
         log({**line, "id": run_id, "state": "running"})
         argv = fill_argv(entry["argv"], filled)
-        unit = unit_command(run_id, entry, argv, work, env_file)
+        unit = unit_command(run_id, entry, argv, work, env_file, writable)
         started = command(unit, time_left(deadline))
     except (Refused, OSError, KeyError) as error:
         # KeyError: the agent-workspace user or group is missing.
