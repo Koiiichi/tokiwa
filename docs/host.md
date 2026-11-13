@@ -117,6 +117,7 @@ The installer also makes these paths:
 | --- | --- | --- |
 | `/srv/development/state/workspaces/workbench` | `agent-workspace`, 0750, ACLs for UID 2200 (`rwx`) and UID 1049575 (`r-x`) | The `workbench/` folder: project files. |
 | `/srv/development/private/homes/workbench` | `agent-workspace`, 0700 | The home of the sessions, with `.claude/` and `.codex/` (0700). |
+| `/srv/development/state/runner-clones` | root, 0755 | The [runner clones](#runner-clones) that command entries write or check out. |
 | `/var/log/tokiwa` | root, 0755 | The [run log](#run-log). |
 | `/srv/development/cache/tokiwa-runs` | root, 0755 | The run folders of the command runner, on the cache volume, so the hourly backup leaves them out. |
 | `/srv/development/cache/rootless-home` | `cloud-containers`, 0700 | The home of the engine user. |
@@ -289,10 +290,10 @@ The runner, [`tokiwa-run.py`](../host/tokiwa-run.py), runs as root through Run C
 | `description` | A sentence that `tokiwa commands` shows. |
 | `argv` | The program and its arguments, a list of strings. A `{name}` placeholder is replaced by the checked value of the argument of that name, or of the argument that has `as: name`. A placeholder with no argument makes the list invalid. An item cannot hold a literal `{...}` of the placeholder form, so the `{}` of `find -exec {}` makes the list invalid. |
 | `args` | An object. Each key is an argument name (`^[a-z][a-z0-9_-]{0,47}$`), and the caller gives each argument exactly once. |
-| `cwd` | `fresh`: an empty folder. `worktree`: a detached `git worktree` of a clone at a commit, made before the unit starts and removed when it ends. It needs a `choice` argument with `as: clone` and an argument named `commit`. The runner checks the commit in the clone, never fetches, and refuses an unknown commit. The clone must be a normal clone with a `.git` folder, and its path must not contain a space. git checks the commit and adds and removes the worktree as `agent-workspace`, in a unit with the limits of a run that can write only the clone's `.git` folder and the run's `work` folder, and git runs no hook and no file system monitor (`core.hooksPath=/dev/null`, `core.fsmonitor=false`). |
+| `cwd` | `fresh`: an empty folder. `worktree`: a detached `git worktree` of a clone at a commit, made before the unit starts and removed when it ends. It needs a `choice` argument with `as: clone` and an argument named `commit`. The runner checks the commit in the clone, never fetches, and refuses an unknown commit. The clone must be a [runner clone](#runner-clones): a normal clone with a `.git` folder, below `/srv/development/state/runner-clones`, with a path of only `A-Za-z0-9._@+/-`. The runner refuses a list whose clone is elsewhere, and a call whose clone has an ancestor that is not safe. git checks the commit and adds and removes the worktree as `agent-workspace`, in a unit with the limits of a run that can write only the clone's `.git` folder and the run's `work` folder, and git runs no hook and no file system monitor (`core.hooksPath=/dev/null`, `core.fsmonitor=false`). |
 | `home` | `none` (the default): `HOME` is the run's `work` folder, and `/srv/development/private` is hidden from a read by path. `workbench`: `HOME` is the workbench home, with `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, for an entry that needs the model sign-ins. `~/.tokiwa` and the peermesh folder stay hidden in this mode. |
 | `secrets` | Names from `~/.tokiwa/secrets.env` that the program gets as environment variables. Default none. |
-| `writable` | A list of folders that the run may also write, default none. Each item is an absolute path that the owner writes, or a whole-item placeholder `{name}` that names a `choice` argument (a placeholder of a `pattern` or `path_below` argument makes the list invalid). The caller never types a writable path. Every fixed path and every value of a named `choice` must be absolute and normal (no `..`, no repeated or trailing `/`), hold no space, tab, `$` or `%`, and be below `/srv/development/state/workspaces` but not that folder itself. At each call the runner resolves each path, and refuses the call with one text when the result is missing, is not a folder or is not below that folder, so a refusal does not tell whether a path exists. The unit gets one `ReadWritePaths` item for each resolved path. The git units do not. `InaccessiblePaths` still win and file permissions still apply, so the folder must be writable by `agent-workspace`. |
+| `writable` | A list of folders that the run may also write, default none. Each item is an absolute path that the owner writes, or a whole-item placeholder `{name}` that names a `choice` argument (a placeholder of a `pattern` or `path_below` argument makes the list invalid). The caller never types a writable path. Every fixed path and every value of a named `choice` must be absolute and normal (no `..`, no repeated or trailing `/`), hold only the characters `A-Za-z0-9._@+/-`, and be below `/srv/development/state/runner-clones` but not that folder itself. At each call the runner resolves each path and refuses the call with one text, `The writable folder of ENTRY is not a runner clone.`, unless the result is a [runner clone](#runner-clones). The text is the same when a path is missing, so a refusal does not tell whether a path exists. The unit gets one `ReadWritePaths` item for each resolved path. The git units do not. `InaccessiblePaths` still win and file permissions still apply. |
 | `timeout_seconds` | From 1 to 86400. The unit stops at this time and the run is `timed-out`. |
 | `output_bytes` | From 1 to 10,000,000. The runner keeps the first part of the output and marks `truncated`. |
 
@@ -319,7 +320,7 @@ An example entry, with neutral names. It runs the review script of one clone for
       "description": "Run the review script of one repository for a pull request at a commit.",
       "argv": ["{clone}/scripts/review.sh", "--pr", "{pr}", "--commit", "{commit}"],
       "args": {
-        "repo":   {"choice": {"repo-a": "/srv/development/state/workspaces/workbench/repo-a"}, "as": "clone"},
+        "repo":   {"choice": {"repo-a": "/srv/development/state/runner-clones/repo-a"}, "as": "clone"},
         "pr":     {"pattern": "^[1-9][0-9]{0,6}$"},
         "commit": {"pattern": "^[0-9a-f]{7,40}$"}
       },
@@ -344,7 +345,7 @@ An entry that updates one clone names it in `writable`. This entry pulls one clo
       "description": "Pull one clone.",
       "argv": ["/usr/bin/git", "-C", "{clone}", "pull", "--ff-only"],
       "args": {
-        "repo": {"choice": {"repo-a": "/srv/development/state/workspaces/workbench/repo-a"}, "as": "clone"}
+        "repo": {"choice": {"repo-a": "/srv/development/state/runner-clones/repo-a"}, "as": "clone"}
       },
       "cwd": "fresh",
       "home": "workbench",
@@ -359,6 +360,19 @@ An entry that updates one clone names it in `writable`. This entry pulls one clo
 A fetch or a pull needs `home: workbench`, because the Git credentials are in the workbench home. The git hooks of that clone run inside the run's sandbox, as `agent-workspace`, and the run can write the folders of `writable` and nothing else outside its own folder and the workbench home.
 
 To edit the list, open `tokiwa admin`, edit the file and save it. The next call reads the new list. Check it with `tokiwa commands`: an invalid list refuses with the reason. Then reconnect a local agent with `tokiwa mcp --allow commands`.
+
+### Runner clones
+
+A runner clone is a clone below `/srv/development/state/runner-clones`. Only root can change that folder (root, 0755), so a session can read a runner clone and cannot replace it or any folder above it. The clone folder itself belongs to `agent-workspace`, so a run can write inside it. A `writable` item and the clone of a `cwd: worktree` entry use only runner clones. The reason is that a run unit mounts a writable path after the runner checks it. In a folder that a session can write, the session could swap the clone for a link between the check and the mount. The runner also refuses a call when a clone is a link, when an ancestor is a link, is not owned by root or can be written by a group or by others.
+
+To add one, open `tokiwa admin` and run:
+
+```bash
+git clone URL /srv/development/state/runner-clones/repo-a
+chown -R agent-workspace:agent-workspace /srv/development/state/runner-clones/repo-a
+```
+
+Then use the path as a `choice` value or as a `writable` item. Keep the path to the characters `A-Za-z0-9._@+/-`.
 
 ## Run log
 

@@ -87,7 +87,7 @@ One entry, as an example:
       "description": "Run the review script of one repository for a pull request at a commit.",
       "argv": ["{clone}/scripts/review.sh", "--pr", "{pr}", "--commit", "{commit}"],
       "args": {
-        "repo":   {"choice": {"repo-a": "/srv/development/state/workspaces/workbench/repo-a"}, "as": "clone"},
+        "repo":   {"choice": {"repo-a": "/srv/development/state/runner-clones/repo-a"}, "as": "clone"},
         "pr":     {"pattern": "^[1-9][0-9]{0,6}$"},
         "commit": {"pattern": "^[0-9a-f]{7,40}$"}
       },
@@ -110,7 +110,7 @@ One entry, as an example:
 - `secrets`: names from `~/.tokiwa/secrets.env` that the process gets as environment variables. Default none. The root runner reads the file, passes only the named values, and never prints one.
 - `PATH` is fixed (`/usr/local/bin:/usr/bin:/bin`), and no other variable from the caller passes.
 - The unit's writable paths are its run folder, for `home: workbench` the workbench home, and the folders of `writable`. Every other path is read-only, as in `cloud-workbench.service` (`ProtectSystem=strict`, `NoNewPrivileges=yes`).
-- `writable`: a list of folders that the run may also write, default none. An item is an absolute path that the owner writes, or a whole-item `{name}` placeholder of a `choice` argument; the caller never types a path. The runner checks each fixed path and each choice value when it loads the list (absolute, normal, no whitespace, `$` or `%`, below `/srv/development/state/workspaces` and not that folder). At each call it resolves each path and refuses the call, with one text, when the result is missing, is not a folder or is not below the workspace folder. The run unit gets one `ReadWritePaths` item for each resolved path, and the git units get none. An entry that pulls or fetches one clone names that clone here.
+- `writable`: a list of folders that the run may also write, default none. An item is an absolute path that the owner writes, or a whole-item `{name}` placeholder of a `choice` argument; the caller never types a path. Every writable path and the clone of a `cwd: worktree` entry must be a runner clone: a clone below `/srv/development/state/runner-clones` (root, 0755), which a session can read and cannot change, with a path of only `A-Za-z0-9._@+/-` so that systemd cannot split or unquote it. The runner checks the paths when it loads the list. At each call it resolves each path, and refuses the call with one text when the folder is missing, is a link or has an ancestor that is a link, is not owned by root or can be written by a group or others. The run unit gets one `ReadWritePaths` item for each resolved path, and the git units get none. The owner makes a runner clone from `tokiwa admin` (`git clone`, then `chown -R agent-workspace:agent-workspace`). A folder below the workspace folder cannot serve, because a session could swap it for a link between the check and the mount.
 - The list file is checked at each call: a list that fails to parse, or an entry that fails these rules, refuses the call.
 
 ### Calls
@@ -156,6 +156,7 @@ Each refusal names the cause and ends with `Nothing was run.`: unknown entry, mi
 - A run can reach the model sign-ins and the saved secrets through the processes of the sessions, because it runs as the same user. `home: none` hides them only from a read by path. The owner lists only commands that they would run in a session (Owner, 2026-11-13).
 - The list is on the host and only the owner changes it from a root terminal (request).
 - An entry can name the folders its run may also write, in `writable`, so that a `git pull` or `git fetch` entry can update one clone. The caller never types a writable path (owner, 2026-11-13).
+- Writable folders and worktree clones are runner clones only, below `/srv/development/state/runner-clones`, which only root changes, because a session can swap any folder it can write (owner, 2026-11-13).
 - The first entries the owner wants, as examples: a review script of a coordination repository for a pull request at a commit; a repository's test suite at a commit; read a file below the workspace root; `git pull` in one fixed clone (request).
 
 ## My calls (check these)
