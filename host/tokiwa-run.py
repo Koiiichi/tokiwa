@@ -10,6 +10,8 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,9 +30,35 @@ PAGE_BYTES = 15000
 MAX_RUNNING = 4
 KEEP_SECONDS = 14 * 86400
 WAIT_SECONDS = 8
+# The launcher polls Run Command for about 15 seconds.
+START_SECONDS = 12
+SECRETS_BYTES = 1 << 20
+TIMED_OUT = 124
 ID_PATTERN = r"^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
 NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,47}$"
 SECRET_PATTERN = r"^[A-Z_][A-Z0-9_]{0,63}$"
+# The root ExecStopPost hook gets the unit's EnvironmentFile too, so a secret must not name a
+# variable that changes how a loader, an interpreter, systemd or a session behaves.
+RESERVED_PREFIXES = ("LD_", "MALLOC_", "PYTHON", "SYSTEMD_", "TOKIWA_", "TMUX", "LISTEN_")
+RESERVED_NAMES = {
+    "GCONV_PATH",
+    "LOCPATH",
+    "PATH",
+    "HOME",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "PWD",
+    "BROWSER",
+    "PS1",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "SERVICE_RESULT",
+    "EXIT_CODE",
+    "EXIT_STATUS",
+    "CREDENTIALS_DIRECTORY",
+    "NOTIFY_SOCKET",
+}
 ENTRY_KEYS = {
     "description",
     "argv",
@@ -129,6 +157,9 @@ def check_entry(entry):
         and all(isinstance(s, str) and re.fullmatch(SECRET_PATTERN, s) for s in secrets)
     ):
         raise ValueError("secrets holds an invalid name")
+    for name in secrets:
+        if name.startswith(RESERVED_PREFIXES) or name in RESERVED_NAMES:
+            raise ValueError(f"secret name {name} is reserved")
     if not is_int(entry.get("timeout_seconds"), 1, 86400):
         raise ValueError("timeout_seconds is not an integer from 1 to 86400")
     if not is_int(entry.get("output_bytes"), 1, 10_000_000):
@@ -223,21 +254,47 @@ def fill_argv(argv, filled):
     ]
 
 
-def command(argv):
-    """Run a program without a shell; one that cannot start or outlasts 20 s gives exit 127."""
+def command(argv, timeout=20):
+    """Run a program without a shell and return its result.
+
+    A program that cannot start gives exit 127. One that outlasts timeout seconds is killed with
+    its whole process group and gives exit TIMED_OUT.
+    """
     # A clean environment: runuser keeps the caller's, with root's HOME, which git run as
     # agent-workspace cannot read.
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             env={"PATH": SAFE_PATH, "LC_ALL": "C"},
-            timeout=20,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return subprocess.CompletedProcess(argv, 127, "", "")
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        return subprocess.CompletedProcess(argv, TIMED_OUT, "", "")
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def clock():
+    return time.monotonic()
+
+
+def uid_of(user):
+    return pwd.getpwnam(user).pw_uid
 
 
 def chown(path, user):
@@ -303,7 +360,9 @@ def unit_command(run_id, entry, argv, workdir, env_file):
         *(f"--property={item}" for item in properties),
         *(f"--setenv={item}" for item in environment),
         "--",
-        *argv,
+        # systemd expands $NAME and ${NAME} in a command line with the unit's environment,
+        # secrets included, and splits a bare $NAME at spaces; $$ is a literal $.
+        *(item.replace("$", "$$") for item in argv),
     ]
 
 
@@ -321,13 +380,39 @@ def read_record(path):
         return None
 
 
+def read_secrets_text():
+    # agent-workspace owns the folder and the file, so either name can be a planted link, and
+    # the file can be a FIFO that blocks a read or a device that never ends.
+    home = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        folder = os.open(
+            SECRETS.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=home
+        )
+    finally:
+        os.close(home)
+    try:
+        descriptor = os.open(
+            SECRETS.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder
+        )
+    finally:
+        os.close(folder)
+    with os.fdopen(descriptor, "rb") as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != uid_of(USER):
+            raise OSError("the secrets file is not a plain file of agent-workspace")
+        data = f.read(SECRETS_BYTES + 1)
+    if len(data) > SECRETS_BYTES:
+        raise OSError("the secrets file is too large")
+    return data.decode()
+
+
 def read_secrets(names):
     if not names:
         return {}
     # The file is the session's `export NAME='value'` lines, and a quoted value can span lines.
     try:
-        words = shlex.split(SECRETS.read_text(), comments=True)
-    except (OSError, ValueError):
+        words = shlex.split(read_secrets_text(), comments=True)
+    except (OSError, KeyError, ValueError):
         raise Refused("The secrets file could not be read.")
     found = {}
     for word in words:
@@ -348,7 +433,7 @@ def environment_line(name, value):
     return f'{name}="{escaped}"\n'
 
 
-def count_active():
+def count_active(timeout):
     listed = command(
         [
             "systemctl",
@@ -357,8 +442,11 @@ def count_active():
             "--no-legend",
             "--plain",
             "--state=activating,active,deactivating",
-        ]
+        ],
+        timeout,
     )
+    if listed.returncode == TIMED_OUT:
+        raise Refused("The call ran out of time.")
     if listed.returncode:
         raise Refused("The active runs could not be counted.")
     return len([line for line in listed.stdout.splitlines() if line.strip()])
@@ -377,6 +465,26 @@ def prune(now):
             path.unlink(missing_ok=True)
 
 
+def time_left(deadline):
+    left = deadline - clock()
+    if left <= 0:
+        raise Refused("The call ran out of time.")
+    return left
+
+
+def lock_runs(deadline):
+    lock = os.open(RUNS / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock
+        except BlockingIOError:
+            if clock() >= deadline:
+                os.close(lock)
+                raise Refused("The command runner is busy.")
+            time.sleep(0.05)
+
+
 def remove_worktree(clone, work):
     command(as_user("git", "-C", clone, "worktree", "remove", "--force", str(work)))
 
@@ -384,9 +492,11 @@ def remove_worktree(clone, work):
 def start(name, values, via, actor, now=None):
     """Check a call, start it in its own unit and return its first status.
 
-    Waits up to WAIT_SECONDS for the run to end. Each call writes one log line, also a refused
-    call. Raises Refused, after the log line, when a check fails; then no unit was started.
+    The whole call takes at most about START_SECONDS, and it waits up to WAIT_SECONDS of that
+    for the run to end. Each call writes one log line, also a refused call. Raises Refused,
+    after the log line, when a check fails or the time runs out; then no unit was started.
     """
+    deadline = clock() + START_SECONDS
     now = time.time() if now is None else now
     line = {"at": int(now), "entry": name, "args": values, "via": via}
     if actor:
@@ -401,9 +511,8 @@ def start(name, values, via, actor, now=None):
         RUNS.mkdir(parents=True, exist_ok=True, mode=0o755)
         # Held until systemd-run returns, so that two calls cannot both pass the count before
         # either unit is listed.
-        lock = os.open(RUNS / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if count_active() >= MAX_RUNNING:
+        lock = lock_runs(deadline)
+        if count_active(time_left(deadline)) >= MAX_RUNNING:
             raise Refused(f"{MAX_RUNNING} runs are active, the most at one time.")
         prune(now)
         while True:
@@ -424,18 +533,25 @@ def start(name, values, via, actor, now=None):
         if entry["cwd"] == "worktree":
             commit = filled[filled_name("commit", entry["args"]["commit"])]
             found = command(
-                as_user("git", "-C", filled["clone"], "cat-file", "-e", f"{commit}^{{commit}}")
+                as_user("git", "-C", filled["clone"], "cat-file", "-e", f"{commit}^{{commit}}"),
+                time_left(deadline),
             )
+            if found.returncode == TIMED_OUT:
+                raise Refused("The call ran out of time.")
             if found.returncode:
                 raise Refused(f"The commit {commit} is not in the clone.")
+            # Set before the add, so that a refusal also removes a worktree that is half made.
+            clone = call["clone"] = filled["clone"]
             made = command(
                 as_user(
-                    "git", "-C", filled["clone"], "worktree", "add", "--detach", str(work), commit
-                )
+                    "git", "-C", clone, "worktree", "add", "--detach", str(work), commit
+                ),
+                time_left(deadline),
             )
+            if made.returncode == TIMED_OUT:
+                raise Refused("The call ran out of time.")
             if made.returncode:
                 raise Refused("The worktree could not be made.")
-            clone = call["clone"] = filled["clone"]
         named = read_secrets(entry.get("secrets", []))
         if named:
             env_file = RUNS / f"{run_id}.env"
@@ -445,7 +561,8 @@ def start(name, values, via, actor, now=None):
         (folder / "call.json").write_text(json.dumps(call))
         log({**line, "id": run_id, "state": "running"})
         argv = fill_argv(entry["argv"], filled)
-        started = command(unit_command(run_id, entry, argv, work, env_file))
+        unit = unit_command(run_id, entry, argv, work, env_file)
+        started = command(unit, time_left(deadline))
     except (Refused, OSError, KeyError) as error:
         # KeyError: the agent-workspace user or group is missing.
         refusal = error
@@ -465,11 +582,12 @@ def start(name, values, via, actor, now=None):
     finally:
         if lock is not None:
             os.close(lock)
-    # A unit that started and then failed has already run its finish hook.
-    if started.returncode and not (folder / "end.json").exists():
+    # A unit that started and then failed has already run its finish hook. After a timeout the
+    # unit may still start, so status decides from systemd.
+    if started.returncode not in (0, TIMED_OUT) and not (folder / "end.json").exists():
         finish(run_id, "start-failed", "")
-    deadline = time.monotonic() + WAIT_SECONDS
-    while not (folder / "end.json").exists() and time.monotonic() < deadline:
+    wait_until = min(deadline, clock() + WAIT_SECONDS)
+    while not (folder / "end.json").exists() and clock() < wait_until:
         time.sleep(0.25)
     return status(run_id, 0)
 
@@ -494,10 +612,13 @@ def status(run_id, offset):
     folder, call = run_folder(run_id)
     if not is_int(offset, 0, 10**12):
         raise Refused("Use an offset from an earlier result.")
+    limit = call["output_bytes"]
+    text, next_offset, size = page(folder / "output", offset, PAGE_BYTES, stop=limit)
     end = read_record(folder / "end.json")
     if isinstance(end, dict):
-        state, code = end["state"], end["exit"]
+        state, code, truncated = end["state"], end["exit"], end["truncated"]
     else:
+        truncated = size > limit
         active = command(["systemctl", "is-active", f"tokiwa-run-{run_id}"]).stdout.strip()
         # deactivating: the unit's process ended and its finish hook is still writing the end.
         # A just-started unit that systemd has not loaded yet reads as inactive for a moment.
@@ -508,8 +629,6 @@ def status(run_id, offset):
             state, code = "running", None
         else:
             state, code = "failed", None
-    limit = call["output_bytes"]
-    text, next_offset, size = page(folder / "output", offset, PAGE_BYTES, stop=limit)
     return {
         "id": run_id,
         "entry": call["entry"],
@@ -518,7 +637,7 @@ def status(run_id, offset):
         "offset": offset,
         "next_offset": next_offset,
         "size": size,
-        "truncated": size > limit,
+        "truncated": truncated,
         "text": text,
     }
 
@@ -535,15 +654,19 @@ def finish(run_id, service_result, exit_status):
         code = int(exit_status)
     except ValueError:
         code = None
+    output = folder / "output"
+    # Recorded here, because the cut below makes the file no larger than output_bytes.
+    truncated = output.exists() and output.stat().st_size > call["output_bytes"]
     try:
-        (folder / "end.json").write_text(json.dumps({"state": state, "exit": code}))
+        (folder / "end.json").write_text(
+            json.dumps({"state": state, "exit": code, "truncated": truncated})
+        )
         log({"at": int(time.time()), "id": run_id, "state": state, "exit": code})
     finally:
         (RUNS / f"{run_id}.env").unlink(missing_ok=True)
         if "clone" in call:
             remove_worktree(call["clone"], folder / "work")
-        output = folder / "output"
-        if output.exists() and output.stat().st_size > call["output_bytes"]:
+        if truncated:
             os.truncate(output, call["output_bytes"])
 
 

@@ -1,10 +1,13 @@
 """Test the command list and the argument checks of the root runner."""
 
 import base64
+import contextlib
 import fcntl
 import importlib.util
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +21,8 @@ spec = importlib.util.spec_from_file_location(
 )
 run = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run)
+REAL_COMMAND = run.command
+REAL_SEAL = run.seal
 
 REVIEW_PR = {
     "description": "Run the review script of one repository for a pull request.",
@@ -79,6 +84,22 @@ class ListAndArguments(unittest.TestCase):
                 with self.assertRaises(run.Refused) as caught:
                     run.load_list(self.write_list(text))
                 self.assertTrue(str(caught.exception).endswith("Nothing was run."))
+
+    def test_reserved_secret_names_are_refused(self):
+        for name in (
+            "LD_PRELOAD", "MALLOC_CHECK_", "PYTHONPATH", "SYSTEMD_LOG_LEVEL", "TOKIWA_VIA",
+            "TMUX", "TMUX_TMPDIR", "LISTEN_FDS", "GCONV_PATH", "LOCPATH", "PATH", "HOME",
+            "SHELL", "USER", "LOGNAME", "PWD", "BROWSER", "PS1", "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME", "SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS",
+            "CREDENTIALS_DIRECTORY", "NOTIFY_SOCKET",
+        ):
+            with self.subTest(name):
+                path = self.write_list(json.dumps({"entries": {"a": entry(secrets=[name])}}))
+                with self.assertRaises(run.Refused) as caught:
+                    run.load_list(path)
+                self.assertIn("reserved", str(caught.exception))
+        path = self.write_list(json.dumps({"entries": {"a": entry(secrets=["API_KEY"])}}))
+        self.assertEqual(run.load_list(path)["a"]["secrets"], ["API_KEY"])
 
     def test_check_call_fills_and_renames(self):
         self.assertEqual(
@@ -186,6 +207,7 @@ class Runs(unittest.TestCase):
             "WAIT_SECONDS": 0,
             "command": self.fake_command,
             "chown": lambda path, user: self.owners.append((Path(path), user)),
+            "uid_of": lambda user: os.getuid(),
         }.items():
             patcher = mock.patch.object(run, name, value)
             patcher.start()
@@ -196,6 +218,8 @@ class Runs(unittest.TestCase):
         self.active = "active"
         self.commit_known = True
         self.start_code = 0
+        self.timeouts = []
+        self.step_seconds = {}
         self.lock_free_during_start = None
         self.write_list(
             {
@@ -206,8 +230,12 @@ class Runs(unittest.TestCase):
             }
         )
 
-    def fake_command(self, argv):
+    def fake_command(self, argv, timeout=20):
         self.calls.append(list(argv))
+        self.timeouts.append(timeout)
+        for word, seconds in self.step_seconds.items():
+            if word in argv:
+                self.elapsed += seconds
         code, stdout = 0, ""
         if argv[:2] == ["systemctl", "list-units"]:
             stdout = self.units
@@ -280,6 +308,13 @@ class Runs(unittest.TestCase):
         )
         self.assertEqual(unit[unit.index("--") + 1 :], argv)
 
+    def test_unit_command_keeps_each_dollar_literal(self):
+        unit = run.unit_command(
+            "20261112T183000-7f3a", ECHO_PR, ["/bin/echo", "${API_KEY} $HOME"],
+            run.RUNS / "20261112T183000-7f3a/work", None,
+        )
+        self.assertEqual(unit[unit.index("--") + 1 :], ["/bin/echo", "$${API_KEY} $$HOME"])
+
     def test_unit_command_for_a_workbench_run_keeps_secrets_hidden(self):
         folder = run.RUNS / "20261112T183000-7f3a"
         env_file = run.RUNS / "20261112T183000-7f3a.env"
@@ -342,6 +377,53 @@ class Runs(unittest.TestCase):
                 self.assertFalse(self.calls_to("systemd-run"))
                 self.assertEqual(list(run.RUNS.glob("*.env")), [])
                 self.assertEqual(self.run_ids(), [])
+
+    def test_a_secrets_file_that_is_not_plain_is_refused(self):
+        tokiwa = run.SECRETS.parent
+        elsewhere = self.base / "elsewhere"
+
+        def planted_file_link(stack):
+            tokiwa.mkdir(parents=True)
+            (elsewhere / "secrets.env").write_text("export API_KEY='x'\n")
+            run.SECRETS.symlink_to(elsewhere / "secrets.env")
+
+        def planted_folder_link(stack):
+            (elsewhere / "secrets.env").write_text("export API_KEY='x'\n")
+            run.HOME.mkdir(parents=True, exist_ok=True)
+            tokiwa.symlink_to(elsewhere)
+
+        def fifo(stack):
+            tokiwa.mkdir(parents=True)
+            os.mkfifo(run.SECRETS)
+
+        def other_owner(stack):
+            tokiwa.mkdir(parents=True)
+            run.SECRETS.write_text("export API_KEY='x'\n")
+            stack.enter_context(
+                mock.patch.object(run, "uid_of", lambda user: os.getuid() + 1)
+            )
+
+        def too_large(stack):
+            tokiwa.mkdir(parents=True)
+            run.SECRETS.write_text("export API_KEY='x'\n" + "#" * (1 << 20))
+
+        for plant in (planted_file_link, planted_folder_link, fifo, other_owner, too_large):
+            with self.subTest(plant.__name__), contextlib.ExitStack() as stack:
+                elsewhere.mkdir()
+                plant(stack)
+                with self.assertRaises(run.Refused) as caught:
+                    self.start("echo-secret")
+                self.assertEqual(
+                    str(caught.exception),
+                    "The secrets file could not be read. Nothing was run.",
+                )
+                self.assertFalse(self.calls_to("systemd-run"))
+                self.assertEqual(list(run.RUNS.glob("*.env")), [])
+                if tokiwa.is_symlink():
+                    tokiwa.unlink()
+                else:
+                    shutil.rmtree(tokiwa)
+                shutil.rmtree(elsewhere)
 
     def test_a_missing_secret_is_refused(self):
         run.SECRETS.parent.mkdir(parents=True)
@@ -455,7 +537,7 @@ class Runs(unittest.TestCase):
         result = self.start()
         run.finish(result["id"], "timeout", "")
         end = json.loads((run.RUNS / result["id"] / "end.json").read_text())
-        self.assertEqual(end, {"state": "timed-out", "exit": None})
+        self.assertEqual(end, {"state": "timed-out", "exit": None, "truncated": False})
         _, second = self.log_lines()
         self.assertEqual(set(second), {"at", "id", "state", "exit"})
         self.assertEqual(
@@ -516,6 +598,8 @@ class Runs(unittest.TestCase):
         self.assertEqual((past["next_offset"], past["text"]), (None, ""))
         run.finish(result["id"], "success", "0")
         self.assertEqual(output.stat().st_size, 30000)
+        after = run.status(result["id"], 0)
+        self.assertEqual((after["truncated"], after["size"]), (True, 30000))
 
     def test_page_splits_inside_a_character(self):
         path = self.base / "output"
@@ -553,6 +637,55 @@ class Runs(unittest.TestCase):
                     "Use a run id from tokiwa run. Nothing was run.",
                 )
         self.assertEqual(self.calls, [])
+
+    def use_fake_clock(self):
+        self.elapsed = 0.0
+        self.enterContext(mock.patch.object(run, "clock", lambda: 1000.0 + self.elapsed))
+
+    def test_each_command_of_start_gets_the_time_left(self):
+        self.use_fake_clock()
+        self.step_seconds = {"cat-file": 5}
+        self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
+        steps = {}
+        for argv, timeout in zip(self.calls, self.timeouts):
+            word = next(w for w in ("list-units", "cat-file", "add", "systemd-run",
+                                    "is-active") if w in argv)
+            steps[word] = timeout
+        self.assertEqual(
+            steps,
+            {"list-units": 12, "cat-file": 12, "add": 7, "systemd-run": 7, "is-active": 20},
+        )
+
+    def test_a_start_that_runs_out_of_time_is_refused_and_cleaned(self):
+        self.use_fake_clock()
+        self.step_seconds = {"add": 13}
+        with self.assertRaises(run.Refused) as caught:
+            self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
+        self.assertEqual(str(caught.exception), "The call ran out of time. Nothing was run.")
+        self.assertFalse(self.calls_to("systemd-run"))
+        self.assertIn("remove", self.calls[-1])
+        self.assertEqual(self.run_ids(), [])
+        self.assertIn("refused", self.log_lines()[-1])
+
+    def test_a_busy_runner_refuses_the_call(self):
+        self.enterContext(mock.patch.object(run, "START_SECONDS", 0.2))
+        run.RUNS.mkdir()
+        with open(run.RUNS / ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with self.assertRaises(run.Refused) as caught:
+                self.start()
+        self.assertEqual(
+            str(caught.exception), "The command runner is busy. Nothing was run."
+        )
+        self.assertEqual(self.calls, [])
+        self.assertIn("refused", self.log_lines()[-1])
+        self.assertEqual(self.run_ids(), [])
+
+    def test_a_command_that_outlasts_its_time_is_killed_with_its_group(self):
+        began = time.monotonic()
+        done = REAL_COMMAND(["/bin/sh", "-c", "sleep 30 & sleep 30"], 0.3)
+        self.assertEqual(done.returncode, run.TIMED_OUT)
+        self.assertLess(time.monotonic() - began, 5)
 
     def test_old_runs_are_pruned(self):
         now = time.time()
@@ -600,6 +733,101 @@ class Runs(unittest.TestCase):
             done.stderr, "The command runner needs root. Nothing was run.\n"
         )
         self.assertEqual(done.stdout, "")
+
+
+
+class Cli(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.started = []
+        for target, name, value in (
+            (run.os, "geteuid", lambda: 0),
+            (run, "command", lambda argv, timeout=20: self.calls.append(argv)),
+            (run, "start", lambda *call: self.started.append(call) or {"id": "x"}),
+            (run, "seal", lambda result, certificate: "sealed"),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("TOKIWA_VIA", "TOKIWA_ACTOR", "SERVICE_RESULT", "EXIT_STATUS"):
+            os.environ.pop(name, None)
+
+    def main(self, *argv):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            run.main(list(argv))
+        return printed.getvalue()
+
+    def payload(self, value):
+        return base64.b64encode(json.dumps(value).encode()).decode()
+
+    def test_finish_reads_the_result_from_the_environment(self):
+        finished = []
+        self.enterContext(
+            mock.patch.object(run, "finish", lambda *call: finished.append(call))
+        )
+        os.environ.update(SERVICE_RESULT="exit-code", EXIT_STATUS="3")
+        self.main("finish", "20261112T183000-7f3a")
+        self.assertEqual(finished, [("20261112T183000-7f3a", "exit-code", "3")])
+
+    def test_start_reads_the_payload_and_prints_the_sealed_result(self):
+        os.environ.update(TOKIWA_VIA="mcp", TOKIWA_ACTOR="orchestrator-a")
+        printed = self.main(
+            "start", self.payload({"entry": "echo-pr", "args": {"pr": "42"}}), "cert"
+        )
+        self.assertEqual(printed, "sealed\n")
+        self.assertEqual(self.started, [("echo-pr", {"pr": "42"}, "mcp", "orchestrator-a")])
+
+    def test_via_and_actor_fall_back_as_the_launcher_does(self):
+        cases = {
+            ("app", "orchestrator-a"): ("app", "orchestrator-a"),
+            ("shell", "bad;rm"): ("cli", ""),
+            (None, None): ("cli", ""),
+        }
+        for (via, actor), expected in cases.items():
+            with self.subTest(via=via, actor=actor):
+                self.started.clear()
+                for name, value in (("TOKIWA_VIA", via), ("TOKIWA_ACTOR", actor)):
+                    os.environ.pop(name, None)
+                    if value is not None:
+                        os.environ[name] = value
+                self.main("start", self.payload({"entry": "echo-pr", "args": {}}), "cert")
+                self.assertEqual(self.started[0][2:], expected)
+
+    def test_start_refuses_a_bad_payload_or_certificate_before_any_command(self):
+        self.enterContext(mock.patch.object(run, "seal", REAL_SEAL))
+        good = self.payload({"entry": "echo-pr", "args": {"pr": "42"}})
+        cases = {
+            "bad certificate": (good, "not base64!"),
+            "not base64": ("%%%", "cert"),
+            "args not strings": (self.payload({"entry": "a", "args": {"pr": 42}}), "cert"),
+            "extra key": (self.payload({"entry": "a", "args": {}, "x": 1}), "cert"),
+        }
+        for label, (payload, certificate) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(run.Refused) as caught:
+                    self.main("start", payload, certificate)
+                self.assertTrue(str(caught.exception).endswith("Nothing was run."))
+        self.assertEqual((self.calls, self.started), ([], []))
+
+    def test_status_parses_the_offset(self):
+        statuses = []
+        self.enterContext(
+            mock.patch.object(run, "status", lambda *call: statuses.append(call) or {})
+        )
+        self.assertEqual(self.main("status", "20261112T183000-7f3a", "15000", "c"), "sealed\n")
+        self.assertEqual(statuses, [("20261112T183000-7f3a", 15000)])
+        for offset in ("-1", "x", "1.5", ""):
+            with self.subTest(offset):
+                with self.assertRaises(run.Refused) as caught:
+                    self.main("status", "20261112T183000-7f3a", offset, "c")
+                self.assertEqual(
+                    str(caught.exception), "Use an offset from an earlier result. Nothing was run."
+                )
+        self.assertEqual(len(statuses), 1)
 
 
 if __name__ == "__main__":
