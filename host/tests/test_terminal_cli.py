@@ -710,6 +710,15 @@ esac
         self.run_cli('run-status', '20261112T183000-7f3a')
         self.assertRegex(self.sent(), r'tokiwa-run\.py status 20261112T183000-7f3a 0 ')
 
+    def test_failed_run_call_says_a_run_may_have_started(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        for args in [('run', 'review-pr', 'pr=42'), ('run-status', '20261112T183000-7f3a')]:
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('The run call returned Failed. A run may have started: use tokiwa run-status with its id.', result.stderr)
+                self.assertNotIn('No service was started', result.stderr)
+
     def test_commands_is_plain(self):
         result = self.run_cli('commands')
         self.assertEqual(result.returncode, 0, result.stderr)

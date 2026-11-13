@@ -364,6 +364,7 @@ for r in rows:
  fi
  if [[ $status != Success ]]; then
   aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text >&2 || true
+  [[ $mode == run || $mode == run-status ]] && fail "The run call returned $status. A run may have started: use tokiwa run-status with its id."
   fail "The workbench check returned $status. No service was started."
  fi
  exit 0
