@@ -72,9 +72,9 @@ class Capabilities(unittest.TestCase):
 
     def test_commands_class_is_separate_from_run(self):
         by_name = {t['name']: (c, t) for c, t in TOOLS}
-        for capability, tool in TOOLS:
-            if tool.get('class', capability['class']) == 'commands':
-                self.assertNotEqual(tool.get('class', capability['class']), 'run')
+        effective = {t['name']: t.get('class', c['class']) for c, t in TOOLS}
+        self.assertEqual({n for n, k in effective.items() if k == 'commands'}, {'tokiwa_run'})
+        self.assertNotIn('tokiwa_run', {n for n, k in effective.items() if k == 'run'})
         self.assertEqual(by_name['tokiwa_run'][0]['class'], 'commands')
         self.assertEqual(by_name['tokiwa_launch'][1].get('class', by_name['tokiwa_launch'][0]['class']), 'run')
         self.assertEqual(by_name['tokiwa_commands'][0]['class'], 'read')
