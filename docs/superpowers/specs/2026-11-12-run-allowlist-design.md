@@ -60,7 +60,7 @@ Success: a local agent runs, for example, "the review script of repository A for
 │ /usr/local/sbin/tokiwa-run  (root-owned, runs as root)                  │
 │   reads /etc/tokiwa/commands.json  (root:root 0644)                     │
 │   checks entry + each argument shape                                    │
-│   makes /srv/development/state/runs/<id>/  (agent-workspace)            │
+│   makes /srv/development/cache/tokiwa-runs/<id>/  (agent-workspace)     │
 │   systemd-run --uid=agent-workspace --unit=tokiwa-run-<id>              │
 │        --slice=agent-sessions.slice  RuntimeMaxSec=<timeout>            │
 │        argv list, env from the entry, private home hidden               │
@@ -133,6 +133,7 @@ One entry, as an example:
 - The unit runs in `agent-sessions.slice`, so the slice limits apply.
 - At most 4 runs at a time. A fifth call is refused.
 - Run folders older than 14 days are deleted at the start of each call.
+- Run folders live on the cache volume, which the hourly backup leaves out, so a worktree or a large output never enters a backup. The named secrets reach the unit through a root-only `EnvironmentFile` in the run's root folder, never through `--setenv`, because `systemctl show` prints a unit's `Environment` to every user. My calls.
 - `cwd: worktree` needs the commit in the clone. The runner checks it with `git cat-file -e <commit>^{commit}` and refuses an unknown commit before the run. It never fetches. The owner adds a fetch entry when one is needed (for example `git fetch origin pull/{pr}/head` in one clone). My call: fetching needs network access and Git credentials and can outlast the wait.
 
 ### Log
