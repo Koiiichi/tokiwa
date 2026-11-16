@@ -204,7 +204,8 @@ esac
         self.assertEqual(self.encoded_payload(calls, 'create'),
                          {'dir': '/w/proj', 'subfolder': 'lead', 'run_stdin': True})
         self.assertNotIn('Read LEAD.md', calls)
-        self.assertEqual(self.host_decrypt(calls), command.encode())
+        # The host sees one marker line, then the line of the command.
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + command.encode())
 
     def host_decrypt(self, calls):
         """Decrypt the sealed argument of tokiwa-input.py in the last recorded call, as the host does."""

@@ -7,7 +7,8 @@ file, a log line or the output that Run Command keeps in the account.
 
     python3 -I tokiwa-input.py SEALED_B64
 
-SEALED_B64 is the base64 of the DER message that `openssl smime -encrypt` made.
+SEALED_B64 is the base64 of the DER message that `openssl smime -encrypt` made from the line
+`tokiwa-input-v1` and the text.
 """
 
 import base64
@@ -15,6 +16,12 @@ import os
 import subprocess
 import sys
 
+# openssl is called by absolute path: this program runs as root.
+OPENSSL = "/usr/bin/openssl"
+# The launcher puts this line before the text. Without -recip, openssl falls back to a random key
+# for a message that no recipient matches, and about 1 time in 256 it then exits 0 with garbage.
+# Text that does not start with this exact line is garbage and is refused.
+MARKER = b"tokiwa-input-v1\n"
 KEY = os.environ.get("TOKIWA_INPUT_KEY", "/etc/tokiwa/input-key.pem")
 # The longest message text in bytes. A sealed message of this size is about 24 KB in base64,
 # inside the 64 KB that Run Command allows for a command (docs/host.md, "Encrypted input").
@@ -36,7 +43,7 @@ def decrypt(sealed_b64):
     try:
         # Both streams are captured, so that no text reaches this program's own stderr.
         opened = subprocess.run(
-            ["openssl", "smime", "-decrypt", "-binary", "-inform", "DER", "-inkey", KEY],
+            [OPENSSL, "smime", "-decrypt", "-binary", "-inform", "DER", "-inkey", KEY],
             input=sealed,
             capture_output=True,
             timeout=10,
@@ -45,9 +52,12 @@ def decrypt(sealed_b64):
         raise ValueError(REFUSAL)
     if opened.returncode:
         raise ValueError(REFUSAL)
-    if len(opened.stdout) > MAX_MESSAGE_BYTES:
+    if not opened.stdout.startswith(MARKER):
+        raise ValueError(REFUSAL)
+    text = opened.stdout[len(MARKER):]
+    if len(text) > MAX_MESSAGE_BYTES:
         raise ValueError(TOO_LONG)
-    return opened.stdout
+    return text
 
 
 def main(argv):

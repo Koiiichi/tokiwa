@@ -450,8 +450,9 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   fi
   openssl x509 -in "$input_pin" -noout >/dev/null 2>&1 \
    || fail 'The pinned host input certificate is not valid. Delete ~/.config/tokiwa/input-cert.pem to pin the host key again.'
-  openssl smime -encrypt -aes256 -binary -outform DER "$input_pin" < "$1" | base64 | tr -d '\n'
-  [[ ${PIPESTATUS[0]} == 0 ]] || fail 'The message could not be encrypted. Nothing was sent.'
+  # The marker line lets the host tell the text from the garbage that a wrong key can produce.
+  ( set -o pipefail; { printf 'tokiwa-input-v1\n'; cat "$1"; } | openssl smime -encrypt -aes256 -binary -outform DER "$input_pin" | base64 | tr -d '\n' ) \
+   || fail 'The message could not be encrypted. Nothing was sent.'
  }
  if [[ $mode == input-cert ]]; then host_cert; exit 0; fi
  if [[ $mode == create && -n $input_file ]]; then

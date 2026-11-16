@@ -57,7 +57,7 @@ tokiwa create review-a --dir /srv/development/state/workspaces/workbench/studio 
   --run 'git clone https://github.com/OWNER/app.git . && claude "Read REVIEW.md, then start."'
 ```
 
-A set of sessions that start together is a script of such lines. Keep it with your own setup; Tokiwa keeps no list of them. The command is one line of at most 2000 printable characters. It travels through Run Command, which keeps its parameters in the AWS account, so put keys in `tokiwa secret`, not in the command.
+A set of sessions that start together is a script of such lines. Keep it with your own setup; Tokiwa keeps no list of them. The command is one line of at most 2000 printable characters. It travels encrypted to the host key, so Run Command, which keeps its parameters in the AWS account, never holds the plain line. Still put keys in `tokiwa secret`, not in the command: the line shows on the screen of the session and in its shell history.
 
 ## What Tokiwa does not do
 

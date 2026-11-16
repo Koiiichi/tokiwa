@@ -673,7 +673,7 @@ class SessionModel(ModelHelpers, Server):
         result = self.helper_with_stdin('echo from-stdin-$((40 + 2))\n', 'create', 'lead', request)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.screen('lead', 'from-stdin-42')
-        # The line is not an argument of any process on the host, and not in the audit log.
+        # The line is not in the audit log. (The next test records every tmux argument.)
         self.assertNotIn('from-stdin', json.dumps(self.audit_entries()))
         # The same checks as for a line in the request: one line of at most 2000 printable characters.
         for bad in ['two\nlines\n', 'bell\a\n', '', '\n', 'x' * 2001]:
@@ -685,6 +685,70 @@ class SessionModel(ModelHelpers, Server):
         both = self.b64({'dir': str(project), 'run': 'echo a', 'run_stdin': True})
         self.assertNotEqual(self.helper_with_stdin('echo b\n', 'create', 'bad', both).returncode, 0)
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+
+    def recording_tmux(self, fail_on=None):
+        """Put a tmux in front of the real one that records every argv, one line per call.
+
+        `fail_on` names a tmux command that the wrapper refuses, to test the clean-up.
+        """
+        folder = Path(self.temp.name) / 'record-bin'
+        folder.mkdir(exist_ok=True)
+        self.argv_log = Path(self.temp.name) / 'tmux-argv.log'
+        wrapper = folder / 'tmux'
+        wrapper.write_text(f'''#!/bin/bash
+printf '%s\\n' "$*" >> "{self.argv_log}"
+if [[ -n "{fail_on or ''}" && " $* " == *" {fail_on or 'none'} "* ]]; then echo 'tmux failed' >&2; exit 1; fi
+exec {self.tmux} "$@"
+''')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+
+    def test_create_never_gives_the_run_line_to_a_process_as_an_argument(self):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir()
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.recording_tmux()
+        line = 'echo marker-line-$((6 * 7))'
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = self.helper_with_stdin(line + '\n', 'create', 'lead', request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('lead', 'marker-line-42')
+        calls = self.argv_log.read_text()
+        self.assertIn('load-buffer', calls)
+        self.assertIn('paste-buffer -d -b', calls)
+        for text in [line, 'marker-line', base64.b64encode(line.encode()).decode(), base64.b64encode(line.encode()).decode().rstrip('=')]:
+            self.assertNotIn(text, calls)
+        # The buffer is gone after the paste.
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_create_deletes_the_buffer_when_the_paste_fails(self):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir()
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.recording_tmux(fail_on='paste-buffer')
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = self.helper_with_stdin('echo hi\n', 'create', 'lead', request)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not be typed', result.stderr)
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+        self.assertIn('delete-buffer', self.argv_log.read_text())
+
+    def test_create_refuses_a_run_line_that_is_not_utf8(self):
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), 'create', 'bad', request], env=dict(
+            self.env, TOKIWA_WORKSPACES=str(Path(self.temp.name) / 'workspaces')), input=b'echo \xff\xfe\n',
+            capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'one line', result.stderr)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+
+    def test_create_fails_when_the_driver_command_fails_in_real_tmux(self):
+        # No fake tmux: a hook ends the session as soon as its first option is set, so that the
+        # if-shell of the driver finds no session and tmux itself gives the failing status.
+        self.tm('set-hook', '-g', 'after-set-option', 'kill-session -t =lead')
+        result = self.create_as('orchestrator-a')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('driver could not be set', result.stderr)
 
     def audit_entries(self):
         file = Path(self.env['TOKIWA_STATE']) / 'audit.log'

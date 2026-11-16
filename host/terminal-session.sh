@@ -824,7 +824,10 @@ try:
         if run is not None:
             raise SystemExit('Use a command of one line, at most 2000 printable characters.')
         # One more character than the limit shows that a line is too long. The final newline ends the line.
-        run = os.fdopen(3, encoding='utf-8', errors='replace').read(2002)
+        try:
+            run = os.fdopen(3, encoding='utf-8', errors='strict').read(2002)
+        except UnicodeDecodeError:
+            raise SystemExit('Use a command of one line, at most 2000 printable characters, as UTF-8 text.')
         run = run[:-1] if run.endswith('\n') else run
     # The command is typed into the shell, so one line of printable text: no extra line runs.
     if run is not None and (not isinstance(run, str) or not run or len(run) > 2000
@@ -876,9 +879,17 @@ PY_CREATE
    registry add "$label" "$directory"
   fi
   # The shell reads the typed line after its startup file, so the command has the PATH and the
-  # secrets of a new shell, and the shell stays when the command ends.
+  # secrets of a new shell, and the shell stays when the command ends. The line reaches tmux on stdin
+  # (load-buffer) and is pasted from a buffer that tmux deletes: it is never an argument of a process.
+  # printf is a shell builtin, so the line is not an argument of base64 either.
   if [[ $run_b64 != - ]]; then
-   tm send-keys -t "=$name:" -l "$(printf '%s' "$run_b64" | base64 -d)" \; send-keys -t "=$name:" Enter
+   buffer="tokiwa-create-$$-$RANDOM"
+   if ! { printf '%s' "$run_b64" | base64 -d | tm load-buffer -b "$buffer" - &&
+          tm paste-buffer -d -b "$buffer" -t "=$name:" &&
+          tm send-keys -t "=$name:" Enter; }; then
+    tm delete-buffer -b "$buffer" 2>/dev/null || true
+    fail 'The command could not be typed into the new terminal. Refresh the session state.'
+   fi
   fi
   # The identity lets the app attach at once, without another read of the session list.
   identity=$(tm display-message -p -t "=$name:" '#{pid}:#{session_id}:#{session_created}') ||
