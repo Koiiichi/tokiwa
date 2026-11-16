@@ -2419,6 +2419,42 @@ class AgentRead(ModelHelpers, Server):
         self.assertEqual({e['text'] for e in notices}, {'unreadable line'})
         self.assertIs(page['more'], False)
 
+    def test_a_lone_surrogate_in_a_line_does_not_stop_the_reader(self):
+        # JavaScript can cut a string between the halves of a pair, so a real transcript can hold one.
+        bad = '{"type": "assistant", "message": {"content": [{"type": "text", "text": "a\\ud800b"}]}}\n'
+        good = '{"type": "user", "message": {"content": "kept"}}\n'
+        self.transcript.write_text(bad + good)
+        for flags in ('-', 'tools'):
+            page = self.read(flags=flags)
+            self.assertEqual(len(page['events']), 2)
+            self.assertEqual(page['events'][1]['text'], 'kept')
+            self.assertEqual(page['cursor'], self.cursor_of(self.transcript, self.transcript.stat().st_size))
+
+    def test_a_lone_surrogate_in_a_pending_item_is_read(self):
+        item = {'id': 'item\ud800', 'kind': 'question', 'summary': 'Which\udfff folder?', 'options': ['a\ud800'], 'at': 5}
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent_pending', self.b64(item))
+        pending = self.read(flags='pending')['pending']
+        self.assertEqual((pending['kind'], pending['at']), ('question', 5))
+        self.assertIn('Which', pending['summary'])
+
+    def set_big(self, value):
+        """Set the pending option from a file: a tmux command line is too short for a big value."""
+        script = Path(self.temp.name) / 'big.conf'
+        script.write_text(f"set-option -t =lead: @tokiwa_agent_pending '{value}'\n")
+        self.assertEqual(self.tm('source-file', str(script)).returncode, 0)
+
+    def test_a_pending_item_is_held_to_the_limit(self):
+        item = {'id': 'i' * 200, 'kind': 'k' * 80, 'summary': '\x01' * 5000, 'options': ['\x01' * 500] * 40, 'at': 7}
+        self.set_big(self.b64(item))
+        pending = self.read(flags='pending')['pending']
+        self.assertLessEqual(len(self.opened), 15000)
+        self.assertEqual((pending['id'], pending['at']), ('i' * 200, 7))
+        self.assertTrue(pending['summary'])
+        wide = dict(item, summary='\u20ac' * 5000, options=['\u20ac' * 500] * 40)
+        self.set_big(self.b64(wide))
+        self.read(flags='pending')
+        self.assertLessEqual(len(self.opened), 15000)
+
     def test_bad_arguments_are_refused(self):
         for cursor, flags in [('abc', '-'), ('0123456789ab:', '-'), ('0123456789ab:1234567890123', '-'), ('-', 'all'),
                               ('-', 'tools,'), ('-', ''), ('0123456789AB:1', '-')]:

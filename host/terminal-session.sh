@@ -334,7 +334,7 @@ def seal(output, recipient, what):
             pem.write(certificate)
             pem.flush()
             sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
-                                    input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
+                                    input=json.dumps(output, ensure_ascii=False).encode('utf-8', 'replace'), capture_output=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         pass
     if sealed is None or sealed.returncode or not sealed.stdout:
@@ -545,7 +545,12 @@ def refuse(reason):
     sys.exit(f'{reason} Nothing was read.')
 
 def clip(value, limit=MAX_TEXT):
+    # JSON accepts a lone surrogate, which UTF-8 cannot hold: it becomes `?` before any size check or seal.
+    value = value.encode('utf-8', 'replace').decode('utf-8')
     return value if len(value) <= limit else value[:limit - 1] + '…'
+
+def json_size(value):
+    return len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
 
 def text_of(value):
     return value if isinstance(value, str) else ''
@@ -652,10 +657,16 @@ def pending_summary(value):
     except (binascii.Error, ValueError, RecursionError):
         item = {}
     options = item.get('options')
-    return {'id': clip(text_of(item.get('id')), 200) or None, 'kind': clip(text_of(item.get('kind')), 80) or None,
-            'summary': clip(text_of(item.get('summary'))),
-            'options': [clip(text_of(o), 200) for o in options[:20]] if isinstance(options, list) else [],
-            'at': item.get('at') if isinstance(item.get('at'), int) else None}
+    summary = {'id': clip(text_of(item.get('id')), 200) or None, 'kind': clip(text_of(item.get('kind')), 80) or None,
+               'summary': clip(text_of(item.get('summary'))),
+               'options': [clip(text_of(o), 200) for o in options[:20]] if isinstance(options, list) else [],
+               'at': item.get('at') if isinstance(item.get('at'), int) else None}
+    # Fit LIMIT_BYTES: the options go from the end first, then the summary is halved.
+    while json_size({'pending': summary}) > LIMIT_BYTES and summary['options']:
+        summary['options'].pop()
+    while json_size({'pending': summary}) > LIMIT_BYTES and summary['summary']:
+        summary['summary'] = summary['summary'][:len(summary['summary']) // 2]
+    return summary
 
 def open_transcript(path):
     """Open the transcript read only. Return (file, size). Only a regular file of this user is read."""
@@ -717,7 +728,7 @@ while True:
             break
         length += skipped
         found = [event(None, 'notice', 'line too long')]
-    sizes = [len(json.dumps(e, ensure_ascii=False).encode()) + 2 for e in found]
+    sizes = [json_size(e) + 2 for e in found]
     if events and used + sum(sizes) > LIMIT_BYTES:
         more = True
         break
