@@ -260,13 +260,13 @@ The agent in a session reports its state through its own hooks, which call `toki
 | --- | --- | --- |
 | `working` | `UserPromptSubmit` (with `--turn`), `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit` (with `--turn`), `PostToolUse` |
 | `waiting` | `PreToolUse` of `AskUserQuestion` (`--kind question`), `Elicitation` (`--kind question`), Notification `elicitation_dialog` (`--kind question`), Notification `permission_prompt` and `elicitation_url_dialog` (`--kind permission`) | `PermissionRequest` (`--kind permission`) |
-| `idle` | `SessionStart`, `Stop`, Notification `idle_prompt` | `SessionStart`, `Stop`, `Interrupt` |
+| `idle` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, Notification `idle_prompt` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, `Interrupt` |
 | `limited` | `StopFailure` `rate_limit`, Notification `quota_auto_resume_stale` | none: Codex has no hook for a limit |
 | `error` | `StopFailure` with any other error | none |
 | `ended` | `SessionEnd` | `SessionEnd` |
 | `note` | `PreToolUse` | `PreToolUse` |
 
-`note` records the last tool call and changes no state. `ended` removes the state.
+`note` records the last tool call and changes no state. `ended` removes the state. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
 
 The command also records these options of the tmux session, which later commands read:
 
@@ -276,18 +276,18 @@ The command also records these options of the tmux session, which later commands
 | `@tokiwa_agent_turn` | The number of turns. Each event with `--turn` adds one. |
 | `@tokiwa_agent_transcript` | The `transcript_path` of the event. |
 | `@tokiwa_agent_session` | The `session_id` of the event. |
-| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it. |
-| `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `tool`, `summary` and `at`. |
+| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it, and so does `tokiwa interrupt`. |
+| `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `id` (the `tool_use_id` of the event), `tool`, `summary` and `at`. `tokiwa agent answer` requires this `id` to be the pending `id`, so a tool call that starts after a question stops the answer. |
 | `@tokiwa_agent_input` | The label of an answer that an agent chose: base64 of JSON with `actor`, `pending_id` and `at`. `tokiwa agent answer` sets it, and `tokiwa-state answered` prints the label for the agent and removes it. |
 
-For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. `options` lists the option labels of a question. `tool` is the tool of the event, or the name of the hook event when it has no tool (for example `Elicitation`). For `AskUserQuestion`, `questions` is the number of questions and `multi_select` says whether the first allows several choices; both are 0 and false for other items. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
+For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. A URL of the event stays whole at the end of the summary, and the text before it is cut. `options` lists the option labels of a question: at most 20, of at most 200 characters each. An `id` over 128 characters, which `agent answer` cannot name, is replaced by the hash. The encoded value of the item is at most 6144 bytes, and of `@tokiwa_agent_last_tool` at most 3072 bytes: options are dropped from the end, then the summary is cut, until it fits. `agent answer` puts both values into one tmux command, which tmux limits to about 16 KiB. `tool` is the tool of the event, or the name of the hook event when it has no tool (for example `Elicitation`). For `AskUserQuestion`, `questions` is the number of questions and `multi_select` says whether the first allows several choices; both are 0 and false for other items. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
 
 The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and the Claude Code hooks run without holding the agent, except `tokiwa-state answered`, a synchronous hook on `PostToolUse` of `AskUserQuestion` with a timeout of 5 seconds. The Codex hooks have a timeout of 5 seconds and no `async` (see [The label of an answer](agents.md#the-label-of-an-answer)). Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
 
 What the states cannot tell:
 
 - Claude Code reports a permission prompt about six seconds after it appears.
-- Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself; after an Esc that you type, the state changes at the next turn or after a minute of no input.
+- Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself and removes the pending item; after an Esc that you type, the state changes at the next turn or after a minute of no input.
 - Whether a usage limit of a Claude plan arrives as `rate_limit` is not documented.
 
 ### Layers and read modes
@@ -306,7 +306,7 @@ The screen check of the agent layer reads the last 15 lines of the active pane w
 
 ### End a session
 
-`end NAME IDENTITY` checks the identity and ends the session in one tmux queue, as it always did. `end NAME IDENTITY check-clients` first reads the clients of the session, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type; a client that watches read only does not count. The queue then also checks that `#{session_attached}` is still the number that was read, so a client that attaches in between stops the end. The launcher sends `check-clients` for `tokiwa end` and no flag for `--attached-ok` or `--end-confirmed`, so a launcher and a helper of different versions still end a session. The refusal sentences go through a tmux format and `display-message -p`, so they hold no comma and no single quote.
+`end NAME IDENTITY` checks the identity and ends the session in one tmux queue, as it always did. `end NAME IDENTITY check-clients` first reads the clients of the session, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type; a client that watches read only does not count. The queue then also checks that `#{session_attached}` is still the number that was read, so a client that attaches in between stops the end. The launcher sends `check-clients` for `tokiwa end` and no flag for `--attached-ok` or `--end-confirmed`. So `--attached-ok` and `--end-confirmed` end a session with a helper of any version, but `tokiwa end` needs an updated helper: an older helper refuses the extra argument with `Too many arguments.` and ends nothing. The refusal sentences go through a tmux format and `display-message -p`, so they hold no comma and no single quote.
 
 ### Claim and release the driver
 
@@ -329,6 +329,8 @@ The helper reads the text from stdin, as strict UTF-8, and refuses text that is 
 The limit follows the size limit of a Run Command call. The documentation of `SendCommand` gives 64 KB as the size limit of a document (`MaxDocumentSizeExceeded`, https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_SendCommand.html) and states no other limit for the parameters of `AWS-RunShellScript`. A message of 16384 bytes becomes about 24 KB of base64 with the envelope, 38% of 64 KB, which leaves more than the 20% margin.
 
 The launcher pins the certificate on first use: see [the pin](configuration.md#files). `tokiwa input-cert` prints the certificate that the host shows now, for a comparison with the pin.
+
+Update the host with `host/install.sh` before you update the launcher on the Mac. A host from before encrypted input has no input key. A new launcher then refuses `create --run`, `agent send` and `agent answer --text` with `The host has no input key. Update the host with host/install.sh.` and `Nothing was created.` or `Nothing was sent.`, and creates or sends nothing. It never falls back to plain text.
 
 ## Audit log
 
