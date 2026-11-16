@@ -974,7 +974,7 @@ class AgentState(ModelHelpers, Server):
         if inside:
             env.update(TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
         # A hook sends its event as JSON on stdin; tokiwa-state reads and ignores it.
-        return subprocess.run(['bash', str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
+        return subprocess.run([sys.executable, str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
                               capture_output=True, text=True, timeout=10)
 
     def test_a_reported_state_shows_while_the_agent_runs(self):

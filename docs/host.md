@@ -251,15 +251,32 @@ The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/developme
 
 ## Agent state
 
-The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE`. The command records the state, and the time that the state began, on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show.
+The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE [--turn] [--kind question|permission]`. The command records the state, and the time that the state began, on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show. The command reads at most 64 KiB of the event from stdin, never blocks and always exits 0.
 
 | State | Claude Code events | Codex events |
 | --- | --- | --- |
-| `working` | `UserPromptSubmit`, `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit`, `PostToolUse` |
-| `waiting` | `PreToolUse` of `AskUserQuestion`, `Elicitation`, Notification `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog` | `PermissionRequest` |
-| `idle` | `Stop`, Notification `idle_prompt` | `Stop`, `Interrupt` |
+| `working` | `UserPromptSubmit` (with `--turn`), `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit` (with `--turn`), `PostToolUse` |
+| `waiting` | `PreToolUse` of `AskUserQuestion` (`--kind question`), `Elicitation` (`--kind question`), Notification `elicitation_dialog` (`--kind question`), Notification `permission_prompt` and `elicitation_url_dialog` (`--kind permission`) | `PermissionRequest` (`--kind permission`) |
+| `idle` | `SessionStart`, `Stop`, Notification `idle_prompt` | `SessionStart`, `Stop`, `Interrupt` |
 | `limited` | `StopFailure` `rate_limit`, Notification `quota_auto_resume_stale` | none: Codex has no hook for a limit |
 | `error` | `StopFailure` with any other error | none |
+| `ended` | `SessionEnd` | `SessionEnd` |
+| `note` | `PreToolUse` | `PreToolUse` |
+
+`note` records the last tool call and changes no state. `ended` removes the state.
+
+The command also records these options of the tmux session, which later commands read:
+
+| Option | Value |
+| --- | --- |
+| `@tokiwa_agent` | `STATE:EPOCH`. The time is when the state began. |
+| `@tokiwa_turn` | The number of turns. Each event with `--turn` adds one. |
+| `@tokiwa_transcript` | The `transcript_path` of the event. |
+| `@tokiwa_agent_session` | The `session_id` of the event. |
+| `@tokiwa_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options` and `at`. `working`, `idle` and `ended` remove it. |
+| `@tokiwa_last_tool` | The last tool call that a `note` reported: base64 of JSON with `tool`, `summary` and `at`. |
+
+For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. `options` lists the option labels of a question. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
 
 The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and they run without holding the agent. Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
 

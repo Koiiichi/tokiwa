@@ -1,0 +1,13 @@
+{
+  "session_id": "claude-session-a",
+  "transcript_path": "/home/worker-a/.claude/projects/project-a/session-a.jsonl",
+  "cwd": "/workspace/project-a",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_bash_a",
+  "tool_input": {
+    "command": "make check",
+    "description": "Run the checks"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "session_id": "codex-thread-a",
+  "transcript_path": "/home/worker-a/.codex/sessions/rollout-a.jsonl",
+  "cwd": "/workspace/project-a",
+  "model": "model-a",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "turn_id": "turn-a",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf build/",
+    "description": "Escalated shell command requires approval"
+  }
+}

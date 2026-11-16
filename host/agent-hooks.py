@@ -6,18 +6,22 @@ import sys
 from pathlib import Path
 
 COMMAND = "/usr/local/bin/tokiwa-state"
-# (event, matcher or None, state). Claude Code reports no event when Esc stops a turn: tokiwa interrupt
-# sets idle itself, and idle_prompt covers an Esc that a person typed.
+# (event, matcher or None, arguments of tokiwa-state). Claude Code reports no event when Esc stops a turn:
+# tokiwa interrupt sets idle itself, and idle_prompt covers an Esc that a person typed.
 CLAUDE = [
-    ("UserPromptSubmit", None, "working"),
+    ("UserPromptSubmit", None, "working --turn"),
+    ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
-    ("PreToolUse", "AskUserQuestion", "waiting"),
-    ("Notification", "permission_prompt|elicitation_dialog|elicitation_url_dialog", "waiting"),
+    ("PreToolUse", "AskUserQuestion", "waiting --kind question"),
+    ("Notification", "permission_prompt|elicitation_url_dialog", "waiting --kind permission"),
+    ("Notification", "elicitation_dialog", "waiting --kind question"),
     ("Notification", "idle_prompt", "idle"),
     ("Notification", "quota_auto_resume_fired", "working"),
     ("Notification", "quota_auto_resume_stale", "limited"),
-    ("Elicitation", None, "waiting"),
+    ("Elicitation", None, "waiting --kind question"),
     ("ElicitationResult", None, "working"),
+    ("SessionStart", None, "idle"),
+    ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("StopFailure", "rate_limit", "limited"),
     (
@@ -29,9 +33,12 @@ CLAUDE = [
 ]
 # Codex has no hook for a rate limit, so a Codex agent never reports limited.
 CODEX = [
-    ("UserPromptSubmit", None, "working"),
+    ("UserPromptSubmit", None, "working --turn"),
+    ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
-    ("PermissionRequest", None, "waiting"),
+    ("PermissionRequest", None, "waiting --kind permission"),
+    ("SessionStart", None, "idle"),
+    ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("Interrupt", None, "idle"),
 ]
@@ -58,9 +65,9 @@ def merged(config, table, handler):
     places, and with them their trust.
     """
     hooks = without_ours(config.get("hooks", {}))
-    for event, matcher, state in table:
+    for event, matcher, arguments in table:
         group = {"matcher": matcher} if matcher else {}
-        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {state}", **handler}]
+        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {arguments}", **handler}]
         hooks.setdefault(event, []).append(group)
     return {**config, "hooks": hooks}
 
