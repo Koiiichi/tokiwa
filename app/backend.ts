@@ -163,7 +163,7 @@ export function splitCategory(stderr: string): {
   };
 }
 export class BackendClient {
-  private children = new Set<ReturnType<typeof Bun.spawn>>();
+  private children = new Set<Bun.Subprocess<"ignore", "pipe", "pipe">>();
   close() {
     for (const child of this.children) child.kill();
     this.children.clear();
@@ -176,7 +176,7 @@ export class BackendClient {
   async call(args: string[]): Promise<string> {
     if (this.runner) return this.runner(args);
     const command = String(args[0]);
-    let p: ReturnType<typeof Bun.spawn>;
+    let p: Bun.Subprocess<"ignore", "pipe", "pipe">;
     try {
       p = Bun.spawn([this.launcher, ...args], {
         // The home folder outlives a reinstall, which replaces the app's own folder.
