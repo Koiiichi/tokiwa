@@ -66,6 +66,7 @@ import {
 } from "./health-view";
 import { paneLayout, throbColor } from "./workspace";
 import {
+  dimNeedsYou,
   focusStrip,
   projectTree,
   type TreeEntry,
@@ -3200,7 +3201,13 @@ export class App {
       part(
         this.footer,
         "footer-state",
-        stateGuide(row.name, status.state, status.others, room),
+        stateGuide(
+          row.name,
+          status.state,
+          status.others,
+          room,
+          dimNeedsYou(status.state, row),
+        ),
       );
       return;
     }
@@ -3617,6 +3624,7 @@ export class App {
               return {
                 name: row.name,
                 needs,
+                stale: dimNeedsYou("needs-you", row),
                 word: agent === "waiting" || stopped ? agent : "",
                 agent,
               };
@@ -4144,10 +4152,7 @@ export class App {
                 ? throb
                 : // A stale row with no connected view asks for nothing now: its title says
                   // `last known`, so the glyph stays dim, not amber.
-                  state === "needs-you" &&
-                    row.freshness &&
-                    row.freshness !== "live" &&
-                    !row.shell
+                  dimNeedsYou(state, row)
                   ? tones.dim
                   : tones[STATUS_TONE[state]],
           },

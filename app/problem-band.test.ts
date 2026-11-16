@@ -928,3 +928,65 @@ test("the footer offers u retry only in the view whose source failed", async () 
     }
   }
 });
+
+/** The colour of the first `◈` in styled content, or undefined when there is none. */
+function glyphColour(content: any) {
+  const chunk = content.chunks.find((c: any) => c.text.includes("◈"));
+  return chunk && String(chunk.fg);
+}
+
+/** Open a stale snapshot (41 hours old) after a live one; the clock is the test's. */
+async function staleOpen() {
+  const start = new Date(2026, 10, 13, 21, 20).getTime();
+  let clock = start;
+  const opened = await open(undefined, "exit 0", () => clock);
+  const stale = async () => {
+    clock = start + 41 * 3600_000;
+    opened.state.error = launcherFailure(AUTH_TEXT, "auth");
+    await opened.app.refreshSessions();
+    opened.app.drawSessions();
+    await opened.t.renderOnce();
+  };
+  opened.app.drawSessions();
+  return { ...opened, stale };
+}
+
+test("the footer legend draws the needs-you glyph amber while live and dim when stale", async () => {
+  const { t, app, stale } = await staleOpen();
+  try {
+    const row = app.sessionRows().find((r: any) => app.rowStatus(r).state === "needs-you")!;
+    expect(row).toBeDefined();
+    const colour = () => {
+      app.hover = `row:${row.name}`;
+      app.footerSignature = "";
+      app.drawFooter();
+      const part: any = app.footer.getChildren().find((c) => c.id === "footer-state")!;
+      return glyphColour(part.content);
+    };
+    expect(colour()).toBe(String(RGBA.fromHex(theme.warning)));
+    await stale();
+    expect(app.rowStatus(app.sessionRows().find((r: any) => r.name === row.name)!).state).toBe("needs-you");
+    expect(colour()).toBe(String(RGBA.fromHex(theme.muted)));
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("the focus strip draws the needs-you glyph amber while live and dim when stale", async () => {
+  const { t, app, stale } = await staleOpen();
+  try {
+    app.focusMode = true;
+    app.view = "shell";
+    const colour = () => {
+      // A stale read opens the list; the owner can hide it again, and the strip then shows.
+      app.sessionList.visible = false;
+      app.drawNavStatus();
+      return glyphColour(app.navStatus.content);
+    };
+    expect(colour()).toBe(String(RGBA.fromHex(theme.warning)));
+    await stale();
+    expect(colour()).toBe(String(RGBA.fromHex(theme.muted)));
+  } finally {
+    await close(t, app);
+  }
+});

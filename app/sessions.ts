@@ -282,19 +282,45 @@ export function sessionRowText(
 }
 
 /**
+ * True when a `needs-you` glyph is drawn dim: the row is a stale snapshot (its freshness is set and
+ * not `live`) with no connected view. Its title says `last known`, so it asks for nothing now.
+ */
+export function dimNeedsYou(
+  state: RowState,
+  row: { freshness?: string; shell?: unknown },
+): boolean {
+  return (
+    state === "needs-you" &&
+    !!row.freshness &&
+    row.freshness !== "live" &&
+    !row.shell
+  );
+}
+
+/**
  * Describe the sessions outside the pane in one line for focus mode. The sessions that need you
  * stand by name, with the word of their state; the agents that report work are one count. Other
  * sessions are left out: they need nothing. When the line is longer than `width`, the count goes
  * first, then the names after the first join as `N more`.
  */
 export function focusStrip(
-  rows: { name: string; needs: boolean; word?: string; agent?: string }[],
+  rows: {
+    name: string;
+    needs: boolean;
+    word?: string;
+    agent?: string;
+    /** The row is a stale snapshot: its glyph is dim, not amber. */
+    stale?: boolean;
+  }[],
   width: number,
 ): Span[] {
   const named = rows
     .filter((r) => r.needs)
     .map((r): Span[] => [
-      { text: STATUS_GLYPH["needs-you"], tone: STATUS_TONE["needs-you"] },
+      {
+        text: STATUS_GLYPH["needs-you"],
+        tone: r.stale ? "dim" : STATUS_TONE["needs-you"],
+      },
       { text: ` ${r.name}${r.word ? ` ${r.word}` : ""}`, tone: "value" },
     ]);
   const working = rows.filter((r) => !r.needs && r.agent === "working").length;
@@ -349,18 +375,25 @@ const STATE_SHORT: Record<RowState, (name: string) => string> = {
 /**
  * Explain the state of a session row in one line of at most `width` cells: its glyph in the
  * colour of the state, then dim words, then the clients that are attached elsewhere. When the
- * line is too long, the client count goes first, then the long explanation.
+ * line is too long, the client count goes first, then the long explanation. `stale` draws the
+ * glyph dim (see `dimNeedsYou`).
  */
 export function stateGuide(
   name: string,
   state: RowState,
   others: number,
   width = Infinity,
+  stale = false,
 ): Span[] {
   const glyph: Span[] =
     state === "unknown"
       ? []
-      : [{ text: `${STATUS_GLYPH[state]} `, tone: STATUS_TONE[state] }];
+      : [
+          {
+            text: `${STATUS_GLYPH[state]} `,
+            tone: stale ? "dim" : STATUS_TONE[state],
+          },
+        ];
   const clients: Span[] = others
     ? [
         {

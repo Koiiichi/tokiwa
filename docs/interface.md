@@ -180,7 +180,7 @@ The footer is one line of controls for the current context. A control highlights
 
 Inside a terminal a control is its label then its chord. Elsewhere it is its key then its label. When the line is too long, the hints that are not controls go first, then the key labels, then the least important controls. One control always stays.
 
-With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. It uses a short form when it is narrow.
+With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. The glyph is dim, not amber, for a stale `needs you` row with no connected view. It uses a short form when it is narrow.
 
 The footer also shows short notices: the result of a copy, a saved screen or an ended session. A failed action shows as `<action> failed · <cause>`, for example `attach worker-a failed · AWS sign-in expired`, for 8 seconds. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
 
@@ -320,7 +320,7 @@ The search box also holds the prompts of these actions and of **Move to project*
 
 `z`, or **Focus** in the search, hides the session list beside the terminal, so the terminal takes the full width. Do the same again to show the list. In focus mode the list and the terminal take the full width in turn: `w` shows the list, and `enter` or `esc` returns to the terminal.
 
-While the terminal is in view, the navigation row shows the sessions that no view shows and that need you, for example `◈ codex waiting · 3 working`. A session needs you when it rang the bell, asked for a person, or its agent reported `waiting`, `limited` or `error`; it shows by name, with the agent's word. The agents that report `working` are one count. Other sessions are left out. When the line is too long, the count goes first, then the names after the first join as `N more`. An error of an action does not take its place; it shows as a notice in the footer.
+While the terminal is in view, the navigation row shows the sessions that no view shows and that need you, for example `◈ codex waiting · 3 working`. A session needs you when it rang the bell, asked for a person, or its agent reported `waiting`, `limited` or `error`; it shows by name, with the agent's word; its glyph is dim when the snapshot is stale and no view is connected. The agents that report `working` are one count. Other sessions are left out. When the line is too long, the count goes first, then the names after the first join as `N more`. An error of an action does not take its place; it shows as a notice in the footer.
 
 ## Layouts by terminal size
 
