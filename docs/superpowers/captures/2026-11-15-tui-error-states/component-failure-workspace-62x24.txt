@@ -1,0 +1,24 @@
+ ◇ tokiwa  /  Workspace                                 ● EC2 
+ ──────────────────────────────────────────────────────────── 
+ Workspace  Health                                            
+                                                              
+ project-a                                                    
+ ›   worker-a                                                 
+   ◈ worker-b  needs you                                      
+     worker-c                                                 
+                                                              
+ project-b                                                    
+     worker-d                                                 
+                                                              
+ + new project                                                
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+ ──────────────────────────────────────────────────────────── 
+ u retry · ↑↓ select · enter attach · ? shortcuts             

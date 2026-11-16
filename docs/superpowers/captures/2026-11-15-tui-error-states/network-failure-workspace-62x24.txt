@@ -1,0 +1,24 @@
+ ◇ tokiwa  /  Workspace                       ○ EC2 · offline 
+ ──────────────────────────────────────────────────────────── 
+ ▲ AWS cannot be reached from this Mac    u retry · e details 
+   Showing the last known sta... 6m ago. Retrying every 30 s. 
+ Workspace  Health                                            
+                                                              
+ project-a · last known                                       
+ ›   worker-a                                                 
+   ◈ worker-b  needs you                                      
+     worker-c                                                 
+                                                              
+ project-b · last known                                       
+     worker-d                                                 
+                                                              
+ + new project                                                
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+                                                              
+ ──────────────────────────────────────────────────────────── 
+ u retry · ↑↓ select · enter attach · ? shortcuts             

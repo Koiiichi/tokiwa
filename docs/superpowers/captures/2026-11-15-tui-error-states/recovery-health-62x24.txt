@@ -1,0 +1,24 @@
+ ◇ tokiwa  /  Health                                    ● EC2 
+ ──────────────────────────────────────────────────────────── 
+ Workspace  Health                                            
+ Workstation · from mac-a                                     
+   Instance:       i-0123456789abcdef0                        
+   Type:           m7i.2xlarge · us-east-1 · last known       
+   Uptime:         3d 4h 12m · at Dec 10 18:00                
+   Authorization:  10 days left                               
+                   Ends Dec 22, 2026 at 11:59pm (UTC-8)       
+ Spend (estimate · last known)                                
+   Spent so far:   $130.34 of $350 budget                     
+                   ━━━━━━━━──────────────  37%                
+   Forecast:       $254.03 by Dec 22 · 73% of budget, if the  
+                   host keeps running                         
+   Month to date:  $130.34                                    
+   Instance hours since Dec 1, 600 GiB of disk and 1 public   
+   IPv4 at list prices. Not counted: spend before Dec 1, data 
+   transfer, snapshots, S3 backups and tax.                   
+ Workbench limits · last known                                
+   CPU             ━━━━━╸────────────────  25% of 6 cores     
+   Memory          ━━━━━━━━━━━━━━━━━━╸───  20.0 of 24.0 GiB   
+   Tasks           ━─────────────────────  212 of 4096        
+ ──────────────────────────────────────────────────────────── 
+ ↑↓ scroll · w sessions · ? shortcuts                         
