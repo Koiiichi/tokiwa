@@ -286,6 +286,12 @@ What the states cannot tell:
 - Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself; after an Esc that you type, the state changes at the next turn or after a minute of no input.
 - Whether a usage limit of a Claude plan arrives as `rate_limit` is not documented.
 
+### Read the state of a session
+
+The helper has two read modes for the state that these options hold. `state NAME IDENTITY` prints one JSON object, and `wait NAME IDENTITY AFTER_TURN` polls every 0.5 seconds for up to `TOKIWA_WAIT_SECONDS` seconds (default 20) and prints the same object with a `reason`. Neither prints screen text, seals its output or writes to the audit log. The fields and reasons are in [Read the state of an agent](agents.md#read-the-state-of-an-agent). A mode reads the identity, the options and the active pane in one tmux call, so the fields agree.
+
+The screen check reads the last 15 lines of the active pane with `capture-pane -p -J` and matches the regular expressions of `DIALOG_MARKERS` for the running agent, `claude` or `codex`. Other programs have no markers. The markers are examples of dialogs, not a complete list: change them in `terminal-session.sh` when a live screen shows a dialog that they miss.
+
 ## Audit log
 
 The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze` and `resume`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:

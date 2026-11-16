@@ -36,7 +36,18 @@ case "$*" in
  *describe-addresses*) echo '[]' ;;
  *send-command*) echo test-command ;;
  *get-command-invocation*StandardOutputContent*)
-  if grep -q 'terminal-session.sh digest' "$HOME/calls"; then
+  # The newest Run Command call decides the result for state and wait.
+  last=$(grep 'send-command' "$HOME/calls" | tail -1)
+  record='"name": "lead", "identity": "1:$2:3", "session": "live", "program": "claude", "agent": "idle", "agent_at": 1, "turn": 4, "pending": null, "dialog": false, "clients": %s, "writable_clients": %s, "driver": null, "sampled_at": 2'
+  if [[ $last == *'terminal-session.sh state '* ]]; then
+   printf "{$record}\\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}"
+  elif [[ $last == *'terminal-session.sh wait '* ]]; then
+   # TEST_WAIT_REASONS lists the reason of each call; the last one repeats.
+   count=$(( $(cat "$HOME/wait-count" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$HOME/wait-count"
+   read -ra reasons <<< "${TEST_WAIT_REASONS:-turn-ended}"
+   index=$(( count > ${#reasons[@]} ? ${#reasons[@]} - 1 : count - 1 ))
+   printf "{$record, \\"reason\\": \\"%s\\"}\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}" "${reasons[$index]}"
+  elif grep -q 'terminal-session.sh digest' "$HOME/calls"; then
    now=$(date +%s)
    printf '{"sampled_at": %s, "sessions": [{"name": "lead-a", "identity": "1:$2:3", "active_at": %s, "agent": {"state": "waiting", "at": %s}, "git": {"branch": "main", "unpushed": 2, "changed": 1, "commit": "abc1234", "committed_at": %s}}, {"name": "notes", "identity": "1:$3:3", "active_at": %s, "agent": null, "git": null}]}\n' "$now" "$now" "$((now - 180))" "$((now - 7200))" "$((now - 86400))"
   elif grep -q 'tokiwa-run.py \(start\|status\)' "$HOME/calls"; then
@@ -299,6 +310,100 @@ esac
         self.assertNotIn(path, calls)
         self.assertIn('terminal-session.sh project backend ', calls)
         self.assertNotIn('start-session', calls)
+
+    def calls(self):
+        return (self.home / 'calls').read_text()
+
+    def test_state_calls_the_helper_state_mode(self):
+        result = self.run_cli('state', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh state lead '1:$2:3'", self.calls())
+        self.assertEqual(json.loads(result.stdout)['writable_clients'], 0)
+        self.assertNotIn('start-session', self.calls())
+
+    def test_state_refuses_a_bad_identity(self):
+        for args in [('state', 'lead'), ('state', 'lead', 'x;y'), ('state', 'bad name', '1:$2:3'), ('state', 'lead', '1:$2:3', 'more')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_wait_calls_the_helper_wait_mode(self):
+        result = self.run_cli('wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh wait lead '1:$2:3' 3", self.calls())
+        self.assertEqual(json.loads(result.stdout)['reason'], 'turn-ended')
+
+    def test_wait_repeats_until_a_reason(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout timeout turn-ended'
+        result = self.run_cli('wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls().count('terminal-session.sh wait'), 3)
+        # Only the last object is printed.
+        self.assertEqual(json.loads(result.stdout)['reason'], 'turn-ended')
+        self.assertEqual(len(result.stdout.strip().splitlines()), 1)
+
+    def test_wait_stops_at_its_timeout(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout'
+        result = self.run_cli('wait', 'lead', '1:$2:3', '--after', '3', '--timeout', '1')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['reason'], 'timeout')
+
+    def test_wait_asks_the_host_for_no_more_than_the_time_left(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout'
+        self.run_cli('wait', 'lead', '1:$2:3', '--after', '3', '--timeout', '1')
+        self.assertIn('TOKIWA_WAIT_SECONDS=1 ', self.calls())
+        (self.home / 'calls').unlink()
+        del self.env['TEST_WAIT_REASONS']
+        self.run_cli('wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertIn('TOKIWA_WAIT_SECONDS=20 ', self.calls())
+
+    def test_wait_refuses_bad_arguments_before_aws(self):
+        base = ('wait', 'lead', '1:$2:3')
+        for args in [base, base + ('--after',), base + ('--after', 'x'), base + ('--after', '-1'), base + ('3',),
+                     base + ('--after', '3', '--timeout'), base + ('--after', '3', '--timeout', '0'),
+                     base + ('--after', '3', '--timeout', '3601'), base + ('--after', '3', '--timeout', 'x'),
+                     base + ('--after', '3', '--timeout', '5', 'more'), ('wait', 'lead', 'x', '--after', '3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_wait_reports_a_failed_call(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 3)
+
+    def test_end_is_the_documented_form_of_end_confirmed(self):
+        result = self.run_cli('end', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh end lead '1:$2:3'", self.calls())
+        # The state is read first.
+        self.assertLess(self.calls().index("terminal-session.sh state lead"), self.calls().index("terminal-session.sh end lead"))
+
+    def test_end_refuses_an_attached_session_without_attached_ok(self):
+        self.env['TEST_WRITABLE'] = '1'
+        result = self.run_cli('end', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('A client is attached. Nothing was changed. Use --attached-ok to end it anyway.', result.stderr)
+        self.assertNotIn("terminal-session.sh end lead", self.calls())
+        result = self.run_cli('end', 'lead', '1:$2:3', '--attached-ok')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh end lead '1:$2:3'", self.calls())
+
+    def test_end_confirmed_still_ends_without_the_check(self):
+        self.env['TEST_WRITABLE'] = '1'
+        result = self.run_cli('--end-confirmed', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('terminal-session.sh state', self.calls())
+
+    def test_end_refuses_bad_arguments_before_aws(self):
+        for args in [('end',), ('end', 'lead'), ('end', 'lead', 'x;y'), ('end', 'lead', '1:$2:3', '--force'),
+                     ('end', 'lead', '1:$2:3', '--attached-ok', 'more'), ('end', 'bad name', '1:$2:3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_end_stops_when_the_state_cannot_be_read(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        self.assertNotEqual(self.run_cli('end', 'lead', '1:$2:3').returncode, 0)
+        self.assertNotIn('terminal-session.sh end lead', self.calls())
 
     def test_health_and_end_use_bounded_noninteractive_commands(self):
         self.assertEqual(self.run_cli('health').returncode,0)

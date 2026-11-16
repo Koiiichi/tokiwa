@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 import unittest
 
@@ -947,21 +948,25 @@ class Control(ModelHelpers, Server):
         self.assertNotIn('secret-looking-text', json.dumps(self.audit()))
 
 
-class AgentState(ModelHelpers, Server):
-    """tokiwa-state records the state that an agent's hook reports, and the snapshot shows it."""
+class AgentPanes(ModelHelpers):
+    """Stand-in agents: a pane that runs a program named `claude` or `codex`, and the hook reports."""
 
-    def agent(self, name, program):
-        """A Tokiwa session whose pane runs a program named `program`, as an agent would."""
+    def agent(self, name, program, text=''):
+        """A Tokiwa session whose pane runs a program named `program`, as an agent would.
+
+        The program prints `text`, then waits. Ctrl-C ends it, which leaves the shell as the pane command.
+        """
         tools = Path(self.temp.name) / 'tools'
         tools.mkdir(exist_ok=True)
         # tmux names a pane by its program. A small compiled program, because macOS stops a copied
         # system binary and a script shows the name of its interpreter.
         if not shutil.which('cc'):
             self.skipTest('the stand-in agent needs a C compiler')
-        (tools / 'agent.c').write_text('#include <unistd.h>\nint main(void){sleep(300);return 0;}\n')
+        (tools / 'agent.c').write_text('#include <stdio.h>\n#include <unistd.h>\n'
+                                       'int main(int argc,char**argv){if(argc>1)puts(argv[1]);fflush(stdout);sleep(300);return 0;}\n')
         subprocess.run(['cc', '-o', str(tools / program), str(tools / 'agent.c')], check=True)
         self.assertEqual(self.helper('ensure', name).returncode, 0)
-        self.tm('send-keys', '-t', f'={name}:', f'{tools / program} 300', 'Enter')
+        self.tm('send-keys', '-t', f'={name}:', f"{tools / program} '{text}'", 'Enter')
         for _ in range(100):
             if self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_current_command}').stdout.strip() == program:
                 return
@@ -976,6 +981,10 @@ class AgentState(ModelHelpers, Server):
         # A hook sends its event as JSON on stdin; tokiwa-state reads and ignores it.
         return subprocess.run([sys.executable, str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
                               capture_output=True, text=True, timeout=10)
+
+
+class AgentState(AgentPanes, Server):
+    """tokiwa-state records the state that an agent's hook reports, and the snapshot shows it."""
 
     def test_a_reported_state_shows_while_the_agent_runs(self):
         self.agent('lead', 'claude')
@@ -1135,6 +1144,225 @@ class SavedProjects(ModelHelpers, Server):
         # Forgetting a project forgets the projects inside it.
         self.helper('forget-project', self.b64('archive'))
         self.assertEqual(self.projects(), {})
+
+
+class AgentStateRecord(AgentPanes, Server):
+    """`state` reports the agent of one session as JSON; `wait` returns when the agent needs a caller."""
+
+    def identity(self, name):
+        return self.rows()[name]['identity']
+
+    def state(self, name, identity=None):
+        result = self.helper('state', name, identity or self.identity(name))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def option(self, name, key, value):
+        self.assertEqual(self.tm('set-option', '-t', f'={name}:', key, value).returncode, 0)
+
+    def wait(self, name, after, identity=None, seconds='20'):
+        self.env['TOKIWA_WAIT_SECONDS'] = seconds
+        result = self.helper('wait', name, identity or self.identity(name), str(after))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def later(self, delay, action):
+        """Run action from a thread after delay seconds. Return the thread."""
+        thread = threading.Timer(delay, action)
+        thread.start()
+        self.addCleanup(thread.join)
+        return thread
+
+    def test_state_of_an_idle_agent(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:100')
+        self.option('lead', '@tokiwa_turn', '3')
+        identity = self.identity('lead')
+        record = self.state('lead')
+        self.assertEqual(record['name'], 'lead')
+        self.assertEqual(record['identity'], identity)
+        self.assertEqual((record['session'], record['program'], record['agent'], record['agent_at']),
+                         ('live', 'claude', 'idle', 100))
+        self.assertEqual((record['turn'], record['pending'], record['dialog']), (3, None, False))
+        self.assertEqual((record['clients'], record['writable_clients'], record['driver']), (0, 0, None))
+        self.assertIsInstance(record['sampled_at'], int)
+
+    def test_state_of_an_agent_that_has_reported_nothing(self):
+        self.agent('lead', 'codex')
+        record = self.state('lead')
+        self.assertEqual((record['program'], record['agent'], record['agent_at'], record['turn']), ('codex', 'unknown', None, 0))
+
+    def test_state_of_a_shell(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        # A state that an ended agent left behind does not show.
+        self.option('plain', '@tokiwa_agent', 'idle:100')
+        record = self.state('plain')
+        self.assertEqual((record['session'], record['program'], record['agent'], record['agent_at']), ('live', 'shell', 'none', None))
+
+    def test_state_of_another_program(self):
+        self.tm('new-session', '-d', '-s', 'job', 'sleep 300')
+        record = self.state('job', self.identity('job'))
+        self.assertEqual((record['program'], record['agent']), ('other', 'none'))
+
+    def test_state_of_a_missing_session_is_gone(self):
+        record = self.state('nothing', '1:$2:3')
+        self.assertEqual((record['session'], record['name'], record['identity']), ('gone', 'nothing', '1:$2:3'))
+        self.assertEqual((record['program'], record['agent'], record['pending'], record['clients'], record['writable_clients']),
+                         (None, 'none', None, 0, 0))
+
+    def test_state_of_a_replaced_session(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:100')
+        record = self.state('lead', '1:$99:1')
+        self.assertEqual(record['session'], 'replaced')
+        # Nothing of the other session shows.
+        self.assertEqual((record['program'], record['agent'], record['turn'], record['driver']), (None, 'none', None, None))
+
+    def test_state_after_rename(self):
+        self.agent('lead', 'claude')
+        identity = self.identity('lead')
+        self.assertEqual(self.helper('rename', 'lead', self.b64({'to': 'lead-2', 'identity': identity})).returncode, 0)
+        self.assertEqual(self.state('lead', identity)['session'], 'gone')
+        self.assertEqual(self.state('lead-2', identity)['session'], 'live')
+
+    def test_state_shows_the_pending_id_but_not_its_text(self):
+        self.agent('lead', 'claude')
+        item = {'id': 'toolu_x', 'kind': 'question', 'summary': 'Which database should it use?', 'options': ['sqlite', 'postgres'], 'at': 90}
+        self.option('lead', '@tokiwa_pending', self.b64(item))
+        result = self.helper('state', 'lead', self.identity('lead'))
+        self.assertEqual(json.loads(result.stdout)['pending'], {'id': 'toolu_x', 'kind': 'question', 'at': 90})
+        for text in ['Which database', 'sqlite']:
+            self.assertNotIn(text, result.stdout)
+
+    def test_state_reports_a_pending_item_that_cannot_be_read(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_pending', 'not-base64!')
+        self.assertIsNotNone(self.state('lead')['pending'])
+
+    def test_state_reports_a_dialog(self):
+        self.agent('lead', 'claude', 'Enter to confirm · Esc to cancel')
+        self.screen('lead', 'Esc to cancel')
+        self.assertTrue(self.state('lead')['dialog'])
+
+    def test_a_dialog_marker_is_read_for_the_running_agent_only(self):
+        self.agent('coder', 'codex', 'Do you want to proceed?')
+        self.screen('coder', 'Do you want')
+        self.assertFalse(self.state('coder')['dialog'])
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.tm('send-keys', '-t', '=plain:', 'echo "Enter to confirm"', 'Enter')
+        self.screen('plain', 'Enter to confirm')
+        self.assertFalse(self.state('plain')['dialog'])
+
+    def test_screen_dialog_matches_only_the_last_15_lines(self):
+        text = 'Do you want to run it?' + '\n' * 3 + '\n'.join(f'line {i}' for i in range(20))
+        self.agent('lead', 'claude', text)
+        self.screen('lead', 'line 19')
+        self.assertFalse(self.state('lead')['dialog'])
+
+    def test_writable_and_read_only_clients_are_counted(self):
+        self.agent('lead', 'claude')
+        identity = self.identity('lead')
+        clients = []
+        try:
+            for flag in ['view', 'attach']:
+                pid, fd = pty.fork()
+                if pid == 0:
+                    os.environ.update(self.env, TERM='xterm-256color')
+                    os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), flag, 'lead', identity)
+                clients.append((pid, fd))
+                for _ in range(200):
+                    if select.select([fd], [], [], 0.02)[0]:
+                        os.read(fd, 65536)
+                    if len(self.tm('list-clients', '-t', '=lead').stdout.splitlines()) == len(clients):
+                        break
+            record = self.state('lead')
+            self.assertEqual((record['clients'], record['writable_clients']), (2, 1))
+        finally:
+            # Detach first, so that no client is left to write to a terminal that is closed.
+            self.tm('detach-client', '-s', '=lead')
+            for pid, fd in clients:
+                os.close(fd)
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+
+    def test_wait_returns_turn_ended(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:100')
+        self.option('lead', '@tokiwa_turn', '3')
+
+        def finish():
+            self.option('lead', '@tokiwa_turn', '4')
+            self.option('lead', '@tokiwa_agent', 'idle:200')
+        self.later(0.5, finish)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['turn'], record['agent']), ('turn-ended', 4, 'idle'))
+
+    def test_wait_does_not_return_for_a_turn_that_is_still_working(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_turn', '4')
+        self.assertEqual(self.wait('lead', 3, seconds='1')['reason'], 'timeout')
+
+    def test_wait_on_limited_and_error_is_turn_ended(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_turn', '4')
+        for state in ['limited', 'error']:
+            self.option('lead', '@tokiwa_agent', f'{state}:100')
+            self.assertEqual(self.wait('lead', 3)['reason'], 'turn-ended', state)
+
+    def test_wait_returns_pending(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_turn', '3')
+        item = {'id': 'toolu_p', 'kind': 'permission', 'summary': 'Bash: ls', 'options': [], 'at': 150}
+
+        def ask():
+            self.option('lead', '@tokiwa_agent', 'waiting:150')
+            self.option('lead', '@tokiwa_pending', self.b64(item))
+        self.later(0.5, ask)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['pending']['id']), ('pending', 'toolu_p'))
+
+    def test_wait_returns_dialog(self):
+        self.agent('lead', 'claude', 'Do you want to trust this folder?')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.screen('lead', 'trust this folder')
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['dialog']), ('dialog', True))
+
+    def test_wait_reports_ended_when_the_agent_exits(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.later(0.5, lambda: self.tm('send-keys', '-t', '=lead:', 'C-c'))
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['program'], record['agent']), ('ended', 'shell', 'none'))
+
+    def test_wait_reports_ended_for_a_missing_or_replaced_session(self):
+        self.assertEqual(self.wait('nothing', 3, '1:$2:3')['reason'], 'ended')
+        self.agent('lead', 'claude')
+        record = self.wait('lead', 3, '1:$99:1')
+        self.assertEqual((record['reason'], record['session']), ('ended', 'replaced'))
+
+    def test_wait_times_out(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_turn', '3')
+        started = time.monotonic()
+        record = self.wait('lead', 3, seconds='1')
+        self.assertEqual((record['reason'], record['turn']), ('timeout', 3))
+        self.assertTrue(1 <= time.monotonic() - started < 5)
+
+    def test_state_and_wait_check_their_arguments(self):
+        for args in [('state', 'lead'), ('state', 'lead', 'x'), ('state', 'bad name', '1:$2:3'), ('wait', 'lead', '1:$2:3'),
+                     ('wait', 'lead', '1:$2:3', 'x'), ('wait', 'lead', '1:$2:3', '-1'), ('wait', 'lead', '1:$2:3', '3', '4')]:
+            result = self.helper(*args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertEqual(result.stdout, '', args)
+
+    def test_state_changes_nothing_and_is_not_logged(self):
+        self.agent('lead', 'claude')
+        self.state('lead')
+        self.assertFalse((Path(self.temp.name) / 'state' / 'audit.log').exists())
 
 
 class RenameSession(ModelHelpers, Server):

@@ -118,6 +118,18 @@
       }
     },
     {
+      "command": "state",
+      "class": "read",
+      "example": ["state", "lead", "1:$2:3"],
+      "helper": "state"
+    },
+    {
+      "command": "wait",
+      "class": "read",
+      "example": ["wait", "lead", "1:$2:3", "--after", "3"],
+      "helper": "wait"
+    },
+    {
       "command": "spend",
       "class": "read",
       "example": ["spend"]
@@ -330,6 +342,12 @@
           }
         }
       }
+    },
+    {
+      "command": "end",
+      "class": "control",
+      "example": ["end", "lead", "1:$2:3"],
+      "helper": "end"
     },
     {
       "command": "--end-confirmed",
