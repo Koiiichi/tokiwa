@@ -74,12 +74,13 @@ test("arrow keys select a session and Enter attaches it with its identity", asyn
   }
 });
 
-test("a failed session read names the reason in the band and the header shows the host unreachable", async () => {
+test("a failed session read names the reason at the top of the list and leaves the header alone", async () => {
   const { t } = await landing(100, 30, true);
   try {
     const frame = t.captureCharFrame();
-    expect(frame).toContain("○ EC2 · offline");
-    expect(frame).toContain("▲ Sessions read failed: timeout.");
+    // A read that failed for its own reason is no statement about the link.
+    expect(frame.split("\n")[0]).not.toContain("offline");
+    expect(frame).toContain("▲ Sessions read failed: timeout");
     expect(frame).toContain("No sessions read");
   } finally {
     await t.dispose();

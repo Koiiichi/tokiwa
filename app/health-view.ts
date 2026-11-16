@@ -322,20 +322,34 @@ const LAST_KNOWN = "last known";
 /** The text of a value that no read has given: `not read` under a global failure, else the reason. */
 const absent = (m: HealthViewModel, reason: string) =>
   m.globalFailure ? NOT_READ : missing(reason);
-/** When a last-known sample was taken: the time, with the date when it is not today. */
-function sampledAt(m: HealthViewModel, sampledAt: number) {
-  const at = new Date(sampledAt * 1000);
-  const time = at.toLocaleTimeString([], {
+/** The time of day of an instant, 24 hours, as the views show it. */
+export function timeOfDay(at: number) {
+  return new Date(at).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
-  const today = new Date(m.now);
+}
+/** An instant in milliseconds: the time when it is today, with the date when it is not. */
+function clock(at: number, now: number) {
+  const date = new Date(at);
+  const today = new Date(now);
   const sameDay =
-    at.getFullYear() === today.getFullYear() &&
-    at.getMonth() === today.getMonth() &&
-    at.getDate() === today.getDate();
-  return sameDay ? time : `${MONTHS[at.getMonth()]} ${at.getDate()} ${time}`;
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  const time = timeOfDay(at);
+  return sameDay
+    ? time
+    : `${MONTHS[date.getMonth()]} ${date.getDate()} ${time}`;
+}
+/** When a last-known sample was taken: the time, with the date when it is not today. */
+function sampledAt(m: HealthViewModel, sampledAt: number) {
+  return clock(sampledAt * 1000, m.now);
+}
+/** When the last good read ended, with its age: `14:02 · 6m ago` or `Nov 13 21:20 · 41h ago`. */
+export function syncedText(at: number, now: number) {
+  return `${clock(at, now)} · ${age((now - at) / 1000)}`;
 }
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 const gib = (bytes: number) => (bytes / GiB).toFixed(1);
@@ -369,7 +383,8 @@ export function formatDuration(seconds: number) {
 function age(seconds: number) {
   if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 48 * 3600) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 /** Shift an ISO time with an offset so that its UTC fields read as the time in that offset. */
@@ -429,8 +444,7 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     const { instance_id, instance, region } = m.spend;
     const state = instance.state === "running" ? "" : ` · ${instance.state}`;
     const tone = state ? "warning" : undefined;
-    const known =
-      m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
+    const known = m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
     const joined = `${instance_id} · ${instance.type} · ${region}${state}${known}`;
     if (joined.length <= valueWidth)
       rows.push({ kind: "pair", label: "Instance:", value: joined, tone });

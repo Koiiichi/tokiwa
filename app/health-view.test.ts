@@ -9,6 +9,7 @@ import {
   lineText,
   loadHealthConfig,
   spendReading,
+  syncedText,
   type Span,
 } from "./health-view";
 import {
@@ -419,10 +420,7 @@ test("last-known spend keeps its values and says so", () => {
 
 test("a value that was never read says not read under a global failure", () => {
   const all = text(
-    healthLines(
-      fixtureModel({ spend: undefined, globalFailure: true }),
-      96,
-    ),
+    healthLines(fixtureModel({ spend: undefined, globalFailure: true }), 96),
   );
   expect(all).toContain("Spent so far:   not read");
   expect(all).toContain("Instance:       not read");
@@ -540,4 +538,13 @@ test("short heights drop the blank lines between sections", () => {
     0,
   );
   expect(short.filter((line) => !lineText(line).trim()).length).toBe(0);
+});
+
+test("syncedText gives the time today, the date on another day, and days from 48 hours", () => {
+  const now = new Date(2026, 10, 15, 14, 30).getTime();
+  const earlier = (hours: number) => now - hours * 3600_000;
+  expect(syncedText(now - 6 * 60_000, now)).toBe("14:24 · 6m ago");
+  expect(syncedText(earlier(41), now)).toBe("Nov 13 21:30 · 41h ago");
+  expect(syncedText(earlier(50), now)).toMatch(/^Nov 13 12:30 · 2d ago$/);
+  expect(syncedText(earlier(50), now).endsWith("· 2d ago")).toBe(true);
 });

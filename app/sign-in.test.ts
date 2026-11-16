@@ -49,7 +49,7 @@ test("an expired sign-in offers the sign-in key in the band, the list, the pane 
 test("another read failure keeps its message, and the sign-in key does nothing", async () => {
   const { t, app } = await open("Launcher --snapshot exited 255: timeout");
   try {
-    expect(t.captureCharFrame()).toContain("▲ Sessions read failed: timeout.");
+    expect(t.captureCharFrame()).toContain("▲ Sessions read failed: timeout");
     await t.mockInput.typeText("l");
     await pause();
     expect(app.shells).toHaveLength(0);
@@ -68,7 +68,7 @@ test("the sign-in runs in a view that closes after success, and the sessions ret
     await t.renderOnce();
     expect(t.captureCharFrame()).toContain("Signing in…");
     state.message = undefined;
-    await until(() => app.shells.length === 0 && !app.sessionsError);
+    await until(() => app.shells.length === 0 && !app.sources.sessions.failure);
     await t.renderOnce();
     const frame = t.captureCharFrame();
     expect(frame).toContain("web-lead");

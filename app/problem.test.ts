@@ -1,7 +1,15 @@
 import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { LauncherError, type LauncherCategory } from "./backend";
-import { MAPPED_SENTENCES, classify, worst, GLOBAL_KINDS } from "./problem";
+import {
+  MAPPED_SENTENCES,
+  classify,
+  errorState,
+  worst,
+  GLOBAL_KINDS,
+  type Source,
+} from "./problem";
+import { FRESHNESS_LIMIT_MS, SourceStatus } from "./state";
 
 const NOISE =
   "shell-init: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory\n" +
@@ -204,4 +212,103 @@ test("a failure keeps its raw message", () => {
   expect(read(exit("x", { code: 255 })).raw).toBe(
     "Launcher --snapshot exited 255: x",
   );
+});
+
+function statuses() {
+  const make = (source: Source) => new SourceStatus(FRESHNESS_LIMIT_MS[source]);
+  return {
+    sessions: make("sessions"),
+    health: make("health"),
+    spend: make("spend"),
+  };
+}
+
+test("one success clears a global failure for all sources", () => {
+  const sources = statuses();
+  sources.health.fail(
+    classify(
+      "health",
+      exit("Tokiwa: AWS authentication failed.", { category: "auth" }),
+      10,
+    ),
+  );
+  expect(errorState(sources, 15)?.kind).toBe("signed-out");
+  sources.sessions.succeed(20);
+  // Health's own failure is newer than its own success, yet the link works.
+  expect(sources.health.failAt).toBeGreaterThan(sources.health.okAt);
+  expect(errorState(sources, 25)).toBeUndefined();
+});
+
+test("a component failure stays until its own source succeeds", () => {
+  const sources = statuses();
+  sources.health.fail(
+    classify("health", plain("The health response is invalid."), 10),
+  );
+  sources.sessions.succeed(20);
+  expect(errorState(sources, 25)).toMatchObject({
+    kind: "failed",
+    scope: "component",
+    affected: ["health"],
+    recovery: "retry",
+  });
+  expect(errorState(sources, 25)?.lastSuccess).toBeUndefined();
+  sources.health.succeed(30);
+  expect(errorState(sources, 35)).toBeUndefined();
+});
+
+test("a global failure names every source, ranks by cause and keeps each diagnostic", () => {
+  const sources = statuses();
+  sources.spend.succeed(5);
+  sources.sessions.fail(
+    classify(
+      "sessions",
+      exit("Tokiwa: AWS authentication failed.", { category: "auth" }),
+      10,
+    ),
+  );
+  sources.health.fail(
+    classify(
+      "health",
+      exit("x", { category: "unreachable", command: "health" }),
+      11,
+    ),
+  );
+  const state = errorState(sources, 12)!;
+  expect(state).toMatchObject({
+    kind: "signed-out",
+    scope: "global",
+    title: "AWS sign-in expired",
+    affected: ["sessions", "health", "spend"],
+    recovery: "sign-in",
+    lastSuccess: 5,
+  });
+  expect(state.diagnostics.map((f) => f.source)).toEqual([
+    "sessions",
+    "health",
+  ]);
+});
+
+test("a setup failure offers no recovery key, and a spend failure is not a component error", () => {
+  const sources = statuses();
+  sources.spend.fail(
+    classify("spend", plain("The spend response is invalid."), 10),
+  );
+  expect(errorState(sources, 11)).toBeUndefined();
+  sources.sessions.fail(
+    classify(
+      "sessions",
+      new LauncherError(
+        "Launcher --snapshot could not start: x",
+        "--snapshot",
+        "spawn",
+        null,
+        "x",
+      ),
+      12,
+    ),
+  );
+  expect(errorState(sources, 13)).toMatchObject({
+    kind: "setup",
+    recovery: "none",
+  });
 });

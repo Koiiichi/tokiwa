@@ -8,6 +8,7 @@ import {
   SIGN_IN_EXPIRED,
   type LauncherCategory,
 } from "./backend";
+import type { SourceStatus } from "./state";
 
 export type Source = "sessions" | "health" | "spend";
 export type ProblemKind =
@@ -201,4 +202,75 @@ export function worst(failures: Failure[]): Failure | undefined {
   return [...failures].sort(
     (a, b) => RANK.indexOf(a.kind) - RANK.indexOf(b.kind),
   )[0];
+}
+
+const SOURCES: Source[] = ["sessions", "health", "spend"];
+
+/** What every view, the header and the band read: one explanation and one way to recover. */
+export interface ErrorState {
+  kind: ProblemKind;
+  scope: "global" | "component";
+  /** The title of the failure, without a trailing period. */
+  title: string;
+  explanation: string;
+  /** The sources that the failure keeps from being live. A global failure affects all of them. */
+  affected: Source[];
+  recovery: "sign-in" | "retry" | "none";
+  /** When the newest good read among the affected sources ended, in milliseconds. */
+  lastSuccess?: number;
+  /** The active failure of each failed source, in the order sessions, health, spend. */
+  diagnostics: Failure[];
+}
+
+/**
+ * The failure to show, or undefined. A global failure is active while it is later than the newest
+ * success of any source: one good read shows that the link works. Of those, `worst` explains the
+ * others. Without one, the newest failure of a source that failed for its own reason is active
+ * until that source succeeds. A failed spend read stays in the Spend rows and is never chosen.
+ * `now` is part of the call for a later rule; no rule reads it yet.
+ */
+export function errorState(
+  sources: Record<Source, SourceStatus>,
+  now: number,
+): ErrorState | undefined {
+  const newestOk = Math.max(...SOURCES.map((s) => sources[s].okAt));
+  const failures = SOURCES.flatMap((s) => sources[s].failure ?? []);
+  const global = failures.filter(
+    (f) => GLOBAL_KINDS.includes(f.kind) && f.at > newestOk,
+  );
+  const diagnostics = failures.filter(
+    (f) => !GLOBAL_KINDS.includes(f.kind) || f.at > newestOk,
+  );
+  const top = worst(global);
+  if (top)
+    return {
+      kind: top.kind,
+      scope: "global",
+      title: top.title,
+      explanation: top.explanation,
+      affected: [...SOURCES],
+      recovery:
+        top.kind === "signed-out"
+          ? "sign-in"
+          : top.kind === "setup"
+            ? "none"
+            : "retry",
+      ...(newestOk > 0 ? { lastSuccess: newestOk } : {}),
+      diagnostics,
+    };
+  const own = failures
+    .filter((f) => f.kind === "failed" && f.source !== "spend")
+    .sort((a, b) => b.at - a.at)[0];
+  if (!own) return undefined;
+  const okAt = sources[own.source].okAt;
+  return {
+    kind: own.kind,
+    scope: "component",
+    title: own.title,
+    explanation: own.explanation,
+    affected: [own.source],
+    recovery: "retry",
+    ...(okAt > 0 ? { lastSuccess: okAt } : {}),
+    diagnostics,
+  };
 }

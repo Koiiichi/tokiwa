@@ -7,13 +7,14 @@ For colours, spacing and the drawing of each part, see [DESIGN.md](../DESIGN.md)
 
 ## Screen layout
 
-The screen has a header, a problem band while a read fails, a navigation row, a body and a footer. At 100 columns and wider, the Workspace body holds the session list and up to two terminal views side by side.
+The screen has a header, a problem band of two rows while the link fails, a navigation row, a body and a footer. At 100 columns and wider, the Workspace body holds the session list and up to two terminal views side by side.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ ◇ tokiwa  /  Workspace                                   ● EC2 │ header
+│ ◇ tokiwa  /  Workspace                      ○ EC2 · signed out │ header
 ├────────────────────────────────────────────────────────────────┤
-│ ▲ AWS sign-in expired. Last good read at 13:08.  l sign in · … │ problem band
+│ ▲ AWS sign-in expired                    l sign in · e details │ problem band
+│   Live status unavailable. Last synced 13:08 · 6m ago.         │
 │ Workspace  Health                                              │ navigation
 ├───────────────────────┬──────────────────┬─────────────────────┤
 │ api                   │ claude-main  api │ shell-1a2b3c4d  api │
@@ -30,7 +31,7 @@ The screen has a header, a problem band while a read fails, a navigation row, a 
 | Part | Content |
 | --- | --- |
 | Header | The breadcrumb `◇ tokiwa  /  Workspace` or `◇ tokiwa  /  Health`, and the state of the link to the host at the right. |
-| Problem band | Only while the last session read or Health read failed: the cause, the time of the last good read and the key that acts on it. See [Problem band](#problem-band). |
+| Problem band | Only while a failure of the whole link is active: two rows with the cause, the age of the last good read and the key that acts on it. See [Problem band](#problem-band). |
 | Navigation | `Workspace` and `Health`. In focus mode, the strip of the other sessions shows after them. The row shows no error. |
 | Body | The Workspace or the Health view. The shortcuts sheet and the search take its place while they are open. |
 | Footer | One line of controls for the current context. |
@@ -50,15 +51,19 @@ Until a session is attached, the right side shows `No session attached`, a line 
 
 The breadcrumb names the view. Until the first session read of the host ends, its diamond cycles through `◇ ◈ ◆ ◈`. With `TOKIWA_REDUCED_MOTION=1` it stays still.
 
-The status at the right shows the link to the host as a dot, for example `● EC2`. A state other than `connected` follows the dot as a word. The state comes from the last session read and the last Health read. Health names this Mac in its Workstation section.
+The status at the right shows the link to the host as a dot, for example `● EC2`. A state other than `connected` follows the dot as a word. The word shows the link first (`signed out`, `offline`), then the workstation (`stopped`, `not ready`). A read that failed for its own reason, for example an invalid Health response, never changes the word. Health names this Mac in its Workstation section.
 
 | Status | Meaning |
 | --- | --- |
 | `◌ EC2 · connecting` | No read has ended yet, and a read runs. Before the first read starts, the status is `◌ EC2`. |
-| `● EC2` | The last read succeeded less than 90 seconds ago. |
-| `◐ EC2 · reconnecting` | The last successful read is more than 90 seconds old. Amber. |
-| `○ EC2 · signed out` | The last read failed because the AWS sign-in expired. Amber. |
-| `○ EC2 · offline` | The last read failed for another reason. Amber. |
+| `● EC2` | A session read or a Health read succeeded less than 90 seconds ago. |
+| `◐ EC2 · reconnecting` | The newest successful read is more than 90 seconds old. Amber. |
+| `○ EC2 · signed out` | A failure of the whole link is active, and the AWS sign-in expired. Amber. |
+| `○ EC2 · offline` | A failure of the whole link is active, and AWS did not answer: the network failed, a read timed out, or a request failed after the sign-in check. Amber. |
+| `○ EC2 · stopped` | The launcher found the workstation in a state other than running. Amber. |
+| `○ EC2 · not ready` | The workstation runs, and its workbench check returned Failed. Amber. |
+
+A failure of the whole link is active while it is later than the newest good read of any source: one good read clears it. A failure of one source stays with that source until that source reads well.
 
 A click on the status opens a card about the connection. A second click on the status, a click elsewhere or `esc` closes it. Its first line names this Mac and the link, for example `<mac> → EC2 · connected`.
 
@@ -72,19 +77,37 @@ Session Manager carries no ICMP, so a try is a TCP connection. The app makes a t
 
 ### Problem band
 
-While the last session read or the last Health read failed, one band under the header names the problem. The band shows on every view. When both reads failed, it names the cause that explains the other: a setup problem first, then an expired sign-in, then a network failure, then a stopped workstation, then a workbench that is not ready, then any other failure.
+While a failure of the whole link is active, one band of two rows under the header names the problem. The band shows on every view. The first row is the title with its keys at the right. The second row is dim: what the failure means and the age of the last good read, for example `Nov 13 21:20 · 41h ago`. A time on another day carries its date, and an age from 48 hours counts days. When several failures are active, the band names the cause that explains the others: a setup problem first, then an expired sign-in, then a network failure, then a stopped workstation, then a workbench that is not ready.
 
-| Band | Cause | Key |
-| --- | --- | --- |
-| `▲ AWS sign-in expired.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band says `Signing in… finish in the browser`. |
-| `▲ The launcher is not installed.`, `▲ The launcher is older than the app.`, `▲ The host settings need a fix.` | The launcher is missing or too old for the app, or the host settings file is wrong. | `u` retries after the fix. |
-| `▲ The workstation is stopped.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
-| `▲ AWS cannot be reached from this Mac.` | The launcher reported a network failure in its AWS access check, or a read took longer than 90 seconds. | `u` retries. |
-| `▲ An AWS request failed.`, `▲ An AWS request did not finish.` | An AWS request failed after the access check passed, or the workbench check ended with a status other than Failed. The workstation state is unknown. | `u` retries. |
-| `▲ The workbench server is not ready.` | The workbench check on the host returned Failed. | `u` retries. |
-| `▲ Sessions read failed: <first line>` | Any other failure of a read (`Sessions`, `Health` or `Spend`): its first line of output, without the launcher prefix and without shell warnings about a removed folder. | `u` retries. |
+| First row | Second row | Cause | Key |
+| --- | --- | --- | --- |
+| `▲ AWS sign-in expired` | `Live status unavailable. Last synced {when}.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band is one row: `Signing in… finish in the browser`. |
+| `▲ AWS cannot be reached from this Mac`, `▲ An AWS request failed`, `▲ An AWS request did not finish` | `Showing the last known state from {when}. Retrying every 30 s.` | The launcher reported a network failure in its AWS access check, a read took longer than 90 seconds, a request failed after the access check passed, or the workbench check ended with a status other than Failed. The workstation state is unknown. | `u` retries. |
+| `▲ The workstation is stopped` | `Start it in AWS, then press u. Last synced {when}.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
+| `▲ The workbench server is not ready` | `Tokiwa retries every 30 s. Last synced {when}.` | The workbench check on the host returned Failed. | `u` retries. |
+| `▲ The launcher is not installed`, `▲ The launcher is older than the app`, `▲ The host settings need a fix` (critical tone) | The explanation of the failure, with the fix. | The launcher is missing or too old for the app, or the host settings file is wrong. | Only `e`. |
 
-After the cause, the band gives the time of the last good read, for example `Last good read at 13:08.`. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. `e`, or a click on the band, opens the last six lines of the raw output in a box under the band, with one copy of a failure that both reads report; `e` closes it. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
+`{when}` is the time of the newest good read of any source with its age. When no read has worked yet, the second row says `Nothing was read yet.` in its place.
+
+A read that failed for its own reason has no band. One amber line sits at the top of the view of that source: `▲ Sessions read failed: <first line>` at the top of the session list, and `▲ Health read failed: <first line>` at the top of Health, each with `u retry · e details` at the right. The first line is the first line of output, without the launcher prefix and without shell warnings about a removed folder. While the band shows, these lines do not show. A failed Spend read stays in the Spend rows.
+
+`e`, or a click on the band, opens one details box under it; `e` closes it. For a failure of one source, the box opens under the header with no band row. The box holds, in this order:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Last synced   Nov 13 21:20 · 41h ago                                     │
+│ Affected      Workspace, Health, Spend                                   │
+│ Recovery      l runs tokiwa login in a local view                        │
+│                                                                          │
+│ sessions      --snapshot exit 1 · auth · 14:20                           │
+│ health        health exit 1 · auth · 14:20                               │
+│                                                                          │
+│ Tokiwa: AWS authentication failed. Run aws sso login --profile           │
+│ profile-a.                                                               │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The facts come first. Then one row per failed source gives its launcher command, exit code, the category or kind, and the time. Then one copy of the launcher's own text, the last six lines, without the `Launcher … exited N:` prefix. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
 
 ## Session list
 
@@ -120,9 +143,9 @@ When the list is empty, it says why:
 | --- | --- |
 | `Reading sessions…` | The first read has not ended. |
 | `No sessions on EC2` | The read succeeded and the host has no sessions. |
-| `No sessions read` | The read failed. The problem band names the cause. The list adds `l signs in` or `u reads them again`. |
+| `No sessions read` | The read failed. The problem band, or the line at the top of the list, names the cause. The list adds `l signs in` or `u reads them again`. |
 
-When a read fails and the list holds an earlier read, the list keeps it. The problem band names the failure. While the list shows an old read and no read runs, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. The local group never does.
+When a read fails and the list holds an earlier read, the list keeps it. The problem band, or the line at the top of the list, names the failure. While the list shows an old read and no read runs, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. The local group never does.
 
 ## Status glyphs
 
@@ -176,7 +199,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `z` | **Focus**: hide the session list beside the terminal, or show it again. |
 | `u` | **Refresh sessions**: read the session snapshot again. When the last Health read failed, read Health again too. |
 | `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser, or the program in [`TOKIWA_SIGN_IN_BROWSER`](configuration.md#environment-variables) when it is set, opens for the approval. After a success the view closes, and the sessions and Health are read again; after a failure the view stays open with the message. At other times the key does nothing. |
-| `e` | **Error details**: open or close the raw output of the failed read under the problem band. With no problem band, the key does nothing. |
+| `e` | **Error details**: open or close the details box of the active failure under the header. With no failure, the key does nothing. |
 | `t` | **New local shell**: start a local login shell in the home directory. |
 | `g` | **Local shell group**: start the shells that `projects.json` names. |
 | `b` | **Background sessions**: open or close the background list. In the list, `enter` opens the selected session view only and `x` ends it, after a question. With no background session, the key does nothing. |

@@ -179,9 +179,7 @@ test("a launcher setup failure of the spend read says not read", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    expect(t.captureCharFrame()).toContain(
-      "Spent so far:   not read",
-    );
+    expect(t.captureCharFrame()).toContain("Spent so far:   not read");
     expect(app.sources.spend.failure?.kind).toBe("setup");
   } finally {
     await t.dispose();
@@ -230,9 +228,9 @@ test("only a failed read is reported as a failed read", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    // The band under the header names the failed read; the readings stay and are last known.
+    // One line at the top of Health names the failed read; the readings stay and are last known.
     const frame = t.captureCharFrame();
-    expect(frame).toContain("▲ Health read failed: offline.");
+    expect(frame).toContain("▲ Health read failed: offline");
     expect(frame).toContain("· last known");
     expect(frame).not.toContain("Last read failed");
   } finally {
