@@ -160,6 +160,26 @@ class TokiwaState(unittest.TestCase):
         self.assertIn("make check", pending["summary"])
         self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["tool"], "Bash")
 
+    def test_a_permission_notification_for_the_open_question_keeps_the_question(self):
+        # Claude Code also sends a permission_prompt notification for the dialog of an AskUserQuestion call.
+        question = fixture("claude-pre-tool-use-ask-user-question")
+        self.record("note", stdin=question)
+        self.record("waiting", "--kind", "question", stdin=question)
+        self.record("waiting", "--kind", "permission", stdin=fixture("claude-notification-permission"))
+        pending = self.decoded("@tokiwa_agent_pending")
+        self.assertEqual((pending["kind"], pending["id"]), ("question", "toolu_question_a"))
+        self.assertEqual(pending["options"], ["Text parser", "Binary parser"])
+
+    def test_a_permission_notification_after_a_later_tool_replaces_the_question(self):
+        question = fixture("claude-pre-tool-use-ask-user-question")
+        self.record("note", stdin=question)
+        self.record("waiting", "--kind", "question", stdin=question)
+        self.record("note", stdin=fixture("claude-pre-tool-use-bash"))
+        self.record("waiting", "--kind", "permission", stdin=fixture("claude-notification-permission"))
+        pending = self.decoded("@tokiwa_agent_pending")
+        self.assertEqual(pending["kind"], "permission")
+        self.assertIn("make check", pending["summary"])
+
     def test_note_records_the_id_of_the_tool_call(self):
         # `agent answer` compares this id with the pending id: a later tool call stops the answer.
         self.record("note", stdin=fixture("claude-pre-tool-use-bash"))

@@ -232,6 +232,15 @@ def record(argv):
             pass
         if not isinstance(last_tool, dict):
             last_tool = {}
+        if kind == "permission" and not event.get("tool_name") and last_tool.get("id"):
+            # Claude Code sends a permission_prompt notification for the dialog of an AskUserQuestion call too.
+            # It names no tool call, so it belongs to the question that the last tool call opened.
+            try:
+                current = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_pending")))
+            except ValueError:
+                current = None
+            if isinstance(current, dict) and current.get("kind") == "question" and current.get("id") == last_tool["id"]:
+                return
         put("@tokiwa_agent_pending", fitted(pending_item(event, raw, kind, last_tool), MAX_PENDING_BYTES))
 
 

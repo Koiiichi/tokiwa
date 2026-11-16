@@ -266,7 +266,7 @@ The agent in a session reports its state through its own hooks, which call `toki
 | `ended` | `SessionEnd` | `SessionEnd` |
 | `note` | `PreToolUse` | `PreToolUse` |
 
-`note` records the last tool call and changes no state. `ended` removes the state. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
+`note` records the last tool call and changes no state. `ended` removes the state. Claude Code also sends Notification `permission_prompt` for the dialog of an `AskUserQuestion` call; when the pending item is a question of the last tool call, that notification keeps the question. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
 
 The command also records these options of the tmux session, which later commands read:
 
