@@ -743,12 +743,31 @@ exec {self.tmux} "$@"
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
 
     def test_create_fails_when_the_driver_command_fails_in_real_tmux(self):
-        # No fake tmux: a hook ends the session as soon as its first option is set, so that the
-        # if-shell of the driver finds no session and tmux itself gives the failing status.
+        # No fake tmux. A second session keeps the server alive, so that the failure is not "no server
+        # running". A hook ends `lead` as soon as its first option is set, so the driver step finds no
+        # session and tmux gives the failing status. tmux resolves the target of `if-shell` before the
+        # inner command runs, so this shows the driver step failing, and the next test shows that
+        # `if-shell -F` passes on the failure of its inner command.
+        self.assertEqual(self.tm('new-session', '-d', '-s', 'holder').returncode, 0)
         self.tm('set-hook', '-g', 'after-set-option', 'kill-session -t =lead')
         result = self.create_as('orchestrator-a')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('driver could not be set', result.stderr)
+        self.assertNotIn('no server running', result.stderr)
+        # The server is still there and `lead` is gone: the failing step was the driver command.
+        self.assertEqual(self.tm('has-session', '-t', '=holder').returncode, 0)
+        self.assertNotEqual(self.tm('has-session', '-t', '=lead').returncode, 0)
+
+    def test_if_shell_f_passes_on_the_failure_of_its_inner_command(self):
+        # The form that `create` uses for the driver: a condition on the empty driver, then set-option.
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        condition = '#{==:#{@tokiwa_driver},}'
+        failing = self.tm('if-shell', '-F', '-t', '=lead:', condition, "set-option -t '=missing:' @tokiwa_driver 'worker-a'")
+        self.assertNotEqual(failing.returncode, 0)
+        self.assertIn('no such session', failing.stderr)
+        working = self.tm('if-shell', '-F', '-t', '=lead:', condition, "set-option -t '=lead:' @tokiwa_driver 'worker-a'")
+        self.assertEqual(working.returncode, 0, working.stderr)
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_driver').stdout.strip(), 'worker-a')
 
     def audit_entries(self):
         file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
