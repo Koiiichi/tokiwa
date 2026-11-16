@@ -39,7 +39,14 @@ import {
   sessionName,
   type SessionRef,
 } from "./backend";
-import { activity, HealthHistory, WorkspaceState } from "./state";
+import {
+  activity,
+  FRESHNESS_LIMIT_MS,
+  HealthHistory,
+  SourceStatus,
+  WorkspaceState,
+  type Freshness,
+} from "./state";
 import { classify, worst, type Failure, type Source } from "./problem";
 import {
   healthLines,
@@ -239,6 +246,9 @@ export type SessionRow = {
   shell?: Shell;
   /** True while the workstation creates the session: the row holds its place. */
   starting?: boolean;
+  /** How current the snapshot behind this row is, and when it was read (ms). Snapshot rows only. */
+  freshness?: Freshness;
+  readAt?: number;
 };
 // The session list reads the snapshot again after this time while the workspace is in view.
 const SESSIONS_REFRESH_MS = 30 * 1000;
@@ -291,8 +301,21 @@ export class App {
   previousSessions = new Map<string, SessionRef>();
   sessionsRead = false;
   sessionsLoading = false;
-  /** The failure of the last read of each source; `readFailed` and `readSucceeded` write it. */
-  lastFailure: Partial<Record<Source, Failure>> = {};
+  /** The status of each data source; `readFailed` and `readSucceeded` are the only writers. */
+  sources: Record<Source, SourceStatus> = {
+    sessions: new SourceStatus(FRESHNESS_LIMIT_MS.sessions),
+    health: new SourceStatus(FRESHNESS_LIMIT_MS.health),
+    spend: new SourceStatus(FRESHNESS_LIMIT_MS.spend),
+  };
+  /** The failure of the last read of each source. */
+  get lastFailure(): Partial<Record<Source, Failure>> {
+    const out: Partial<Record<Source, Failure>> = {};
+    for (const source of Object.keys(this.sources) as Source[]) {
+      const failure = this.sources[source].failure;
+      if (failure) out[source] = failure;
+    }
+    return out;
+  }
   get sessionsError() {
     const f = this.lastFailure.sessions;
     return f ? f.detail || f.summary : "";
@@ -1720,15 +1743,23 @@ export class App {
   signInExpired() {
     return this.problem()?.kind === "signed-out";
   }
+  /** The freshness and the last good read time (seconds) of one source, for a receipt event. */
+  receiptFreshness(source: Source) {
+    const status = this.sources[source];
+    return {
+      freshness: status.freshness(this.now()),
+      read_at: status.okAt / 1000,
+    };
+  }
   /** Record a failed read of one source and return its classified failure. */
   readFailed(source: Source, error: unknown): Failure {
     const failure = classify(source, error, this.now());
-    this.lastFailure[source] = failure;
+    this.sources[source].fail(failure);
     return failure;
   }
   /** A read of one source succeeded: its failure ends. */
   readSucceeded(source: Source) {
-    delete this.lastFailure[source];
+    this.sources[source].succeed(this.now());
   }
   /** The failures of the last session read and the last Health read. */
   failures(): Failure[] {
@@ -1887,16 +1918,18 @@ export class App {
     if (this.sessionsLoading || this.disposed) return;
     this.sessionsLoading = true;
     clearTimeout(this.sessionTimer);
-    const first = !this.sessionsRead;
+    // After a period without a live read the next read has no earlier snapshot to compare with.
+    const wasLive = this.sources.sessions.freshness(this.now()) === "live";
+    const first = !this.sessionsRead || !wasLive;
     const started = this.now();
     const selected = this.sessionRows()[this.listSelection]?.name;
     this.drawHeader();
     try {
       const rows = await this.backend.sessions();
       if (this.disposed) return;
-      this.previousSessions = new Map(
-        this.remoteSessions.map((r) => [r.name, r]),
-      );
+      this.previousSessions = wasLive
+        ? new Map(this.remoteSessions.map((r) => [r.name, r]))
+        : new Map();
       this.remoteSessions = this.keepCreated(rows, started);
       // A seen bell stays hidden until the host reports the session without a bell.
       for (const [name, identity] of this.acknowledged) {
@@ -1921,12 +1954,18 @@ export class App {
         clearTimeout(this.sampleTimer);
         void this.sampleHealth();
       }
-      this.record("remote-sessions-refreshed", { count: rows.length });
+      this.record("remote-sessions-refreshed", {
+        count: rows.length,
+        ...this.receiptFreshness("sessions"),
+      });
     } catch (e) {
       if (this.disposed) return;
       this.readFailed("sessions", e);
       this.hostFail = this.now();
-      this.record("remote-sessions-error", { error: this.sessionsError });
+      this.record("remote-sessions-error", {
+        error: this.sessionsError,
+        ...this.receiptFreshness("sessions"),
+      });
     } finally {
       this.sessionsLoading = false;
     }
@@ -2835,7 +2874,7 @@ export class App {
         this.readSucceeded("spend");
       } catch (e) {
         this.readFailed("spend", e);
-        this.spend = undefined;
+        // The last reading stays; `sources.spend` says that it is not current.
         this.spendError = spendFailure(e);
       }
     }
@@ -2850,6 +2889,7 @@ export class App {
         sample: this.history.samples.at(-1),
         error: this.history.error,
         spend_error: this.spendError,
+        ...this.receiptFreshness("health"),
       });
       if (!this.history.stopped)
         this.sampleTimer = setTimeout(() => void this.sampleHealth(), 30000);
@@ -3437,7 +3477,11 @@ export class App {
   /** The remote sessions and their views. A new remote shell is here before the next snapshot. */
   remoteRows(): SessionRow[] {
     const named = (s: Shell) => s.remote?.name ?? s.remoteName;
+    const freshness = this.sources.sessions.freshness(this.now());
+    const readAt = this.sources.sessions.okAt;
     const remote: SessionRow[] = this.remoteSessions.map((ref) => ({
+      freshness,
+      readAt,
       name: ref.name,
       project: ref.project,
       title: projectTitle(ref.project),
@@ -3530,6 +3574,8 @@ export class App {
       );
       if (state !== "unknown" || !row.ref) return state;
     }
+    // A snapshot that is not live says nothing about what the session does now.
+    if (row.freshness && row.freshness !== "live") return "unknown";
     return row.ref
       ? snapshotActivity(row.ref, this.previousSessions.get(row.name))
       : "unknown";

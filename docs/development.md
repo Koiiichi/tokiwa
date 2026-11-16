@@ -35,7 +35,7 @@ install -m 0755 bin/tokiwa ~/.local/bin/tokiwa
 | `--layout terminal` | The list fills the width until a session is attached. The default is `--layout workspace`. |
 | `--snapshot FILE` | Show one recorded `tokiwa health` response in Health. The sampler does not start. |
 | `--deadline MINUTES` | Close the app after 1 to 1440 minutes. |
-| `--receipt FILE` | Write the app's event record to `FILE` as JSON after each event. |
+| `--receipt FILE` | Write the app's event record to `FILE` as JSON after each event. The events `remote-sessions-refreshed`, `remote-sessions-error` and `health-sample` carry `freshness` (`live`, `last-known` or `unavailable`) and `read_at` (the last good read, in seconds) for their source. |
 
 [Configuration](configuration.md) lists the environment variables and the Health configuration file.
 

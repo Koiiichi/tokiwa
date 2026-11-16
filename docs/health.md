@@ -42,7 +42,7 @@ Sampling starts when the app starts and stops when the app closes. It runs in ev
 | Request time limit | 90 seconds. The launcher process then stops, and the read counts as failed. |
 | History bound | The last 120 samples and the last 120 read events, in memory. |
 | Attempts | No limit. A failed read does not stop sampling. |
-| Spend reading | `tokiwa spend` after the first sample, then after a sample when the last spend read started 15 minutes ago or more. |
+| Spend reading | `tokiwa spend` after the first sample, then after a sample when the last spend read started 15 minutes ago or more. A failed spend read keeps the last reading. Spend counts as current for 30 minutes after a good read; only a good spend read renews it. |
 | Redraw | Every second while Health is in view, so the age stays current. |
 
 The app rejects a sample that is not valid. A rejected sample counts as a failed read.
