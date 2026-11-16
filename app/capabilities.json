@@ -166,7 +166,8 @@
             "type": "string",
             "pattern": "identity"
           }
-        }
+        },
+        "untrusted_output": true
       }
     },
     {
@@ -204,10 +205,11 @@
           "timeout": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 300,
+            "maximum": 60,
             "default": 60
           }
         },
+        "untrusted_output": true,
         "example": ["agent", "wait", "lead", "1:$2:3", "--after", "3", "--timeout", "60"]
       }
     },

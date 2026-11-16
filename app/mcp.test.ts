@@ -517,15 +517,17 @@ test("answer is opt-in", async () => {
   expect(parseAllow(["--allow", "answer,control"])).toEqual(["answer", "control"]);
 });
 
-test("wait takes a timeout of 1 to 300, default 60, and read marks session text as data", async () => {
+test("wait takes a timeout of 1 to 60, default 60, and the agent tools mark session text as data", async () => {
   const { client, calls, call } = await connect(() => "{}");
-  await call("tokiwa_agent_wait", { ...screen, after: 3 });
-  await call("tokiwa_agent_wait", { ...screen, after: 3, timeout: 300 });
+  // The backend stops every launcher call at 90 seconds, so a longer wait would end as an error.
+  const wait = await call("tokiwa_agent_wait", { ...screen, after: 3 });
+  expect(wait.text.startsWith(SCREEN_NOTICE)).toBe(true);
+  await call("tokiwa_agent_wait", { ...screen, after: 3, timeout: 60 });
   expect(calls).toEqual([
     ["agent", "wait", "web-lead", "1:$2:3", "--after", "3", "--timeout", "60"],
-    ["agent", "wait", "web-lead", "1:$2:3", "--after", "3", "--timeout", "300"],
+    ["agent", "wait", "web-lead", "1:$2:3", "--after", "3", "--timeout", "60"],
   ]);
-  for (const timeout of [0, 301])
+  for (const timeout of [0, 61, 300])
     expect((await call("tokiwa_agent_wait", { ...screen, after: 3, timeout })).isError).toBe(true);
   const read = await call("tokiwa_agent_read", { ...screen, tools: true });
   expect(read.text.startsWith(SCREEN_NOTICE)).toBe(true);
@@ -534,10 +536,12 @@ test("wait takes a timeout of 1 to 300, default 60, and read marks session text 
   expect(calls.at(-1)).toEqual(["agent", "read", "web-lead", "1:$2:3", "--after", "abc"]);
   await call("tokiwa_agent_read", { ...screen, pending: true });
   expect(calls.at(-1)).toEqual(["agent", "read", "web-lead", "1:$2:3", "--pending"]);
+  // pending.id and driver come from tmux options that any process of the workbench user can set.
   const state = await call("tokiwa_agent_state", screen);
-  expect(state.text.startsWith(SCREEN_NOTICE)).toBe(false);
+  expect(state.text.startsWith(SCREEN_NOTICE)).toBe(true);
   expect(calls.at(-1)).toEqual(["agent", "state", "web-lead", "1:$2:3"]);
-  await call("tokiwa_state", screen);
+  const core = await call("tokiwa_state", screen);
+  expect(core.text.startsWith(SCREEN_NOTICE)).toBe(false);
   expect(calls.at(-1)).toEqual(["state", "web-lead", "1:$2:3"]);
   void client;
 });
@@ -575,11 +579,11 @@ esac
       }) as Promise<any>;
     const timeout = await wait(9);
     expect(timeout.isError).toBeFalsy();
-    expect(timeout.content[0].text).toBe('{"reason":"timeout","turn":3}');
+    expect(timeout.content[0].text).toBe(`${SCREEN_NOTICE}\n{"reason":"timeout","turn":3}`);
     const failed = await wait(8);
     expect(failed.isError).toBe(true);
     expect(failed.content[0].text).toContain("exited 1");
-    expect((await wait(1)).content[0].text).toBe('{"reason":"turn-ended"}');
+    expect((await wait(1)).content[0].text).toBe(`${SCREEN_NOTICE}\n{"reason":"turn-ended"}`);
   } finally {
     await client.close();
     rmSync(home, { recursive: true, force: true });

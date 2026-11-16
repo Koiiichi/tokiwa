@@ -100,10 +100,13 @@ class Capabilities(unittest.TestCase):
             self.assertEqual(effective[name], 'control')
         self.assertEqual(effective['tokiwa_agent_answer'], 'answer')
         by_name = {t['name']: t for _, t in TOOLS}
-        self.assertTrue(by_name['tokiwa_agent_read'].get('untrusted_output'))
+        # The agent fields come from the transcript or from tmux options that the workbench user can set.
+        for name in ['tokiwa_agent_read', 'tokiwa_agent_state', 'tokiwa_agent_wait']:
+            self.assertTrue(by_name[name].get('untrusted_output'), name)
+        self.assertFalse(by_name['tokiwa_state'].get('untrusted_output'))
         self.assertNotIn('text', by_name['tokiwa_agent_answer']['args'])
         self.assertEqual(by_name['tokiwa_agent_wait']['args']['timeout'],
-                         {'type': 'integer', 'minimum': 1, 'maximum': 300, 'default': 60})
+                         {'type': 'integer', 'minimum': 1, 'maximum': 60, 'default': 60})
 
     def test_mcp_accepts_answer_and_actor(self):
         self.stub_app()
