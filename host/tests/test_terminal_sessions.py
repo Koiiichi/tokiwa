@@ -2213,7 +2213,17 @@ class AgentAnswer(AgentSession):
 
     def setUp(self):
         super().setUp()
+        # A question that is live shows its dialog.
+        self.restart('Enter to confirm')
         self.ask(self.ITEM)
+
+    def restart(self, screen):
+        """Run the stand-in agent again in `lead` with `screen` as its screen text."""
+        self.log.unlink()
+        self.tm('kill-session', '-t', '=lead')
+        self.start_agent('lead', screen=screen)
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
 
     def ask(self, item):
         self.option('lead', '@tokiwa_agent', 'waiting:100')
@@ -2429,15 +2439,19 @@ exit $code
         self.assertEqual(self.tm('copy-mode', '-t', '=lead:').returncode, 0)
         self.refused_with(self.answer('1'), 'The pane is in copy mode. Nothing was sent.')
 
-    def test_answer_does_not_check_the_screen_for_a_dialog(self):
-        # A question is itself a dialog.
-        self.log.unlink()
-        self.tm('kill-session', '-t', '=lead')
-        self.start_agent('lead', screen='Enter to confirm')
-        self.identity = self.rows()['lead']['identity']
-        self.claim('worker-a')
-        self.ask(self.ITEM)
+    def test_answer_with_the_dialog_on_the_screen_succeeds(self):
         self.assertEqual(self.answer('1').returncode, 0)
+        self.assertEqual(self.events(2), [('other', b'1'), ('enter',)])
+
+    def test_answer_refuses_when_no_dialog_is_on_the_screen(self):
+        # The person pressed Esc on the question: no hook event followed, so the state still says `waiting`.
+        self.restart('')
+        self.ask(self.ITEM)
+        self.refused_with(self.answer('1'), 'No question is on the screen. Nothing was sent.')
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(self.ITEM))
 
     def test_answer_text_applies_the_text_checks(self):
         for bad, sentence in [('bell\a', 'control character'), ('c1\x85next', 'control character'), ('/clear', 'starts with'),

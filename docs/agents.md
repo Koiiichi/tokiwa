@@ -194,8 +194,9 @@ The host answers only when all of these hold. They are checked in one tmux comma
 | The item comes from the `AskUserQuestion` tool and lists options. A form of an MCP server (an elicitation) has no label hook and takes no digit. | `The pending item has no options to choose. Nothing was sent.` |
 | The item is one question that allows one choice. A dialog with several questions or several choices takes other keys, which the live check has not confirmed. | `The question has more than one part or allows several choices. Nothing was sent.` |
 | `N` is not more than the number of options that the item lists | `The choice is not one of the options. Nothing was sent.` |
+| A dialog of the running agent is on the screen: the last 15 lines hold a marker of `DIALOG_MARKERS`. A person who pressed Esc on the question leaves no hook event, so the state and the item stay for about a minute while the prompt is idle. | `No question is on the screen. Nothing was sent.` |
 
-The screen check for a dialog does not apply: a question is itself a dialog. In the same queue, the host removes the pending item and sets the input label.
+The screen check runs in the stage before the tmux queue, as the dialog check of `agent send` does. The markers match any dialog of the agent, not only a question, and the live check confirms them. In the same queue, the host removes the pending item and sets the input label.
 
 `--text` is for a free-text answer. It applies the text checks of `agent send` (see [Send a message to an agent](#send-a-message-to-an-agent)) on the Mac and on the host, and the text reaches the host encrypted, as for `send`. It then refuses with `Free-text answers are not supported for this agent. Nothing was sent.` The key sequence that selects the free-text entry of a question is not documented: the Claude Code documentation describes an "Other" choice only for the SDK callback, not for the terminal dialog. The live check records the real keys; until then, `--text` types nothing.
 

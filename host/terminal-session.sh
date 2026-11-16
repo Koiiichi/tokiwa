@@ -879,6 +879,11 @@ def check(facts, pane, values):
     # A digit past the last option would reach the free-text entry of the dialog, not an option.
     if int(choice) > len(options):
         return 'The choice is not one of the options. Nothing was sent.'
+    # A person who pressed Esc on the question leaves no hook event: the state and the item stay for about a
+    # minute, and a digit would reach the idle prompt as an unlabelled message. The question must be on the screen.
+    # DIALOG_MARKERS match any dialog of the agent, and the live check confirms them (docs/agents.md).
+    if not screen_dialog(pane, facts['program']):
+        return 'No question is on the screen. Nothing was sent.'
     return None
 
 pane, clients, buffer, values = stage_delivery(
