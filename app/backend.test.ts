@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { BackendClient } from "./backend";
+import { BackendClient, LauncherError, splitCategory } from "./backend";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { HealthHistory, activity } from "./state";
 const ref = {
   name: "fixture-a",
@@ -221,4 +224,68 @@ test("the launcher starts in the home folder, not in the app's folder", async ()
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
+});
+
+function stub(body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "tokiwa-stub-"));
+  const path = join(dir, "tokiwa");
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+const AUTH_TEXT =
+  "Tokiwa: AWS authentication failed. Run aws sso login --profile profile-a.";
+test("the launcher receives TOKIWA_ERROR_CATEGORY=1", async () => {
+  const seen = join(mkdtempSync(join(tmpdir(), "tokiwa-seen-")), "seen");
+  const path = stub(`printf %s "$TOKIWA_ERROR_CATEGORY" > ${seen}\necho '{}'`);
+  await new BackendClient(path).call(["health"]);
+  expect(readFileSync(seen, "utf8")).toBe("1");
+});
+test("a category line becomes a field and leaves the message", async () => {
+  const path = stub(
+    `echo '${AUTH_TEXT}' >&2\necho 'tokiwa-error: auth' >&2\nexit 1`,
+  );
+  const err = await new BackendClient(path).call(["health"]).catch((e) => e);
+  expect(err).toBeInstanceOf(LauncherError);
+  expect(err.category).toBe("auth");
+  expect(err.code).toBe(1);
+  expect(err.reason).toBe("exit");
+  expect(err.command).toBe("health");
+  expect(err.message).toBe(`Launcher health exited 1: ${AUTH_TEXT}`);
+  expect(err.message).not.toContain("tokiwa-error");
+  expect(err.stderr).not.toContain("tokiwa-error");
+});
+test("an unknown category is ignored", async () => {
+  const path = stub(`echo 'bad' >&2\necho 'tokiwa-error: other' >&2\nexit 1`);
+  const err = await new BackendClient(path).call(["health"]).catch((e) => e);
+  expect(err).toBeInstanceOf(LauncherError);
+  expect(err.category).toBeUndefined();
+  expect(err.stderr).toContain("tokiwa-error: other");
+});
+test("splitCategory removes only a final known category line", () => {
+  expect(splitCategory("a\ntokiwa-error: unreachable\n")).toEqual({
+    text: "a",
+    category: "unreachable",
+  });
+  expect(splitCategory("tokiwa-error: auth\nb")).toEqual({
+    text: "tokiwa-error: auth\nb",
+  });
+});
+test("a timeout and a missing launcher are typed", async () => {
+  // The test guard allows only a launcher inside the temporary folder, so use a file that cannot run.
+  const unrunnable = stub("exit 0");
+  chmodSync(unrunnable, 0o644);
+  const missing = await new BackendClient(unrunnable)
+    .call(["health"])
+    .catch((e) => e);
+  expect(missing).toBeInstanceOf(LauncherError);
+  expect(missing.reason).toBe("spawn");
+  expect(missing.code).toBeNull();
+  const slow = stub("exec sleep 5");
+  const timed = await new BackendClient(slow, undefined, 100)
+    .call(["health"])
+    .catch((e) => e);
+  expect(timed).toBeInstanceOf(LauncherError);
+  expect(timed.reason).toBe("timeout");
+  expect(timed.message).toBe("The launcher exceeded 90 seconds.");
 });
