@@ -51,6 +51,10 @@ for (const [width, height] of captureSizes) {
     expect(authHealth).toContain("Workbench limits · last known");
     expect(authHealth).toContain("Spend (estimate · last known)");
     expect(authHealth).not.toContain("not available");
+    for (const frame of [authWork, authHealth]) {
+      expect(frame).not.toContain("stopped");
+      expect(frame).not.toContain("not ready");
+    }
     // The "Sampled" line is the footer of the view. A short window drops it.
     const sampled = authHealth
       .split("\n")
@@ -59,7 +63,12 @@ for (const [width, height] of captureSizes) {
     if (sampled) expect(sampled).toContain("· last known");
 
     const net = await draw("network-failure", "workspace");
-    frames.push(net);
+    const netHealth = await draw("network-failure", "health");
+    frames.push(net, netHealth);
+    for (const frame of [net, netHealth]) {
+      expect(frame).not.toContain("stopped");
+      expect(frame).not.toContain("not ready");
+    }
     for (const part of [
       "○ EC2 · offline",
       "▲ AWS cannot be reached from this Mac",
@@ -84,6 +93,7 @@ for (const [width, height] of captureSizes) {
     expect(compHealth).toContain("Workbench limits · last known");
     const compWork = await draw("component-failure", "workspace");
     frames.push(compWork);
+    expect(header(compWork)).toContain("● EC2");
     expect(compWork).not.toContain("▲");
     expect(compWork).not.toContain("last known");
 
