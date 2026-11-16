@@ -40,7 +40,10 @@ case "$*" in
   last=$(grep 'send-command' "$HOME/calls" | tail -1)
   core='"name": "lead", "identity": "1:$2:3", "session": "live", "program": "claude", "clients": %s, "writable_clients": %s, "driver": null, "sampled_at": 2'
   agent='"agent": "idle", "agent_at": 1, "turn": 4, "pending": null, "dialog": false'
-  if [[ $last == *'input-cert.pem'* ]]; then
+  if [[ $last == *'input-cert.pem'* && -n ${TEST_NO_INPUT_KEY:-} ]]; then
+   # A host from before encrypted input: the check of the launcher finds no certificate.
+   echo tokiwa-no-input-key
+  elif [[ $last == *'input-cert.pem'* ]]; then
    # The host input certificate; the key stays here so that a test can decrypt what was sealed.
    [ -e "$HOME/host-input-cert.pem" ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout "$HOME/host-input-key.pem" -out "$HOME/host-input-cert.pem" -subj /CN=tokiwa-input -days 1 >/dev/null 2>&1
    cat "$HOME/host-input-cert.pem"
@@ -245,6 +248,24 @@ esac
         # The second call used the pin: the certificate was fetched once.
         calls = (self.home / 'calls').read_text()
         self.assertEqual(calls.count('cat /etc/tokiwa/input-cert.pem'), 1)
+
+    def test_a_host_without_an_input_key_fails_closed(self):
+        # A new launcher with an old host: nothing falls back to plain text, and nothing is created or sent.
+        self.env['TEST_NO_INPUT_KEY'] = '1'
+        for args, sentence in [(('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi'),
+                                'The host has no input key. Update the host with host/install.sh. Nothing was created.'),
+                               (('agent', 'send', 'lead', '1:$2:3', '--text', 'Read LEAD.md.'),
+                                'The host has no input key. Update the host with host/install.sh. Nothing was sent.')]:
+            self.env['TOKIWA_ACTOR'] = 'worker-a'
+            result = self.run_cli(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn(sentence, result.stderr)
+            calls = (self.home / 'calls').read_text()
+            self.assertNotIn('terminal-session.sh create', calls)
+            self.assertNotIn('terminal-session.sh agent-send', calls)
+            self.assertNotIn('tokiwa-input.py', calls)
+            self.assertNotIn('Read LEAD.md', calls)
+        self.assertFalse((self.home / '.config/tokiwa/input-cert.pem').exists())
 
     def test_input_cert_prints_the_host_certificate(self):
         result = self.run_cli('input-cert')

@@ -547,11 +547,18 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  [[ $sealed == 0 && $mode != agent-wait ]] || tries=40
  # The host certificate that message text is encrypted to. Only the certificate is public; the key
  # stays on the host (see host/tokiwa-input.py). This reads it from the host in one Run Command call.
+ # A host from before encrypted input has no certificate: the launcher stops there, and never sends the
+ # text in plain form.
  host_cert() {
-  submit 'cat /etc/tokiwa/input-cert.pem'
+  local cert nothing='Nothing was sent.'
+  [[ $mode != create ]] || nothing='Nothing was created.'
+  [[ $mode != input-cert ]] || nothing='Nothing was read.'
+  submit 'if [ -e /etc/tokiwa/input-cert.pem ]; then cat /etc/tokiwa/input-cert.pem; else echo tokiwa-no-input-key; fi'
   [[ $status == Success ]] || fail 'The host input certificate could not be read.'
-  aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text \
+  cert=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text) \
    || fail 'The host input certificate could not be read.'
+  [[ $cert != tokiwa-no-input-key ]] || fail "The host has no input key. Update the host with host/install.sh. $nothing"
+  printf '%s\n' "$cert"
  }
  # Encrypt the file $1 to the pinned host certificate and print it as one line of base64 DER. The
  # first use pins the certificate that the host shows; later calls never fetch it again, so a key
