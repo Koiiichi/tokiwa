@@ -216,6 +216,11 @@ export interface ErrorState {
   /** The sources that the failure keeps from being live. A global failure affects all of them. */
   affected: Source[];
   recovery: "sign-in" | "retry" | "none";
+  /**
+   * The kind of the worst active global failure that is not `setup`. The header word names it, so
+   * connectivity shows first when a `setup` failure is active too.
+   */
+  link?: ProblemKind;
   /** When the newest good read among the affected sources ended, in milliseconds. */
   lastSuccess?: number;
   /** The active failure of each failed source, in the order sessions, health, spend. */
@@ -249,6 +254,7 @@ export function errorState(
     (f) => !GLOBAL_KINDS.includes(f.kind) || active(f),
   );
   const top = worst(global);
+  const link = worst(global.filter((f) => f.kind !== "setup"));
   if (top)
     return {
       kind: top.kind,
@@ -262,6 +268,7 @@ export function errorState(
           : top.kind === "setup"
             ? "none"
             : "retry",
+      ...(link ? { link: link.kind } : {}),
       ...(newestOk > 0 ? { lastSuccess: newestOk } : {}),
       diagnostics,
     };

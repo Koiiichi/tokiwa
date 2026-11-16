@@ -393,6 +393,10 @@ export class App {
     failed: boolean;
     until: number;
     actions?: { label: string; run: () => void }[];
+    /** The action that failed, so that a later success of it clears the notice. */
+    action?: string;
+    /** True when the notice names a failure of the whole link, which a recovery clears. */
+    cause?: boolean;
   };
   get selection() {
     return this.state.selection;
@@ -851,8 +855,15 @@ export class App {
       focus: { run: () => this.toggleFocus() },
       refresh: {
         run: () => {
-          // A retry reads Health again too when its last read failed.
-          if (this.history.gap && !this.history.stopped && !this.sampling) {
+          // A retry reads Health again when it is not live, and spend in that read when spend is not.
+          const now = this.now();
+          if (this.sources.spend.freshness(now) !== "live") this.spendAt = 0;
+          if (
+            (this.sources.health.freshness(now) !== "live" ||
+              this.history.gap) &&
+            !this.history.stopped &&
+            !this.sampling
+          ) {
             clearTimeout(this.sampleTimer);
             void this.sampleHealth();
           }
@@ -1487,6 +1498,7 @@ export class App {
         remote: !!source.remote,
         pid: shell.child.pid,
       });
+      this.actionSucceeded("shell here");
     } catch (e) {
       // A shell that failed before the pair took it has no place in the workspace: close its view.
       if (shell && this.pair?.[1] !== shell) this.discardView(shell);
@@ -1637,6 +1649,7 @@ export class App {
         terminal,
         cwd: prepared.source.cwd,
       });
+      this.actionSucceeded("open in Ghostty");
     } catch (e) {
       this.actionFailed("open in Ghostty", e);
       this.updateActivity();
@@ -1803,7 +1816,40 @@ export class App {
   }
   /** A read of one source succeeded: its failure ends. */
   readSucceeded(source: Source) {
+    const wasGlobal = this.currentError()?.scope === "global";
     this.sources[source].succeed(this.now());
+    // One good read shows that the link works: the other sources read at once.
+    if (wasGlobal) this.recover();
+  }
+  /**
+   * Read each source that is not live, without a wait for its timer: the sessions at once, Health
+   * at once, and spend in that Health read. A notice about a failure of the link ends, and so does
+   * the details box. Each source stays `last known` until its own read succeeds.
+   */
+  recover() {
+    if (this.disposed) return;
+    const now = this.now();
+    if (this.footerNotice?.cause) {
+      this.footerNotice = undefined;
+      this.footerSignature = "";
+      this.drawFooter();
+    }
+    this.detailsOpen = false;
+    if (this.sources.spend.freshness(now) !== "live") this.spendAt = 0;
+    if (this.sources.health.freshness(now) !== "live" && !this.sampling) {
+      clearTimeout(this.sampleTimer);
+      void this.sampleHealth();
+    }
+    if (this.sources.sessions.freshness(now) !== "live")
+      void (async () => {
+        while (this.sessionsLoading && !this.disposed) await Bun.sleep(100);
+        if (
+          !this.disposed &&
+          this.sources.sessions.freshness(this.now()) !== "live"
+        )
+          await this.refreshSessions();
+      })();
+    this.drawProblem();
   }
   /** Rows that the band takes under the header. */
   bandRows = 0;
@@ -1837,7 +1883,7 @@ export class App {
     const recovery = {
       "sign-in": "l runs tokiwa login in a local view",
       retry: "u reads again",
-      none: "Fix it outside the app, then press u",
+      none: "Fix it outside the app. Tokiwa reads again every 30 s",
     }[state.recovery];
     const facts = [
       [
@@ -2009,13 +2055,7 @@ export class App {
       }
       this.signInShell = undefined;
       this.discardView(shell);
-      // The readings resume at once: Health does not wait for its next turn.
-      if (this.history.gap && !this.history.stopped) {
-        clearTimeout(this.sampleTimer);
-        void this.sampleHealth();
-      }
-      while (this.sessionsLoading && !this.disposed) await Bun.sleep(100);
-      await this.refreshSessions();
+      this.recover();
     });
   }
   /**
@@ -2054,16 +2094,6 @@ export class App {
       second = !this.sessionsRead || !wasLive;
       this.sessionsRead = true;
       this.readSucceeded("sessions");
-      // A read that succeeds proves the sign-in works: Health does not wait its turn.
-      if (
-        this.history.gap &&
-        !this.history.stopped &&
-        !this.sampling &&
-        this.sources.health.failure?.kind === "signed-out"
-      ) {
-        clearTimeout(this.sampleTimer);
-        void this.sampleHealth();
-      }
       this.record("remote-sessions-refreshed", {
         count: rows.length,
         ...this.receiptFreshness("sessions"),
@@ -2133,13 +2163,13 @@ export class App {
   hostState() {
     // Connectivity first, then the workstation. A failure of one source changes neither.
     const state = this.currentError();
-    if (state?.scope === "global") {
+    if (state?.scope === "global" && state.link) {
       const word = {
         "signed-out": "signed out",
         offline: "offline",
         stopped: "stopped",
         "not-ready": "not ready",
-      }[state.kind as string];
+      }[state.link as string];
       if (word) return word;
     }
     const { sessions, health } = this.sources;
@@ -2764,6 +2794,7 @@ export class App {
           8000,
         );
       }
+      this.actionSucceeded(`create ${name}`);
       if (known) void this.refreshSessions();
     } catch (e) {
       this.starting.delete(name);
@@ -2920,6 +2951,7 @@ export class App {
         identity: ref.identity,
         pid: adapter.child.pid,
       });
+      this.actionSucceeded(`attach ${name}`);
       if (withChild && !reconnect) opened = shell;
     } catch (e) {
       this.record("remote-error", { name, error: String(e) });
@@ -2984,12 +3016,6 @@ export class App {
       // A sample that the history rejects (a stale timestamp) never failed in the wrapper above.
       if (!readFailed) this.readFailed("health", this.history.error);
     } else this.readSucceeded("health");
-    // A read that succeeds proves the sign-in works: the session read does not wait its turn.
-    if (
-      !this.history.gap &&
-      this.sources.sessions.failure?.kind === "signed-out"
-    )
-      void this.refreshSessions();
     if (!this.disposed && this.now() - this.spendAt >= SPEND_REFRESH_MS) {
       this.spendAt = this.now();
       try {
@@ -3290,9 +3316,11 @@ export class App {
       );
     if (this.view === "health")
       return keyFirst([
-        ...(this.retryOffered()
-          ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
-          : []),
+        ...(this.signInExpired()
+          ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
+          : this.retryOffered()
+            ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
+            : []),
         ...(this.healthOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
         hint("sessions", "w", "sessions", 5, () => this.focusSessions()),
         shortcuts,
@@ -3476,6 +3504,23 @@ export class App {
     )
       return;
     this.notify(text, true, undefined, 8000);
+    if (this.footerNotice) {
+      this.footerNotice.action = action;
+      // A failure of the whole link ends with a recovery; a failure of one action does not.
+      const message =
+        error instanceof Error ? error.message : String(error ?? "");
+      this.footerNotice.cause =
+        (error instanceof LauncherError ||
+          /^(Launcher |The launcher)/.test(message)) &&
+        classify("sessions", error, this.now()).kind !== "failed";
+    }
+  }
+  /** An action succeeded: a notice about its earlier failure ends. */
+  actionSucceeded(action: string) {
+    if (this.footerNotice?.action !== action) return;
+    this.footerNotice = undefined;
+    this.footerSignature = "";
+    this.drawFooter();
   }
   /** Show a short message in the footer for a few seconds. */
   notify(
@@ -3871,15 +3916,22 @@ export class App {
       line("list-error-gap", [{ text: "", tone: "dim" }]);
     }
     if (!rows.length) {
-      // The band above names the cause; the list says only what it lacks and the key.
+      // The band or the line above names the cause. The list adds a key only when neither names
+      // one: not when its own line says `u retry`, and not for a `setup` failure, which has no key.
+      const key = this.signInExpired()
+        ? "l signs in"
+        : failed || this.currentError()?.recovery === "none"
+          ? ""
+          : "u reads them again";
       const reason = this.sources.sessions.failure
         ? [
             { text: "No sessions read", tone: "dim" as const },
-            { text: "", tone: "dim" as const },
-            {
-              text: this.signInExpired() ? "l signs in" : "u reads them again",
-              tone: "dim" as const,
-            },
+            ...(key
+              ? [
+                  { text: "", tone: "dim" as const },
+                  { text: key, tone: "dim" as const },
+                ]
+              : []),
           ]
         : this.sessionsRead
           ? [

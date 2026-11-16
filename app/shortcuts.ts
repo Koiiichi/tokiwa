@@ -30,7 +30,7 @@ export const KEYMAP: Binding[] = [
     id: "refresh",
     group: "Workspace",
     key: "u",
-    label: "Refresh sessions",
+    label: "Refresh and retry",
     direct: true,
   },
   {

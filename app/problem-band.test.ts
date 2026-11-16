@@ -578,3 +578,185 @@ test("while the confirm box shows a failure, the footer notice does not repeat i
     await close(t, app);
   }
 });
+
+const timeout = (args: string[]) =>
+  new LauncherError(
+    "The launcher exceeded 90 seconds.",
+    args[0],
+    "timeout",
+    null,
+    "",
+  );
+const notInstalled = (args: string[]) =>
+  new LauncherError(
+    "Launcher could not start: spawn tokiwa ENOENT",
+    args[0],
+    "spawn",
+    null,
+    "spawn tokiwa ENOENT",
+  );
+
+test("a success from the timer recovers without a sign-in view", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await pause(5);
+    state.error = launcherFailure(AUTH_TEXT, "auth");
+    await app.refreshSessions();
+    expect(app.currentError()?.kind).toBe("signed-out");
+    state.error = undefined;
+    const reads = state.commands.length;
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await until(() =>
+      state.commands.slice(reads).some((c) => c[0] === "--snapshot"),
+    );
+    await until(() => !app.currentError());
+    await t.renderOnce();
+    expect(t.captureCharFrame()).not.toContain("▲");
+    expect(app.shells).toHaveLength(0);
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("after an offline failure, a Health success starts a session read", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await pause(5);
+    state.error = timeout;
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(app.currentError()?.kind).toBe("offline");
+    await pause(5);
+    state.error = (args) => (args[0] === "health" ? undefined : timeout(args));
+    const reads = state.commands.length;
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await until(() =>
+      state.commands.slice(reads).some((c) => c[0] === "--snapshot"),
+    );
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("u resets the spend timer when spend is not live", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    let spends = 0;
+    state.error = (args) => {
+      if (args[0] !== "spend") return undefined;
+      spends++;
+      return new Error("Launcher spend exited 1: boom");
+    };
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(spends).toBe(1);
+    expect(app.sources.spend.freshness(app.now())).not.toBe("live");
+    await t.mockInput.typeText("u");
+    await pause();
+    // The next Health read reads spend again, without a wait for the spend timer.
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(spends).toBe(2);
+    clearTimeout(app.sampleTimer);
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a failure notice clears when the same action succeeds on a retry", async () => {
+  const { t, app } = await open(undefined);
+  try {
+    app.actionFailed("attach worker-c", new Error("no route"));
+    expect(app.footerNotice?.failed).toBe(true);
+    app.actionSucceeded("create other");
+    expect(app.footerNotice).toBeDefined();
+    app.actionSucceeded("attach worker-c");
+    expect(app.footerNotice).toBeUndefined();
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("the header word comes from connectivity even when a setup failure is also active", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await pause(5);
+    state.error = (args) =>
+      args[0] === "--snapshot" ? notInstalled(args) : timeout(args);
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(app.currentError()?.kind).toBe("setup");
+    expect(headerLine(frame)).toContain("○ EC2 · offline");
+    expect(frame).toContain("▲ The launcher is not installed");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("the Health footer offers the sign-in key while signed out", async () => {
+  const { t, app } = await open(EXPIRED);
+  try {
+    app.show("health");
+    await pause();
+    await t.renderOnce();
+    const footer = t
+      .captureCharFrame()
+      .split("\n")
+      .filter((l) => l.trim())
+      .at(-1)!;
+    expect(footer.trimStart()).toStartWith("l sign in · w sessions");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("an empty list does not repeat a recovery path that another line names", async () => {
+  const component = await open("Launcher --snapshot exited 255: ssh: unexpected reply");
+  try {
+    const frame = component.t.captureCharFrame();
+    expect(frame).toContain("u retry · e details");
+    expect(frame).toContain("No sessions read");
+    expect(frame).not.toContain("u reads them again");
+  } finally {
+    await close(component.t, component.app);
+  }
+  const setup = await open(undefined);
+  try {
+    setup.state.error = notInstalled;
+    await setup.app.refreshSessions();
+    setup.app.remoteSessions = [];
+    setup.app.drawSessions();
+    await setup.t.renderOnce();
+    const frame = setup.t.captureCharFrame();
+    expect(frame).toContain("No sessions read");
+    expect(frame).not.toContain("u reads them again");
+    setup.app.toggleDetails();
+    await setup.t.renderOnce();
+    const details = setup.t.captureCharFrame();
+    expect(details).not.toContain("then press u");
+    expect(details).toContain("Fix it outside the app");
+  } finally {
+    await close(setup.t, setup.app);
+  }
+  const offline = await open(undefined);
+  try {
+    offline.state.error = timeout;
+    await offline.app.refreshSessions();
+    offline.app.remoteSessions = [];
+    offline.app.drawSessions();
+    await offline.t.renderOnce();
+    expect(offline.t.captureCharFrame()).toContain("u reads them again");
+  } finally {
+    await close(offline.t, offline.app);
+  }
+});

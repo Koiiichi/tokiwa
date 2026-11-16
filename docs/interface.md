@@ -107,7 +107,7 @@ A read that failed for its own reason has no band. One amber line sits at the to
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The facts come first. Then one row per failed source gives its launcher command, exit code, the category or kind, and the time. Then one copy of the launcher's own text, the last six lines, without the `Launcher … exited N:` prefix. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
+The facts come first. Then one row per failed source gives its launcher command, exit code, the category or kind, and the time. Then one copy of the launcher's own text, the last six lines, without the `Launcher … exited N:` prefix. Recovery is tracked for each source. After a sign-in succeeds, or when a read of any source succeeds while a failure of the whole link is active, the app reads each source that is not live at once: the sessions, Health, and spend in that Health read. The band clears when one source succeeds. Each source stays `last known` until its own read succeeds. The details box closes, and a bottom-bar notice about the cleared failure ends. A failure notice also ends when the same action succeeds on a retry. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
 
 ## Session list
 
@@ -143,7 +143,7 @@ When the list is empty, it says why:
 | --- | --- |
 | `Reading sessions…` | The first read has not ended. |
 | `No sessions on EC2` | The read succeeded and the host has no sessions. |
-| `No sessions read` | The read failed. The problem band, or the line at the top of the list, names the cause. The list adds `l signs in` or `u reads them again`. |
+| `No sessions read` | The read failed. The problem band, or the line at the top of the list, names the cause. The list adds `l signs in` after an expired sign-in, or `u reads them again` after another failure of the whole link. It adds no key when its own line says `u retry`, or when the failure is a setup failure. |
 
 When a read fails and the list holds an earlier read, the list keeps it. The problem band, or the line at the top of the list, names the failure. While the list shows an old read and no read runs, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. The local group never does.
 
@@ -197,7 +197,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | `w` | **Sessions**: show the Workspace with the keyboard in the session list. |
 | `h` | **Health**: show the Health view. |
 | `z` | **Focus**: hide the session list beside the terminal, or show it again. |
-| `u` | **Refresh sessions**: read the session snapshot again. When the last Health read failed, read Health again too. |
+| `u` | **Refresh and retry**: read the sessions now; read Health and spend again when they are not live. |
 | `l` | **Sign in to AWS**: when the sign-in has expired, run `tokiwa login` in a local view. Your browser, or the program in [`TOKIWA_SIGN_IN_BROWSER`](configuration.md#environment-variables) when it is set, opens for the approval. After a success the view closes, and the sessions and Health are read again; after a failure the view stays open with the message. At other times the key does nothing. |
 | `e` | **Error details**: open or close the details box of the active failure under the header. With no failure, the key does nothing. |
 | `t` | **New local shell**: start a local login shell in the home directory. |
