@@ -31,6 +31,7 @@ import { steadyCursor } from "./cursor";
 import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
+  LauncherError,
   BackendClient,
   isBackground,
   SIGN_IN_EXPIRED,
@@ -314,12 +315,6 @@ export class App {
   confirm?: Operation;
   /** The state of a confirmed operation that runs: progress, then a failure if it fails. */
   confirmStatus?: { text: string; failed: boolean };
-  get error() {
-    return this.state.error;
-  }
-  set error(value: string) {
-    this.state.error = value;
-  }
   root: BoxRenderable;
   body: BoxRenderable;
   health: BoxRenderable;
@@ -1128,7 +1123,6 @@ export class App {
     if (!copied && automatic)
       this.notify("copy failed · the terminal did not accept it", true);
     else if (!copied) {
-      this.error = "The terminal did not accept the clipboard copy.";
       this.notify("copy failed · the terminal did not accept it", true);
       this.updateActivity();
     } else
@@ -1402,14 +1396,14 @@ export class App {
       return;
     }
     if (this.shells.length >= 4) {
-      this.error = "Close a terminal view before opening another shell.";
-      this.updateActivity();
+      this.notify("Close a terminal view before opening another shell.", true);
       return;
     }
     if (source.remoteName && !source.remote) {
-      this.error =
-        "The remote shell identity is not verified. Refresh its connection first.";
-      this.updateActivity();
+      this.notify(
+        "The remote shell identity is not verified. Refresh its connection first.",
+        true,
+      );
       return;
     }
     this.auxiliaryPending = true;
@@ -1467,7 +1461,7 @@ export class App {
     } catch (e) {
       // A shell that failed before the pair took it has no place in the workspace: close its view.
       if (shell && this.pair?.[1] !== shell) this.discardView(shell);
-      this.error = String(e);
+      this.actionFailed("shell here", e);
       this.updateActivity();
     } finally {
       this.auxiliaryPending = false;
@@ -1615,7 +1609,7 @@ export class App {
         cwd: prepared.source.cwd,
       });
     } catch (e) {
-      this.error = String(e);
+      this.actionFailed("open in Ghostty", e);
       this.updateActivity();
     } finally {
       this.auxiliaryPending = false;
@@ -2195,7 +2189,7 @@ export class App {
         `ended ${pending.ref.name}${!keepShells && pending.children.length ? ` and ${pending.children.length} shell${pending.children.length === 1 ? "" : "s"}` : ""}`,
       );
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`end ${pending.ref.name}`, e);
     }
     if (this.ending === pending) this.ending = undefined;
     await this.refreshSessions();
@@ -2307,7 +2301,7 @@ export class App {
       this.record("remote-operation", { operation: "end-project" });
       this.notify(`ended ${projectTitle(pending.path)}`);
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`end ${projectTitle(pending.path)}`, e);
     }
     if (this.endingProject === pending) this.endingProject = undefined;
     await this.refreshSessions();
@@ -2467,7 +2461,6 @@ export class App {
         )
           throw new Error("A session with this name exists.");
         this.dismiss();
-        this.error = "";
         void this.startSession(
           name,
           pending.operation === "new-session"
@@ -2507,16 +2500,13 @@ export class App {
         }
       }
       this.dismiss();
-      this.error = "";
       this.record("remote-operation", { operation: pending.operation });
       await this.refreshSessions();
     } catch (e) {
-      this.error = String(e);
+      const label = this.operationLabel(pending, value);
+      this.actionFailed(label, e);
       if (this.confirm === pending) {
-        this.confirmStatus = {
-          text: String(e).replace(/^Error: /, ""),
-          failed: true,
-        };
+        this.confirmStatus = { text: this.actionText(label, e), failed: true };
         this.drawActions();
       }
       this.updateActivity();
@@ -2613,7 +2603,7 @@ export class App {
       this.starting.delete(name);
       if (this.disposed) return;
       this.drawSessions();
-      this.notify(String(e).replace(/^Error: /, ""), true, undefined, 8000);
+      this.actionFailed(`create ${name}`, e);
     }
   }
   /**
@@ -2640,7 +2630,6 @@ export class App {
           throw new Error(
             "The session identity changed. Selection was refused.",
           );
-        this.error = "";
         this.acknowledge(name);
         this.active = this.shells.indexOf(shell);
         if (!this.palette) this.show("shell");
@@ -2750,7 +2739,6 @@ export class App {
       };
       terminal.onTerminalResize = (cols, rows) => adapter.resize(cols, rows);
       adapter.resize(terminal.screen().columns, terminal.screen().rows);
-      this.error = "";
       this.acknowledge(name);
       if (
         !this.palette &&
@@ -2768,8 +2756,8 @@ export class App {
       });
       if (withChild && !reconnect) opened = shell;
     } catch (e) {
-      this.error = String(e);
-      this.record("remote-error", { name, error: this.error });
+      this.record("remote-error", { name, error: String(e) });
+      this.actionFailed(`attach ${name}`, e);
       this.updateActivity();
     } finally {
       this.remotePending.delete(name);
@@ -3242,6 +3230,39 @@ export class App {
     if (text) this.copy(text);
     else this.notify("nothing selected · drag over text, then copy", true);
   }
+  /** The label of a confirmed operation in its failure notice. */
+  operationLabel(op: Operation, value: string) {
+    switch (op.operation) {
+      case "project":
+        return `move ${op.ref.name}`;
+      case "new-session":
+        return `create ${value || "session"}`;
+      case "new-project":
+        return "new project";
+      case "rename-project":
+        return `rename ${projectTitle(op.path)}`;
+      case "rename-session":
+        return `rename ${op.ref.name}`;
+    }
+  }
+  /** The notice text of a failed action: the label and the cause, or the plain message. */
+  actionText(action: string, error: unknown) {
+    const message =
+      error instanceof Error ? error.message : String(error ?? "");
+    if (
+      !(error instanceof LauncherError) &&
+      !/^(Launcher |The launcher)/.test(message)
+    )
+      return message.replace(/^Error: /, "");
+    const failure = classify("sessions", error, this.now());
+    return `${action} failed · ${failure.kind === "failed" ? failure.summary : failure.title}`;
+  }
+  /** Show a failed action as a notice. A failed snapshot also fails the session read. */
+  actionFailed(action: string, error: unknown) {
+    if (error instanceof LauncherError && error.command === "--snapshot")
+      this.readFailed("sessions", error);
+    this.notify(this.actionText(action, error), true, undefined, 8000);
+  }
   /** Show a short message in the footer for a few seconds. */
   notify(
     text: string,
@@ -3292,12 +3313,8 @@ export class App {
     this.drawNavStatus(throb);
     this.drawPending();
   }
-  /** Show an error in the navigation row, or in focus mode the strip of the other sessions. */
+  /** Show the strip of the other sessions in focus mode; the row shows no error. */
   drawNavStatus(throb = throbColor(theme.cpu, Date.now(), this.animate)) {
-    if (this.error) {
-      this.navStatus.content = styled([{ text: this.error, tone: "warning" }]);
-      return;
-    }
     const shown =
       this.focusMode && this.view === "shell" && !this.sessionList.visible;
     // Workspace and Health take 19 cells with their gaps.
@@ -4020,7 +4037,7 @@ export class App {
       this.placeProject(path, before);
       await this.refreshSessions();
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`move ${item.title}`, e);
     }
   }
   /** Save `path` before `before` (or last) in the order of the top-level projects. */
@@ -4109,7 +4126,10 @@ export class App {
       }
       await this.refreshSessions();
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(
+        `move ${item.kind === "session" ? item.ref.name : item.title}`,
+        e,
+      );
     }
   }
   /** Explain the empty right pane: how to attach a session. */

@@ -37,7 +37,7 @@ const timer = setInterval(
         width: renderer.width,
         height: renderer.height,
         active: app.shells[app.active]?.name,
-        error: app.error,
+        error: app.footerNotice?.failed ? app.footerNotice.text : "",
         view: app.view,
         shells: app.shells.map((s) => ({
           name: s.name,

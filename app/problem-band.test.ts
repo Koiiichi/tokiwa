@@ -270,3 +270,22 @@ test("a later, different Health failure replaces the earlier one", async () => {
     await close(t, app);
   }
 });
+
+test("a failed attach shows a notice, not an error in the navigation row", async () => {
+  const { t, app } = await open(EXPIRED);
+  try {
+    await app.attachRemote("worker-c");
+    await t.renderOnce();
+    const lines = t.captureCharFrame().split("\n");
+    const nav = lines.find((l) => l.startsWith("  Workspace  Health"))!;
+    expect(nav.trim()).toBe("Workspace  Health");
+    expect(lines.at(-1)! + lines.at(-2)!).toContain(
+      "attach worker-c failed · AWS sign-in expired",
+    );
+    const frame = lines.join("\n");
+    expect(frame).not.toContain("Launcher");
+    expect(frame).not.toContain("Error:");
+  } finally {
+    await close(t, app);
+  }
+});

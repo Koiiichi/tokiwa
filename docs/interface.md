@@ -31,7 +31,7 @@ The screen has a header, a problem band while a read fails, a navigation row, a 
 | --- | --- |
 | Header | The breadcrumb `◇ tokiwa  /  Workspace` or `◇ tokiwa  /  Health`, and the state of the link to the host at the right. |
 | Problem band | Only while the last session read or Health read failed: the cause, the time of the last good read and the key that acts on it. See [Problem band](#problem-band). |
-| Navigation | `Workspace` and `Health`. An error of an action shows after them in amber. In focus mode, the strip of the other sessions shows here. |
+| Navigation | `Workspace` and `Health`. In focus mode, the strip of the other sessions shows after them. The row shows no error. |
 | Body | The Workspace or the Health view. The shortcuts sheet and the search take its place while they are open. |
 | Footer | One line of controls for the current context. |
 
@@ -159,7 +159,7 @@ Inside a terminal a control is its label then its chord. Elsewhere it is its key
 
 With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. It uses a short form when it is narrow.
 
-The footer also shows short notices: the result of a copy, a saved screen, an ended session or an error. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
+The footer also shows short notices: the result of a copy, a saved screen or an ended session. A failed action shows as `<action> failed · <cause>`, for example `attach worker-a failed · AWS sign-in expired`, for 8 seconds. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
 
 ## Keyboard
 
@@ -297,7 +297,7 @@ The search box also holds the prompts of these actions and of **Move to project*
 
 `z`, or **Focus** in the search, hides the session list beside the terminal, so the terminal takes the full width. Do the same again to show the list. In focus mode the list and the terminal take the full width in turn: `w` shows the list, and `enter` or `esc` returns to the terminal.
 
-While the terminal is in view, the navigation row shows the sessions that no view shows and that need you, for example `◈ codex waiting · 3 working`. A session needs you when it rang the bell, asked for a person, or its agent reported `waiting`, `limited` or `error`; it shows by name, with the agent's word. The agents that report `working` are one count. Other sessions are left out. When the line is too long, the count goes first, then the names after the first join as `N more`. An error of an action takes the place of the strip.
+While the terminal is in view, the navigation row shows the sessions that no view shows and that need you, for example `◈ codex waiting · 3 working`. A session needs you when it rang the bell, asked for a person, or its agent reported `waiting`, `limited` or `error`; it shows by name, with the agent's word. The agents that report `working` are one count. Other sessions are left out. When the line is too long, the count goes first, then the names after the first join as `N more`. An error of an action does not take its place; it shows as a notice in the footer.
 
 ## Layouts by terminal size
 
@@ -321,7 +321,7 @@ While the terminal is in view, the navigation row shows the sessions that no vie
 | Remote session | The host creates a new tmux session in the current directory of the source, named `shell-` and eight characters, through `tokiwa new NAME --from SOURCE`. The app checks its identity in the next snapshots before the view takes the keyboard. |
 | Local shell | A new local shell starts in the directory where the source shell started. |
 
-While a remote shell starts, a `new shell` pane holds its place and says `opening a shell in <directory> · <seconds>s`. In a single view, the title of the source says `· opening a shell`. When the app cannot find the new session in the snapshots, the navigation row shows an error. With four views open, the navigation row asks you to close a view first.
+While a remote shell starts, a `new shell` pane holds its place and says `opening a shell in <directory> · <seconds>s`. In a single view, the title of the source says `· opening a shell`. When the app cannot find the new session in the snapshots, the footer shows a notice. With four views open, the navigation row asks you to close a view first.
 
 The new session lists under its source with `└`. When you attach a session that has child shells, its newest child shell reconnects beside it on a second connection, and the session keeps the keyboard. This does not happen when the layout shows a single view, when four views are open, when the session already has a second view, or when every pane of the child ended. The other children stay in the list.
 

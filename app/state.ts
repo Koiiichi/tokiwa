@@ -69,5 +69,4 @@ export class WorkspaceState {
   view: "health" | "shell" = "health";
   active = 0;
   selection = 0;
-  error = "";
 }
