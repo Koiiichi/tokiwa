@@ -1246,33 +1246,35 @@ class EndGuard(Pty, ModelHelpers, Server):
 
     def test_end_refuses_a_writable_client_on_the_host(self):
         self.attach_client('lead', self.identity, 'attach')
-        result = self.helper('end', 'lead', self.identity)
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
         self.assertEqual(result.returncode, 1)
         self.assertIn(self.SENTENCE, result.stderr)
         self.assertTrue(self.alive())
 
     def test_end_with_a_read_only_viewer_succeeds(self):
         self.attach_client('lead', self.identity, 'view')
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.alive())
+
+    def test_helper_end_without_a_flag_ends_an_attached_session(self):
+        # The behaviour of the base version: the identity is the only check.
+        self.attach_client('lead', self.identity, 'attach')
         result = self.helper('end', 'lead', self.identity)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.alive())
 
-    def test_end_attached_ok_ends_it(self):
-        self.attach_client('lead', self.identity, 'attach')
-        result = self.helper('end', 'lead', self.identity, 'attached-ok')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.alive())
-
     def test_end_takes_no_other_fourth_argument(self):
-        for flag in ['force', 'attached_ok', '']:
+        for flag in ['force', 'attached-ok', '']:
             self.assertNotEqual(self.helper('end', 'lead', self.identity, flag).returncode, 0, flag)
         self.assertTrue(self.alive())
 
     def test_end_of_a_replaced_session_still_refuses_by_identity(self):
-        result = self.helper('end', 'lead', '1:$99:1')
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('identity changed', result.stderr)
-        self.assertTrue(self.alive())
+        for flag in [(), ('check-clients',)]:
+            result = self.helper('end', 'lead', '1:$99:1', *flag)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('identity changed', result.stderr)
+            self.assertTrue(self.alive())
 
     def test_end_refuses_a_client_that_attaches_between_count_and_end(self):
         # A wrapper around tmux that, right after the client list, attaches a control client
@@ -1294,7 +1296,7 @@ exit $code
 """)
         (tools / 'tmux').chmod(0o755)
         self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
-        result = self.helper('end', 'lead', self.identity)
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(self.SENTENCE, result.stderr)
         self.assertTrue(self.alive())

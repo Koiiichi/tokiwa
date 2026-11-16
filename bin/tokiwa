@@ -105,8 +105,8 @@ fi
 case "$mode" in
  --end-confirmed)
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'A confirmed session identity is required.'
-  # A confirmed end skips the check for a client, as it always did.
-  mode=end; extra=$3; lines=attached-ok ;;
+  # A confirmed end sends what it always sent: no check for a client.
+  mode=end; extra=$3 ;;
  --help|-h) usage; exit 0 ;;
  state|agent-state)
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
@@ -127,8 +127,8 @@ case "$mode" in
   [[ ( $# -eq 3 || ( $# -eq 4 && $4 == --attached-ok ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail 'Use end NAME IDENTITY [--attached-ok].'
   extra=$3
-  # The host refuses an attached session unless it gets attached-ok.
-  [[ $# -eq 3 ]] || lines=attached-ok ;;
+  # The host refuses an attached session when it gets check-clients; --attached-ok sends no flag.
+  [[ $# -eq 4 ]] || lines=check-clients ;;
  new|attach|view|project)
   [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
   if [[ $mode == new && $# -eq 4 && $3 == --from ]]; then

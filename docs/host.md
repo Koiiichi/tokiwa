@@ -302,7 +302,7 @@ The screen check of the agent layer reads the last 15 lines of the active pane w
 
 ### End a session
 
-`end NAME IDENTITY [attached-ok]` reads the clients of the session first, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type. A client that watches read only does not count. The end then runs in one tmux queue with the identity check and a check that `#{session_attached}` is still the number that was read, so a client that attaches in between stops it. With `attached-ok` only the identity is checked.
+`end NAME IDENTITY` checks the identity and ends the session in one tmux queue, as it always did. `end NAME IDENTITY check-clients` first reads the clients of the session, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type; a client that watches read only does not count. The queue then also checks that `#{session_attached}` is still the number that was read, so a client that attaches in between stops the end. The launcher sends `check-clients` for `tokiwa end` and no flag for `--attached-ok` or `--end-confirmed`, so a launcher and a helper of different versions still end a session. The refusal sentences go through a tmux format and `display-message -p`, so they hold no comma and no single quote.
 
 ## Audit log
 

@@ -122,7 +122,7 @@ The screen check is a safety net. It never decides that a turn is done.
 
 Each call to the host waits up to 20 seconds. The command repeats the call until a reason other than `timeout`, and prints the last object. When `--timeout` ends first, it prints the last object and exits with status 3. A call that fails, or an output that cannot be read, ends the command with an error and prints no result. A turn that never started, because the agent did not accept the message, shows as `timeout` with `turn` unchanged.
 
-`tokiwa end NAME IDENTITY [--attached-ok]` (core, class `control`) is the documented form of `--end-confirmed`. The host refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while a client that can type is attached; a client that watches with `tokiwa view` does not count. The host checks the clients and ends the session in one tmux queue, so a client that attaches in between stops the end. `--end-confirmed` and `--attached-ok` skip the check.
+`tokiwa end NAME IDENTITY [--attached-ok]` (core, class `control`) is the documented form of `--end-confirmed`. It asks the host to check the clients: the host refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while a client that can type is attached; a client that watches with `tokiwa view` does not count. The host checks the clients and ends the session in one tmux queue, so a client that attaches in between stops the end. `--attached-ok` and `--end-confirmed` ask for no check, and end the session after the identity check.
 
 ## Read a screen
 

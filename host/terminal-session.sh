@@ -121,7 +121,7 @@ if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt ||
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == end ]]; then
- [[ $# -le 3 || $4 == attached-ok ]] || fail 'The only extra argument of end is attached-ok.'
+ [[ $# -le 3 || $4 == check-clients ]] || fail 'The only extra argument of end is check-clients.'
 fi
 if [[ $mode == agent-wait ]]; then
  after=${4:-}
@@ -596,20 +596,24 @@ print(json.dumps({'sessions': sessions, 'projects': projects}))
 PY_SNAPSHOT
   exit ;;
  end)
-  # The identity check, the client check and the deletion run in the same tmux command queue. The
+  # The identity check and the deletion run in the same tmux command queue. With check-clients, the
   # clients are read first, and the queue ends the session only while the number of attached clients
-  # is still the number that was read, so that a client that attaches in between stops it.
+  # is still the number that was read, so that a client that attaches in between stops it. Without
+  # the flag only the identity is checked, as before; a program that ends a session on purpose, for
+  # example the app's end button, sends no flag.
   tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
   session_id=${extra#*:}; session_id=${session_id%%:*}
   identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
   condition=$identity_ok
   refusal='Session identity changed. Nothing was ended.'
-  if [[ ${4:-} != attached-ok ]]; then
+  if [[ ${4:-} == check-clients ]]; then
    read -r total writable < <(python3 -c "$session_lib"$'\n'"$client_counts_program" "$socket" "$name" "$extra") ||
     fail 'The clients of the session could not be read. Nothing was changed.'
    (( writable == 0 )) || fail 'A client is attached. Nothing was changed. Use --attached-ok to end it anyway.'
    condition="#{&&:$identity_ok,#{==:#{session_attached},$total}}"
    # The answer names the cause: an identity that still matches means that a client attached.
+   # The sentences go through #{?...} and display-message -p '...': they must stay free of commas
+   # and single quotes.
    refusal="#{?$identity_ok,A client is attached. Nothing was changed. Use --attached-ok to end it anyway.,Session identity changed. Nothing was ended.}"
   fi
   answer=$(tm if-shell -F -t "=$name:" "$condition" \

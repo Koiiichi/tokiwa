@@ -414,19 +414,22 @@ esac
         result = self.run_cli('end', 'lead', '1:$2:3')
         self.assertEqual(result.returncode, 0, result.stderr)
         # The host checks for a client. The launcher reads no state first.
-        self.assertIn("terminal-session.sh end lead '1:$2:3'\n", self.calls().replace('"', '\n'))
+        self.assertIn("terminal-session.sh end lead '1:$2:3' check-clients", self.calls())
         self.assertNotIn('attached-ok', self.calls())
         self.assertNotIn('terminal-session.sh state', self.calls())
 
-    def test_end_attached_ok_sends_the_flag(self):
+    def test_end_attached_ok_sends_no_flag(self):
         result = self.run_cli('end', 'lead', '1:$2:3', '--attached-ok')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("terminal-session.sh end lead '1:$2:3' attached-ok", self.calls())
+        self.assertIn("terminal-session.sh end lead '1:$2:3'\"", self.calls())
+        self.assertNotIn('check-clients', self.calls())
 
-    def test_end_confirmed_sends_attached_ok(self):
+    def test_end_confirmed_is_unchanged(self):
+        # The call that the base version sent, byte for byte: no flag after the identity.
         result = self.run_cli('--end-confirmed', 'lead', '1:$2:3')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("terminal-session.sh end lead '1:$2:3' attached-ok", self.calls())
+        self.assertIn("terminal-session.sh end lead '1:$2:3'\"", self.calls())
+        self.assertNotIn('check-clients', self.calls())
         self.assertNotIn('terminal-session.sh state', self.calls())
 
     def test_end_refuses_bad_arguments_before_aws(self):
