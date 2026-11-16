@@ -258,7 +258,7 @@ The agent in a session reports its state through its own hooks, which call `toki
 
 | State | Claude Code events | Codex events |
 | --- | --- | --- |
-| `working` | `UserPromptSubmit` (with `--turn`), `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit` (with `--turn`), `PostToolUse` |
+| `working` | `UserPromptSubmit` (with `--turn`), `PostToolUse`, `PostToolUse` of `AskUserQuestion` (`answered`, for the pending question only), `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit` (with `--turn`), `PostToolUse` |
 | `waiting` | `PreToolUse` of `AskUserQuestion` (`--kind question`), `Elicitation` (`--kind question`), Notification `elicitation_dialog` (`--kind question`), Notification `permission_prompt` and `elicitation_url_dialog` (`--kind permission`) | `PermissionRequest` (`--kind permission`) |
 | `idle` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, Notification `idle_prompt` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, `Interrupt` |
 | `limited` | `StopFailure` `rate_limit`, Notification `quota_auto_resume_stale` | none: Codex has no hook for a limit |
@@ -266,7 +266,7 @@ The agent in a session reports its state through its own hooks, which call `toki
 | `ended` | `SessionEnd` | `SessionEnd` |
 | `note` | `PreToolUse` | `PreToolUse` |
 
-`note` records the last tool call and changes no state. `ended` removes the state. Claude Code also sends Notification `permission_prompt` for the dialog of an `AskUserQuestion` call; when the pending item is a question of the last tool call, that notification keeps the question. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
+`note` records the last tool call and changes no state. `ended` removes the state. `answered` records `working` and removes the pending item only when the `tool_use_id` of the event is the pending `id`, whoever chose the answer; an answer of another question changes neither. It is the synchronous hook, so the question closes before the agent goes on; the async hooks that also record `working` can come later. Claude Code also sends Notification `permission_prompt` for the dialog of an `AskUserQuestion` call; when the pending item is a question of the last tool call, that notification keeps the question. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
 
 The command also records these options of the tmux session, which later commands read:
 
@@ -276,7 +276,7 @@ The command also records these options of the tmux session, which later commands
 | `@tokiwa_agent_turn` | The number of turns. Each event with `--turn` adds one. |
 | `@tokiwa_agent_transcript` | The `transcript_path` of the event. |
 | `@tokiwa_agent_session` | The `session_id` of the event. |
-| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it, and so does `tokiwa interrupt`. |
+| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it, and so do `tokiwa interrupt` and `tokiwa-state answered` for its question. |
 | `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `id` (the `tool_use_id` of the event), `tool`, `summary` and `at`. `tokiwa agent answer` requires this `id` to be the pending `id`, so a tool call that starts after a question stops the answer. |
 | `@tokiwa_agent_input` | The label of an answer that an agent chose: base64 of JSON with `actor`, `pending_id` and `at`. `tokiwa agent answer` sets it, and `tokiwa-state answered` prints the label for the agent and removes it. |
 
