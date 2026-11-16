@@ -367,6 +367,9 @@ class Runs(unittest.TestCase):
         self.timeouts = []
         self.step_seconds = {}
         self.lock_free_during_start = None
+        self.git_removes_work = False
+        self.real_git = False
+        self.git_codes = []
         self.write_list(
             {
                 "echo-pr": ECHO_PR,
@@ -400,7 +403,11 @@ class Runs(unittest.TestCase):
         for word, seconds in self.step_seconds.items():
             if word in argv:
                 self.elapsed += seconds
+        if self.real_git and "--wait" in argv:
+            return self.run_git(argv, timeout)
         code, stdout = 0, ""
+        if argv[-4:-1] == ["worktree", "remove", "--force"] and self.git_removes_work:
+            shutil.rmtree(argv[-1])
         if argv[:2] == ["systemctl", "list-units"]:
             stdout = self.units
         elif argv[:2] == ["systemctl", "show"]:
@@ -422,6 +429,36 @@ class Runs(unittest.TestCase):
                     self.lock_free_during_start = False
         return subprocess.CompletedProcess(argv, code, stdout, "")
 
+    def run_git(self, argv, timeout):
+        """Run the git command of a git unit, as a user who cannot write the run folder.
+
+        On the host, root owns the run folder, so the user of the git unit cannot change its
+        entries. The test removes the write permission of the folder for that time instead.
+        """
+        (paths,) = [item for item in argv if item.startswith("--property=ReadWritePaths=")]
+        folder = Path(paths.split()[-1]).parent
+        folder.chmod(0o555)
+        try:
+            done = REAL_COMMAND(argv[argv.index("--") + 1 :], timeout)
+        finally:
+            folder.chmod(0o755)
+        self.git_codes.append(done.returncode)
+        return done
+
+    def make_repository(self):
+        """Make self.clone a git repository with one commit, and return the commit."""
+        def git(*argv):
+            return subprocess.run(
+                ["git", "-C", str(self.clone), *argv], check=True, capture_output=True,
+                text=True,
+            ).stdout.strip()
+        git("init", "-q")
+        (self.clone / "README").write_text("worker-a\n")
+        git("add", "README")
+        git("-c", "user.name=worker-a", "-c", "user.email=worker-a@example.invalid",
+            "commit", "-q", "-m", "first")
+        return git("rev-parse", "HEAD")
+
     def write_list(self, entries):
         run.LIST.write_text(json.dumps({"entries": entries}))
 
@@ -435,14 +472,14 @@ class Runs(unittest.TestCase):
         """The systemd-run calls that start a run, without the git calls."""
         return [argv for argv in self.calls_to("systemd-run") if argv[1].startswith("--unit=")]
 
-    def git(self, seconds, *argv, clone=None, work=None):
+    def git(self, seconds, *argv, clone=None, tree=None):
         """The systemd-run call that runs one git command in the run's sandbox."""
         clone = str(self.clone) if clone is None else clone
         return [
             "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--uid=agent-workspace",
             "--gid=agent-workspace", "--slice=agent-sessions.slice",
             *(f"--property={item}" for item in SANDBOX),
-            f"--property=ReadWritePaths={clone} {work}",
+            f"--property=ReadWritePaths={clone} {tree}",
             f"--property=InaccessiblePaths={run.PRIVATE}",
             f"--property=RuntimeMaxSec={seconds}",
             "--", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
@@ -462,7 +499,7 @@ class Runs(unittest.TestCase):
         folder = run.RUNS / "20261112T183000-7f3a"
         argv = ["/bin/echo", "4 2"]
         unit = run.unit_command(
-            "20261112T183000-7f3a", ECHO_PR, argv, folder / "work", None
+            "20261112T183000-7f3a", ECHO_PR, argv, folder / "tree/work", None
         )
         self.assertEqual(
             unit[:8],
@@ -472,18 +509,18 @@ class Runs(unittest.TestCase):
                 "--uid=agent-workspace",
                 "--gid=agent-workspace",
                 "--slice=agent-sessions.slice",
-                f"--working-directory={folder}/work",
+                f"--working-directory={folder}/tree/work",
                 "--collect",
                 "--property=RuntimeMaxSec=60",
             ],
         )
         self.assertNotIn("--no-block", unit)
         self.assertIn("--property=InaccessiblePaths=/srv/development/private", unit)
-        self.assertIn(f"--property=ReadWritePaths={folder}/work", unit)
+        self.assertIn(f"--property=ReadWritePaths={folder}/tree/work", unit)
         self.assertNotIn(f"--property=ReadWritePaths={folder}", unit)
         self.assertIn(f"--property=StandardOutput=file:{folder}/output", unit)
         self.assertIn("--setenv=PATH=/usr/local/bin:/usr/bin:/bin", unit)
-        self.assertIn(f"--setenv=HOME={folder}/work", unit)
+        self.assertIn(f"--setenv=HOME={folder}/tree/work", unit)
         self.assertFalse([item for item in unit if "CLAUDE_CONFIG_DIR" in item])
         self.assertFalse([item for item in unit if "EnvironmentFile" in item])
         runner = Path(run.__file__).resolve()
@@ -503,7 +540,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(
             paths,
             [
-                f"--property=ReadWritePaths={folder}/work",
+                f"--property=ReadWritePaths={folder}/tree/work",
                 f"--property=ReadWritePaths={run.HOME}",
                 f"--property=ReadWritePaths={ws / 'repo-a'}",
                 f"--property=ReadWritePaths={ws / 'repo-b'}",
@@ -515,7 +552,7 @@ class Runs(unittest.TestCase):
         (unit,) = self.run_units()
         self.assertEqual(
             [item for item in unit if "ReadWritePaths" in item],
-            [f"--property=ReadWritePaths={run.RUNS / self.run_ids()[0]}/work"],
+            [f"--property=ReadWritePaths={run.RUNS / self.run_ids()[0]}/tree/work"],
         )
 
     def test_a_symlinked_writable_folder_gives_its_resolved_path(self):
@@ -574,11 +611,11 @@ class Runs(unittest.TestCase):
     def test_the_git_units_mount_the_whole_clone_and_hide_the_private_volume(self):
         self.use_fake_clock()
         result = self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
-        work = run.RUNS / result["id"] / "work"
+        tree = run.RUNS / result["id"] / "tree"
         gits = [a for a in self.calls_to("systemd-run") if "--wait" in a]
         self.assertTrue(gits)
         for argv in gits:
-            self.assertIn(f"--property=ReadWritePaths={self.clone} {work}", argv)
+            self.assertIn(f"--property=ReadWritePaths={self.clone} {tree}", argv)
             self.assertNotIn(".git", " ".join(argv).replace("--property=", "").split(" -- ")[0])
             self.assertIn("--property=InaccessiblePaths=/srv/development/private", argv)
 
@@ -658,7 +695,7 @@ class Runs(unittest.TestCase):
         for spec_ in (ECHO_PR, REVIEW_PR):
             with self.subTest(home=spec_.get("home", "none")):
                 unit = run.unit_command(
-                    "20261112T183000-7f3a", spec_, ["x"], folder / "work", None
+                    "20261112T183000-7f3a", spec_, ["x"], folder / "tree/work", None
                 )
                 options = unit[: unit.index("--")]
                 for item in SANDBOX:
@@ -667,7 +704,7 @@ class Runs(unittest.TestCase):
     def test_unit_command_keeps_each_dollar_literal(self):
         unit = run.unit_command(
             "20261112T183000-7f3a", ECHO_PR, ["/bin/echo", "${API_KEY} $HOME"],
-            run.RUNS / "20261112T183000-7f3a/work", None,
+            run.RUNS / "20261112T183000-7f3a/tree/work", None,
         )
         self.assertEqual(unit[unit.index("--") + 1 :], ["/bin/echo", "$${API_KEY} $$HOME"])
 
@@ -676,7 +713,7 @@ class Runs(unittest.TestCase):
         env_file = run.RUNS / "20261112T183000-7f3a.env"
         workbench = {**REVIEW_PR, "secrets": ["API_KEY"]}
         unit = run.unit_command(
-            "20261112T183000-7f3a", workbench, ["review"], folder / "work", env_file
+            "20261112T183000-7f3a", workbench, ["review"], folder / "tree/work", env_file
         )
         options = unit[: unit.index("--")]
         self.assertIn(f"--property=InaccessiblePaths={run.HOME}/.tokiwa", options)
@@ -687,7 +724,7 @@ class Runs(unittest.TestCase):
             "--property=InaccessiblePaths=/srv/development/private", options
         )
         self.assertIn(f"--property=ReadWritePaths={run.HOME}", options)
-        self.assertIn(f"--property=ReadWritePaths={folder}/work", options)
+        self.assertIn(f"--property=ReadWritePaths={folder}/tree/work", options)
         self.assertNotIn(f"--property=ReadWritePaths={folder}", options)
         self.assertNotIn("--no-block", options)
         self.assertIn(f"--property=EnvironmentFile={env_file}", options)
@@ -816,8 +853,13 @@ class Runs(unittest.TestCase):
         self.assertEqual(unit[unit.index("--") + 1 :], ["/bin/echo", "42"])
         folder = run.RUNS / result["id"]
         self.assertEqual(folder.stat().st_mode & 0o777, 0o755)
-        self.assertEqual((folder / "work").stat().st_mode & 0o777, 0o700)
-        self.assertEqual(self.owners, [(folder / "work", "agent-workspace")])
+        tree = folder / "tree"
+        self.assertEqual(tree.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((tree / "work").stat().st_mode & 0o777, 0o700)
+        # work is given away first, so agent-workspace never owns a folder that root still fills.
+        self.assertEqual(
+            self.owners, [(tree / "work", "agent-workspace"), (tree, "agent-workspace")]
+        )
         self.assertIs(self.lock_free_during_start, False)
         self.assertIn(
             [
@@ -864,8 +906,8 @@ class Runs(unittest.TestCase):
             str(caught.exception),
             "The commit 1a2b3c4 is not in the clone. Nothing was run.",
         )
-        work = self.base / "runs" / self.refused_id() / "work"
-        self.assertIn(self.git(12, "cat-file", "-e", "1a2b3c4^{commit}", work=work), self.calls)
+        tree = self.base / "runs" / self.refused_id() / "tree"
+        self.assertIn(self.git(12, "cat-file", "-e", "1a2b3c4^{commit}", tree=tree), self.calls)
         self.assertFalse([argv for argv in self.calls if "worktree" in argv])
         self.assertFalse(self.run_units())
         self.assertEqual(self.run_ids(), [])
@@ -878,20 +920,59 @@ class Runs(unittest.TestCase):
 
     def test_worktree_is_made_and_removed(self):
         self.use_fake_clock()
+        self.git_removes_work = True
         result = self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
-        work = run.RUNS / result["id"] / "work"
+        tree = run.RUNS / result["id"] / "tree"
+        work = tree / "work"
         self.assertIn(
-            self.git(12, "worktree", "add", "--detach", str(work), "1a2b3c4", work=work),
+            self.git(12, "worktree", "add", "--detach", str(work), "1a2b3c4", tree=tree),
             self.calls,
         )
         (unit,) = self.run_units()
         self.assertIn(f"--working-directory={work}", unit)
-        self.assertEqual(self.owners, [(work, "agent-workspace")])
+        self.assertEqual(self.owners, [(work, "agent-workspace"), (tree, "agent-workspace")])
         run.finish(result["id"], "success", "0")
         self.assertEqual(
             self.calls[-1],
-            self.git(20, "worktree", "remove", "--force", str(work), work=work),
+            self.git(20, "worktree", "remove", "--force", str(work), tree=tree),
         )
+        self.assertFalse(tree.exists())
+
+    def test_the_cleanup_command_removes_the_worktree_folder(self):
+        self.use_fake_clock()
+        self.real_git = True
+        commit = self.make_repository()
+        result = self.start("test-at", {"repo": "repo-a", "commit": commit})
+        tree = run.RUNS / result["id"] / "tree"
+        self.assertEqual((tree / "work/README").read_text(), "worker-a\n")
+        run.finish(result["id"], "success", "0")
+        self.assertEqual(self.git_codes, [0, 0, 0])
+        self.assertFalse(tree.exists())
+        self.assertTrue((run.RUNS / result["id"] / "end.json").exists())
+        listed = subprocess.run(
+            ["git", "-C", str(self.clone), "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertEqual(listed.count("worktree "), 1)
+
+    def test_root_removes_only_an_empty_tree_folder(self):
+        self.use_fake_clock()
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "kept").write_text("x")
+        result = self.start("test-at", {"repo": "repo-a", "commit": "1a2b3c4"})
+        folder = run.RUNS / result["id"]
+        # git left the worktree, and the run planted a link that leaves the tree.
+        (folder / "tree/work/file").write_text("x")
+        (folder / "tree/link").symlink_to(outside)
+        run.finish(result["id"], "exit-code", "1")
+        self.assertEqual(
+            json.loads((folder / "end.json").read_text()),
+            {"state": "failed", "exit": 1, "truncated": False},
+        )
+        self.assertTrue((folder / "tree/work/file").exists())
+        self.assertTrue((folder / "tree/link").is_symlink())
+        self.assertTrue((outside / "kept").exists())
 
     def test_finish_records_the_end(self):
         result = self.start()

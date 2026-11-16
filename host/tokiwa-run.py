@@ -452,18 +452,18 @@ def literal(argv):
     return [item.replace("$", "$$") for item in argv]
 
 
-def git_command(clone, work, seconds, *argv):
+def git_command(clone, tree, seconds, *argv):
     """Return the systemd-run call that runs one git command as agent-workspace in a sandbox.
 
     The clone belongs to agent-workspace, so its config and its checkout filters are code of
-    that user. git gets the limits of a run, may write only the clone folder and the run's work
+    that user. git gets the limits of a run, may write only the clone folder and the run's tree
     folder, cannot reach /srv/development/private, and runs no hook and no file system monitor.
     The unit mounts the whole clone, because .git is an entry that a run could swap for a link. The unit stops after
     seconds, also when the caller of systemd-run is killed first.
     """
     properties = [
         *SANDBOX,
-        f"ReadWritePaths={clone} {work}",
+        f"ReadWritePaths={clone} {tree}",
         f"InaccessiblePaths={PRIVATE}",
         f"RuntimeMaxSec={max(1, math.ceil(seconds))}",
     ]
@@ -486,7 +486,7 @@ def git_command(clone, work, seconds, *argv):
 
 
 def unit_command(run_id, entry, argv, workdir, env_file, writable=()):
-    """Return the systemd-run call that starts one run as agent-workspace.
+    """Return the systemd-run call that starts one run as agent-workspace, in workdir.
 
     writable holds the resolved folders that the entry names. Each gets a ReadWritePaths item,
     and InaccessiblePaths and file permissions still apply.
@@ -500,7 +500,7 @@ def unit_command(run_id, entry, argv, workdir, env_file, writable=()):
         "StandardError=inherit",
         *SANDBOX,
         "PrivateTmp=yes",
-        f"ReadWritePaths={folder}/work",
+        f"ReadWritePaths={workdir}",
     ]
     if workbench:
         properties += [
@@ -528,7 +528,7 @@ def unit_command(run_id, entry, argv, workdir, env_file, writable=()):
             f"CODEX_HOME={HOME}/.codex",
         ]
     else:
-        environment.append(f"HOME={folder}/work")
+        environment.append(f"HOME={workdir}")
     return [
         "systemd-run",
         f"--unit=tokiwa-run-{run_id}",
@@ -663,10 +663,18 @@ def lock_runs(deadline):
             time.sleep(0.05)
 
 
-def remove_worktree(clone, work, seconds=20):
+def remove_worktree(clone, tree, seconds=20):
+    """Remove the worktree in a run's tree folder, and then the tree folder when it is empty."""
+    work = tree / "work"
     command(
-        git_command(clone, work, seconds, "worktree", "remove", "--force", str(work)), seconds
+        git_command(clone, tree, seconds, "worktree", "remove", "--force", str(work)), seconds
     )
+    # Root removes only an empty folder: a tree that agent-workspace controls can hold a link
+    # that points outside it. A tree that git did not empty stays until prune.
+    try:
+        os.rmdir(tree)
+    except OSError:
+        pass
 
 
 def start(name, values, via, actor, now=None):
@@ -705,19 +713,25 @@ def start(name, values, via, actor, now=None):
                 break
             except FileExistsError:
                 continue
-        # Only work belongs to agent-workspace. Root writes the records and systemd opens the
-        # output file as root, so no name beside them may be one that agent-workspace can plant.
+        # Only tree and the work folder in it belong to agent-workspace. Root writes the records
+        # and systemd opens the output file as root, so no name beside them may be one that
+        # agent-workspace can plant. git removes a worktree and its folder as agent-workspace,
+        # so the worktree is in a folder that agent-workspace owns.
         os.chmod(folder, 0o755)
-        work = folder / "work"
+        tree = folder / "tree"
+        work = tree / "work"
+        tree.mkdir(mode=0o700)
         work.mkdir(mode=0o700)
+        # work first, so that agent-workspace never owns a folder that root still writes in.
         chown(work, USER)
+        chown(tree, USER)
         call = {"entry": name, "output_bytes": entry["output_bytes"], "at": now}
         if entry["cwd"] == "worktree":
             commit = filled[filled_name("commit", entry["args"]["commit"])]
             left = time_left(deadline)
             found = command(
                 git_command(
-                    filled["clone"], work, left, "cat-file", "-e", f"{commit}^{{commit}}"
+                    filled["clone"], tree, left, "cat-file", "-e", f"{commit}^{{commit}}"
                 ),
                 left,
             )
@@ -730,7 +744,7 @@ def start(name, values, via, actor, now=None):
             left = time_left(deadline)
             made = command(
                 git_command(
-                    clone, work, left, "worktree", "add", "--detach", str(work), commit
+                    clone, tree, left, "worktree", "add", "--detach", str(work), commit
                 ),
                 left,
             )
@@ -755,7 +769,7 @@ def start(name, values, via, actor, now=None):
         if not isinstance(error, Refused):
             refusal = Refused("The run could not be prepared.")
         if clone is not None:
-            remove_worktree(clone, folder / "work")
+            remove_worktree(clone, folder / "tree")
         if folder is not None:
             shutil.rmtree(folder, ignore_errors=True)
         if env_file is not None:
@@ -903,7 +917,7 @@ def finish(run_id, service_result, exit_status):
     finally:
         (RUNS / f"{run_id}.env").unlink(missing_ok=True)
         if "clone" in call:
-            remove_worktree(call["clone"], folder / "work")
+            remove_worktree(call["clone"], folder / "tree")
         if truncated:
             os.truncate(output, call["output_bytes"])
 
