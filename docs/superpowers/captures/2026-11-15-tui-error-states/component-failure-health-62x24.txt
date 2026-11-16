@@ -1,0 +1,24 @@
+ ◇ tokiwa  /  Health                                    ● EC2 
+ ──────────────────────────────────────────────────────────── 
+ Workspace  Health                                            
+ ▲ Health read failed: the health response is invalid         
+ u retry · e details                                          
+                                                              
+ Workstation · from mac-a                                     
+   Instance:       i-0123456789abcdef0                        
+   Type:           m7i.2xlarge · us-east-1                    
+   Uptime:         3d 4h 12m · at 18:00                       
+   Authorization:  12 days left                               
+                   Ends Dec 22, 2026 at 11:59pm (UTC-8)       
+ Spend (estimate)                                             
+   Spent so far:   $110.95 of $350 budget                     
+                   ━━━━━━━───────────────  32%                
+   Forecast:       $254.03 by Dec 22 · 73% of budget, if the  
+                   host keeps running                         
+   Month to date:  $110.95                                    
+   Instance hours since Dec 1, 600 GiB of disk and 1 public   
+   IPv4 at list prices. Not counted: spend before Dec 1, data 
+   transfer, snapshots, S3 backups and tax.                   
+ Workbench limits · last known                                
+ ──────────────────────────────────────────────────────────── 
+ u retry · ↑↓ scroll · w sessions · ? shortcuts               

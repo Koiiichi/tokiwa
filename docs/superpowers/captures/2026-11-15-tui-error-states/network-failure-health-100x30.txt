@@ -1,0 +1,30 @@
+  ◇ tokiwa  /  Health                                                              ○ EC2 · offline  
+  ────────────────────────────────────────────────────────────────────────────────────────────────  
+  ▲ AWS cannot be reached from this Mac                                        u retry · e details  
+    Showing the last known state from 18:00 · 6m ago. Retrying every 30 s.                          
+  Workspace  Health                                                                                 
+  Workstation · from mac-a                                                                          
+    Instance:       i-0123456789abcdef0 · m7i.2xlarge · us-east-1 · last known                      
+    Uptime:         3d 4h 12m · at 18:00                                                            
+    Authorization:  12 days left                                                                    
+                    Ends Dec 22, 2026 at 11:59pm (UTC-8)                                            
+  Spend (estimate · last known)                                                                     
+    Spent so far:   $110.95 of $350 budget                                                          
+                    ━━━━━━━━━━━━━━━━──────────────────────────────────  32%                         
+    Forecast:       $254.03 by Dec 22 · 73% of budget, if the host keeps running                    
+    Month to date:  $110.95                                                                         
+                    Instance hours since Dec 1, 600 GiB of disk and 1 public IPv4 at list prices.   
+                    Not counted: spend before Dec 1, data transfer, snapshots, S3 backups and tax.  
+  Workbench limits · last known                                                                     
+    CPU             ━━━━━━━━━━━━╸─────────────────────────────────────  25% of 6 cores              
+    Memory          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸────────  20.0 of 24.0 GiB            
+    Tasks           ━━╸───────────────────────────────────────────────  212 of 4096                 
+  Storage · last known                                                                              
+    State disk      ━━━━━━━━━━━━━━────────────────────────────────────  142.3 of 500.0 GiB          
+    Cache disk      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──  191.0 of 200.0 GiB          
+    Root disk       ━━━━━━━━━━━╸──────────────────────────────────────  23.4 of 100.0 GiB           
+  Network · ens5 · last known                                                                       
+    Received:       1.2 MiB/s now · 48.3 GiB since boot                                             
+    Sent:           220 KiB/s now · 9.1 GiB since boot                                              
+  ────────────────────────────────────────────────────────────────────────────────────────────────  
+  u retry · ↑↓ scroll · w sessions · ? shortcuts                                                    

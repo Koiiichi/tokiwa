@@ -347,7 +347,7 @@ test("typed text lists matching sessions first, by category only when several ma
     await w.t.renderOnce();
     const labels = w.app.filtered.map((a) => a.label);
     expect(labels.slice(0, 2)).toEqual(["setup", "setup2"]);
-    expect(labels).toContain("Refresh sessions");
+    expect(labels).toContain("Sessions");
     expect(labels).not.toContain("coder-lead");
     const frame = w.lines().join("\n");
     expect(frame).toContain("Sessions ───");
@@ -501,7 +501,7 @@ test("a click on a row of a scrolled sheet runs the row under the pointer", asyn
     await pause();
     await w.t.renderOnce();
     expect(w.app.sheet.scrollTop).toBeGreaterThan(0);
-    const refresh = w.at("u  Refresh sessions");
+    const refresh = w.at("u  Refresh and retry");
     await w.t.mockMouse.moveTo(refresh.x + 4, refresh.y);
     await w.t.renderOnce();
     expect(w.app.sheetHover).toBe("refresh");

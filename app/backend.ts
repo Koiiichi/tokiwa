@@ -132,8 +132,38 @@ export function healthSample(value: unknown): HealthSample {
     throw new Error("The health rows are invalid.");
   return s;
 }
+export type LauncherCategory = "auth" | "unreachable";
+/** A launcher failure with its cause. `message` keeps the text that callers show. */
+export class LauncherError extends Error {
+  constructor(
+    message: string,
+    readonly command: string,
+    readonly reason: "exit" | "timeout" | "spawn",
+    readonly code: number | null,
+    readonly stderr: string,
+    readonly category?: LauncherCategory,
+  ) {
+    super(message);
+    this.name = "LauncherError";
+  }
+}
+/** Removes the launcher's last line when it names a known failure category. */
+export function splitCategory(stderr: string): {
+  text: string;
+  category?: LauncherCategory;
+} {
+  const lines = stderr.split("\n");
+  let i = lines.length - 1;
+  while (i >= 0 && lines[i].trim() === "") i--;
+  const m = i >= 0 ? /^tokiwa-error: (auth|unreachable)$/.exec(lines[i]) : null;
+  if (!m) return { text: stderr };
+  return {
+    text: lines.slice(0, i).join("\n"),
+    category: m[1] as LauncherCategory,
+  };
+}
 export class BackendClient {
-  private children = new Set<ReturnType<typeof Bun.spawn>>();
+  private children = new Set<Bun.Subprocess<"ignore", "pipe", "pipe">>();
   close() {
     for (const child of this.children) child.kill();
     this.children.clear();
@@ -141,27 +171,43 @@ export class BackendClient {
   constructor(
     readonly launcher = join(process.env.HOME!, ".local/bin/tokiwa"),
     private runner?: Runner,
+    private timeoutMs = 90000,
   ) {}
   async call(args: string[]): Promise<string> {
     if (this.runner) return this.runner(args);
-    const p = Bun.spawn([this.launcher, ...args], {
-      // The home folder outlives a reinstall, which replaces the app's own folder.
-      cwd: homedir(),
-      // TOKIWA_VIA names this caller in the audit log on the host; the MCP server sets mcp.
-      env: {
-        ...process.env,
-        TOKIWA_DASHBOARD: "1",
-        TOKIWA_VIA: process.env.TOKIWA_VIA ?? "app",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const command = String(args[0]);
+    let p: Bun.Subprocess<"ignore", "pipe", "pipe">;
+    try {
+      p = Bun.spawn([this.launcher, ...args], {
+        // The home folder outlives a reinstall, which replaces the app's own folder.
+        cwd: homedir(),
+        // TOKIWA_VIA names this caller in the audit log on the host; the MCP server sets mcp.
+        env: {
+          ...process.env,
+          TOKIWA_DASHBOARD: "1",
+          TOKIWA_VIA: process.env.TOKIWA_VIA ?? "app",
+          // Asks the launcher to end stderr with a tokiwa-error category line.
+          TOKIWA_ERROR_CATEGORY: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      throw new LauncherError(
+        `Launcher ${command} could not start: ${text}`,
+        command,
+        "spawn",
+        null,
+        text,
+      );
+    }
     this.children.add(p);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       p.kill();
-    }, 90000);
+    }, this.timeoutMs);
     try {
       const [out, err, code] = await Promise.all([
         new Response(p.stdout).text(),
@@ -170,11 +216,25 @@ export class BackendClient {
       ]);
       if (out.length > 100000)
         throw new Error("The response exceeds the size limit.");
-      if (timedOut) throw new Error("The launcher exceeded 90 seconds.");
-      if (code !== 0)
-        throw new Error(
-          `Launcher ${args[0]} exited ${code}: ${err.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
+      if (timedOut)
+        throw new LauncherError(
+          "The launcher exceeded 90 seconds.",
+          command,
+          "timeout",
+          null,
+          err,
         );
+      if (code !== 0) {
+        const { text, category } = splitCategory(err);
+        throw new LauncherError(
+          `Launcher ${args[0]} exited ${code}: ${text.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
+          command,
+          "exit",
+          code,
+          text,
+          category,
+        );
+      }
       return out.trim();
     } finally {
       clearTimeout(timer);

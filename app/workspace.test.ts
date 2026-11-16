@@ -267,7 +267,7 @@ test("Shell here removes the view of a new shell that it could not verify", asyn
   try {
     await app.shellHere();
     expect(started).toBeDefined();
-    expect(app.error).toContain("The session list failed.");
+    expect(app.footerNotice?.text).toContain("The session list failed.");
     // Only the source view stays, and it keeps the keyboard.
     expect(app.shells).toEqual([source]);
     expect(app.shells[app.active]).toBe(source);

@@ -15,9 +15,11 @@ It does not change the host, its workloads or its service limits. The spend figu
 | Storage | One bar for each disk that the host reports, used of total | `tokiwa health` |
 | Network · INTERFACE | `Received:` and `Sent:`: the rate now and the total since boot | `tokiwa health`: the interface of the default IPv4 route |
 
-The last line gives the time of the sample and its age, for example `Sampled 14:02:31 · 12s ago`. It adds the state when the state is not `live`. After a failed read, the line says `stale`, the readings show in a quieter colour, and the [problem band](interface.md#problem-band) under the header names the cause.
+The last line gives the time of the sample and its age, for example `Sampled 14:02:31 · 12s ago`. It adds the state when the state is not `live`. When the sample is older than 65 seconds or the last read failed, the line says `last known`, and the section titles and values say it too: `Workbench limits · last known`, `Storage · last known`, `Network · ens5 · last known`, a `Stuck connection:` row that ends with `· last known`, an `Uptime:` value that ends with `· at HH:MM` (with the date when the sample is from another day), and `Spend (estimate · last known)` with an `Instance:` value that ends with `· last known`. The values keep their quieter colour. The [problem band](interface.md#problem-band) under the header names a failure of the whole link; a failure of the Health read alone shows as one line at the top of Health.
 
-Missing data shows as `not available` with the reason, never as zero:
+The spend reading is current for 30 minutes after a successful read. After that, or after a failed read, its values stay and the title says `last known`.
+
+A value that no read has given says `not read` while a failure speaks for the whole link (the sign-in is gone, the network is down, the host is stopped or the launcher is too old for the app). A launcher that lacks only the spend command is no such failure: the Spend rows say `not available` with that reason. Without such a failure, missing data shows as `not available` with the reason, never as zero:
 
 | Reason | Cause |
 | --- | --- |
@@ -42,7 +44,7 @@ Sampling starts when the app starts and stops when the app closes. It runs in ev
 | Request time limit | 90 seconds. The launcher process then stops, and the read counts as failed. |
 | History bound | The last 120 samples and the last 120 read events, in memory. |
 | Attempts | No limit. A failed read does not stop sampling. |
-| Spend reading | `tokiwa spend` after the first sample, then after a sample when the last spend read started 15 minutes ago or more. |
+| Spend reading | `tokiwa spend` after the first sample, then after a sample when the last spend read started 15 minutes ago or more. A failed spend read keeps the last reading. Spend counts as current for 30 minutes after a good read; only a good spend read renews it. |
 | Redraw | Every second while Health is in view, so the age stays current. |
 
 The app rejects a sample that is not valid. A rejected sample counts as a failed read.
@@ -60,13 +62,12 @@ A Health read also sets the link state in the header; see [Interface](interface.
 | State | Condition | Last line |
 | --- | --- | --- |
 | `live` | The last sample is at most 65 seconds old, and the last read reported no error. | `Sampled HH:MM:SS · Ns ago` |
-| `stale` | The last sample is more than 65 seconds old. | `… · stale`, in amber |
+| `last known` | The last sample is more than 65 seconds old, or the last read failed. The values stay on screen. | `… · last known`, in amber; the section titles say `last known` |
 | `partial` | At least one sample exists, and the host reported errors in its last sample. | `… · partial` |
-| failed read | At least one sample exists, and the last read failed. | `… · stale`, in amber; the problem band names the cause |
-| `error` | The reads failed, and no sample exists. | `Waiting for the first health reading`; the problem band names the cause |
+| `error` | The reads failed, and no sample exists. | `Waiting for the first health reading`; the problem band or the line at the top of Health names the cause |
 | `recorded` | The reading comes from `--snapshot FILE`. | `… · recorded` |
 
-Before the first read ends, the last line says `Waiting for the first health reading`. `recorded` takes precedence over the other states, and `partial` takes precedence over `stale`.
+Before the first read ends, the last line says `Waiting for the first health reading`. `recorded` takes precedence over the other states, and `last known` takes precedence over `partial`, so that an old value never looks current.
 
 ## Spend estimate
 

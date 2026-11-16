@@ -427,16 +427,15 @@ test("switching a connected remote terminal does not wait for an AWS snapshot", 
   };
   try {
     app.show("health");
-    app.error = "Previous connection failed";
     await app.attachRemote("fixture", "1:$2:3");
     expect(calls).toBe(0);
     expect(app.view).toBe("shell");
     expect(app.shells).toHaveLength(1);
-    expect(app.error).toBe("");
+    expect(app.footerNotice).toBeUndefined();
     app.show("health");
     await app.attachRemote("fixture", "1:$3:4");
     expect(app.view).toBe("health");
-    expect(app.error).toContain("identity changed");
+    expect(app.footerNotice?.text).toContain("identity changed");
     expect(calls).toBe(0);
   } finally {
     await t.dispose();
@@ -732,9 +731,14 @@ test("a link that a program asks for opens after a click or key in its view; oth
 test("the connection card times the Session Manager endpoint of the region in host.env", () => {
   const dir = mkdtempSync(join(tmpdir(), "tokiwa-host-"));
   const file = join(dir, "host.env");
-  writeFileSync(file, "# host\ninstance=i-0123456789abcdef0\nregion=eu-west-2\n");
+  writeFileSync(
+    file,
+    "# host\ninstance=i-0123456789abcdef0\nregion=eu-west-2\n",
+  );
   expect(awsEndpoint(file).host).toBe("ssm.eu-west-2.amazonaws.com");
   writeFileSync(file, "region=not a region\n");
   expect(awsEndpoint(file).host).toBe("ssm.us-east-1.amazonaws.com");
-  expect(awsEndpoint(join(dir, "missing")).host).toBe("ssm.us-east-1.amazonaws.com");
+  expect(awsEndpoint(join(dir, "missing")).host).toBe(
+    "ssm.us-east-1.amazonaws.com",
+  );
 });

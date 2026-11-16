@@ -1,5 +1,6 @@
 /** UI observations are transient. The remote snapshot remains authoritative. */
 import { healthSample, type HealthSample } from "./backend";
+import type { Failure, Source } from "./problem";
 export type Activity =
   "output" | "quiet" | "disconnected" | "exited" | "partial" | "unknown";
 export function activity(
@@ -69,5 +70,38 @@ export class WorkspaceState {
   view: "health" | "shell" = "health";
   active = 0;
   selection = 0;
-  error = "";
+}
+
+export type Freshness = "live" | "last-known" | "unavailable";
+
+/** How long a good read of each source counts as current. */
+export const FRESHNESS_LIMIT_MS: Record<Source, number> = {
+  sessions: 90_000,
+  health: 65_000,
+  spend: 1_800_000,
+};
+
+/**
+ * The state of one data source: when it last read well, when it last failed, and the failure.
+ * Each source recovers on its own read; another source's success never makes it live.
+ */
+export class SourceStatus {
+  okAt = 0;
+  failAt = 0;
+  failure?: Failure;
+  constructor(readonly limitMs: number) {}
+  succeed(at: number) {
+    this.okAt = at;
+    this.failure = undefined;
+  }
+  fail(failure: Failure) {
+    this.failAt = failure.at;
+    this.failure = failure;
+  }
+  freshness(now: number): Freshness {
+    if (this.okAt <= 0) return "unavailable";
+    return this.okAt >= this.failAt && now - this.okAt <= this.limitMs
+      ? "live"
+      : "last-known";
+  }
 }

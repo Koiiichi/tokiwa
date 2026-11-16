@@ -35,7 +35,7 @@ install -m 0755 bin/tokiwa ~/.local/bin/tokiwa
 | `--layout terminal` | The list fills the width until a session is attached. The default is `--layout workspace`. |
 | `--snapshot FILE` | Show one recorded `tokiwa health` response in Health. The sampler does not start. |
 | `--deadline MINUTES` | Close the app after 1 to 1440 minutes. |
-| `--receipt FILE` | Write the app's event record to `FILE` as JSON after each event. |
+| `--receipt FILE` | Write the app's event record to `FILE` as JSON after each event. The events `remote-sessions-refreshed`, `remote-sessions-error` and `health-sample` carry `freshness` (`live`, `last-known` or `unavailable`) and `read_at` (the last good read, in seconds) for their source. |
 
 [Configuration](configuration.md) lists the environment variables and the Health configuration file.
 
@@ -127,7 +127,7 @@ await t.dispose();
 | `backend.attachCommand` | The transport command of an attached session. `["/bin/sleep", "30"]` keeps a transport open; `["/bin/zsh", "-f"]` gives a shell. |
 | `t.dispose()` | Close the renderer. Wait for `app.shells[i].child.exited` so that no process stays. |
 
-[`app/landing-fixture.ts`](../app/landing-fixture.ts) and [`app/health-fixture.ts`](../app/health-fixture.ts) hold fixed snapshots and a fixed Health reading. `health-capture.ts` and `review-capture.ts` draw views with the test renderer and write them as text to `~/.local/state/tokiwa/captures/` (or `$TOKIWA_CAPTURE_DIR`):
+[`app/landing-fixture.ts`](../app/landing-fixture.ts) and [`app/health-fixture.ts`](../app/health-fixture.ts) hold fixed snapshots and a fixed Health reading. `health-capture.ts` and `review-capture.ts` draw views with the test renderer and write them as text to `~/.local/state/tokiwa/captures/` (or `$TOKIWA_CAPTURE_DIR`). `error-capture.ts` draws the four error states (expired sign-in, network failure, component failure, recovery) with a fake backend and writes `<scene>-<view>-<width>x<height>.txt` to `error-states/` in the same folder. The saved frames are in `docs/superpowers/captures/2026-11-15-tui-error-states/`:
 
 ```sh
 (cd app && ./node_modules/bun/bin/bun.exe health-capture.ts)

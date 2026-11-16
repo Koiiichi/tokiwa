@@ -102,7 +102,7 @@ const state = setInterval(
         height: renderer.height,
         active: app.shells[app.active]?.name,
         view: app.view,
-        error: app.error,
+        error: app.footerNotice?.failed ? app.footerNotice.text : "",
         shells: app.shells.map((s) => ({
           name: s.name,
           pid: s.child.pid,

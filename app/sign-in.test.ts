@@ -3,6 +3,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { App } from "./app";
 import { BackendClient } from "./backend";
 import { landingSessions } from "./landing-fixture";
+import { fixtureSample, fixtureSpend } from "./health-fixture";
 
 const EXPIRED =
   "Launcher --snapshot exited 1: Tokiwa: AWS authentication failed. Run aws sso login --profile work.";
@@ -49,7 +50,7 @@ test("an expired sign-in offers the sign-in key in the band, the list, the pane 
 test("another read failure keeps its message, and the sign-in key does nothing", async () => {
   const { t, app } = await open("Launcher --snapshot exited 255: timeout");
   try {
-    expect(t.captureCharFrame()).toContain("▲ timeout.");
+    expect(t.captureCharFrame()).toContain("▲ Sessions read failed: timeout");
     await t.mockInput.typeText("l");
     await pause();
     expect(app.shells).toHaveLength(0);
@@ -68,7 +69,7 @@ test("the sign-in runs in a view that closes after success, and the sessions ret
     await t.renderOnce();
     expect(t.captureCharFrame()).toContain("Signing in…");
     state.message = undefined;
-    await until(() => app.shells.length === 0 && !app.sessionsError);
+    await until(() => app.shells.length === 0 && !app.sources.sessions.failure);
     await t.renderOnce();
     const frame = t.captureCharFrame();
     expect(frame).toContain("web-lead");
@@ -125,6 +126,87 @@ test("with four views open the sign-in asks to close one", async () => {
     await t.renderOnce();
     expect(app.shells).toHaveLength(4);
     expect(t.captureCharFrame()).toContain("Close a terminal view");
+  } finally {
+    await close(t, app);
+  }
+});
+
+/** An app with Health and spend that the test can fail, hold and count. */
+async function openWithHealth() {
+  const t = await createTestRenderer({ width: 100, height: 30 });
+  const state = {
+    message: undefined as string | undefined,
+    hold: undefined as Promise<void> | undefined,
+    commands: [] as string[][],
+    spends: 0,
+  };
+  const backend = new BackendClient("/fixture/tokiwa", async (args) => {
+    state.commands.push(args);
+    if (state.message) throw new Error(state.message);
+    if (args[0] === "health") {
+      await state.hold;
+      return JSON.stringify({ ...fixtureSample, sampled_at: Date.now() / 1000 });
+    }
+    return JSON.stringify({ sessions: landingSessions });
+  });
+  backend.loginCommand = () => ["/bin/sh", "-c", "exit 0"];
+  backend.spend = async () => {
+    state.spends++;
+    if (state.message) throw new Error(state.message);
+    return fixtureSpend;
+  };
+  const app = new App(t.renderer, { backend });
+  await pause();
+  await app.sampleHealth();
+  clearTimeout(app.sampleTimer);
+  await t.renderOnce();
+  return { t, app, state };
+}
+
+test("after a sign-in, every source is read again and each stays last known until it succeeds", async () => {
+  const { t, app, state } = await openWithHealth();
+  try {
+    await pause(5);
+    state.message = EXPIRED;
+    // The spend read is due, so that it fails with the others and is `last known`.
+    app.spendAt = 0;
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(app.currentError()?.kind).toBe("signed-out");
+    state.message = undefined;
+    let release = () => {};
+    state.hold = new Promise<void>((resolve) => (release = resolve));
+    const spends = state.spends;
+    await t.mockInput.typeText("l");
+    await until(() => !app.currentError());
+    await t.renderOnce();
+    expect(t.captureCharFrame()).not.toContain("sign-in expired");
+    const now = app.now();
+    expect(app.sources.sessions.freshness(now)).toBe("live");
+    expect(app.sources.health.freshness(now)).toBe("last-known");
+    release();
+    await until(() => app.sources.health.freshness(app.now()) === "live");
+    await until(() => state.spends > spends);
+    clearTimeout(app.sampleTimer);
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a recovery clears a notice about the cause", async () => {
+  const { t, app, state } = await openWithHealth();
+  try {
+    await pause(5);
+    state.message = EXPIRED;
+    await app.refreshSessions();
+    await app.attachRemote("worker-c");
+    expect(app.footerNotice?.text).toContain("AWS sign-in expired");
+    state.message = undefined;
+    await t.mockInput.typeText("l");
+    await until(() => !!app.footerNotice === false);
+    expect(app.footerNotice).toBeUndefined();
+    clearTimeout(app.sampleTimer);
   } finally {
     await close(t, app);
   }

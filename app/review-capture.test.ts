@@ -42,7 +42,7 @@ test("landing, focus, shortcuts and search captures stay readable at 156x40, 100
         expect(sheet).toContain(text);
     const search = await captureScene("search", width, height);
     expect(search).toContain("setup2");
-    expect(search).toContain("Refresh sessions");
+    expect(search).toContain("Go to");
     for (const frame of [landing, focus, sheet, search])
       for (const line of frame.split("\n"))
         expect(line.length).toBeLessThanOrEqual(width);
@@ -78,7 +78,7 @@ test("footer, search and hover captures stay readable at 156x40, 100x30 and 62x2
     expect(empty).not.toContain("coder-lead");
     const typed = await captureScene("search", width, height);
     expect(typed).toContain("Sessions ───");
-    expect(typed.indexOf("setup2")).toBeLessThan(typed.indexOf("Refresh"));
+    expect(typed.indexOf("setup2")).toBeLessThan(typed.indexOf("Go to"));
     const hover = await captureScene("hover", width, height);
     expect(last(hover)).toBe(
       width < 100

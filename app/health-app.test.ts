@@ -167,7 +167,7 @@ test("Health sampling reads spend once per interval", async () => {
   }
 });
 
-test("a failed spend read shows its reason and the launcher age", async () => {
+test("an older launcher without a spend command says why, with no band", async () => {
   const t = await createTestRenderer({ width: 100, height: 40 });
   const app = new App(t.renderer, { spawn: false });
   app.backend.health = async () => fresh();
@@ -179,9 +179,13 @@ test("a failed spend read shows its reason and the launcher age", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    expect(t.captureCharFrame()).toContain(
-      "not available (the launcher has no spend command",
+    const frame = t.captureCharFrame();
+    expect(frame).toContain(
+      "Spent so far:   not available (the launcher has no spend command",
     );
+    expect(frame).not.toContain("not read");
+    expect(app.sources.spend.failure?.kind).toBe("failed");
+    expect(app.currentError()).toBeUndefined();
   } finally {
     await t.dispose();
   }
@@ -229,10 +233,10 @@ test("only a failed read is reported as a failed read", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    // The band under the header names the failed read; the readings stay and are stale.
+    // One line at the top of Health names the failed read; the readings stay and are last known.
     const frame = t.captureCharFrame();
-    expect(frame).toContain("▲ offline.");
-    expect(frame).toContain("· stale");
+    expect(frame).toContain("▲ Health read failed: offline");
+    expect(frame).toContain("· last known");
     expect(frame).not.toContain("Last read failed");
   } finally {
     await t.dispose();

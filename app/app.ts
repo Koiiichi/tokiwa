@@ -31,6 +31,7 @@ import { steadyCursor } from "./cursor";
 import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
+  LauncherError,
   BackendClient,
   isBackground,
   SIGN_IN_EXPIRED,
@@ -38,17 +39,34 @@ import {
   sessionName,
   type SessionRef,
 } from "./backend";
-import { activity, HealthHistory, WorkspaceState } from "./state";
-import { diagnose, worst, type Problem } from "./problem";
+import {
+  activity,
+  FRESHNESS_LIMIT_MS,
+  HealthHistory,
+  SourceStatus,
+  WorkspaceState,
+  type Freshness,
+} from "./state";
+import {
+  classify,
+  errorState,
+  GLOBAL_KINDS,
+  type ErrorState,
+  type Failure,
+  type Source,
+} from "./problem";
 import {
   healthLines,
   loadHealthConfig,
+  syncedText,
+  timeOfDay,
   type HealthConfig,
   type SpendReading,
   type Tone,
 } from "./health-view";
 import { paneLayout, throbColor } from "./workspace";
 import {
+  dimNeedsYou,
   focusStrip,
   projectTree,
   type TreeEntry,
@@ -238,6 +256,9 @@ export type SessionRow = {
   shell?: Shell;
   /** True while the workstation creates the session: the row holds its place. */
   starting?: boolean;
+  /** How current the snapshot behind this row is, and when it was read (ms). Snapshot rows only. */
+  freshness?: Freshness;
+  readAt?: number;
 };
 // The session list reads the snapshot again after this time while the workspace is in view.
 const SESSIONS_REFRESH_MS = 30 * 1000;
@@ -290,15 +311,21 @@ export class App {
   previousSessions = new Map<string, SessionRef>();
   sessionsRead = false;
   sessionsLoading = false;
-  sessionsError = "";
+  /** The top-level projects whose listed rows come from the session snapshot. */
+  snapshotProjects = new Set<string>();
+  /** The status of each data source; `readFailed` and `readSucceeded` are the only writers. */
+  sources: Record<Source, SourceStatus> = {
+    sessions: new SourceStatus(FRESHNESS_LIMIT_MS.sessions),
+    health: new SourceStatus(FRESHNESS_LIMIT_MS.health),
+    spend: new SourceStatus(FRESHNESS_LIMIT_MS.spend),
+  };
   sessionTimer?: ReturnType<typeof setTimeout>;
-  /** Times in milliseconds of the last successful and the last failed read from the EC2 host. */
-  hostOk = 0;
-  hostFail = 0;
   /** The band under the header that names the current problem, and its raw output. */
   band!: BoxRenderable;
+  bandRow!: BoxRenderable;
   bandTitle!: TextRenderable;
   bandKeys!: TextRenderable;
+  bandSub!: TextRenderable;
   bandDetail!: BoxRenderable;
   bandDetailText!: TextRenderable;
   detailsOpen = false;
@@ -309,12 +336,6 @@ export class App {
   confirm?: Operation;
   /** The state of a confirmed operation that runs: progress, then a failure if it fails. */
   confirmStatus?: { text: string; failed: boolean };
-  get error() {
-    return this.state.error;
-  }
-  set error(value: string) {
-    this.state.error = value;
-  }
   root: BoxRenderable;
   body: BoxRenderable;
   health: BoxRenderable;
@@ -373,6 +394,10 @@ export class App {
     failed: boolean;
     until: number;
     actions?: { label: string; run: () => void }[];
+    /** The action that failed, so that a later success of it clears the notice. */
+    action?: string;
+    /** True when the notice names a failure of the whole link, which a recovery clears. */
+    cause?: boolean;
   };
   get selection() {
     return this.state.selection;
@@ -584,11 +609,11 @@ export class App {
       flexShrink: 0,
       visible: false,
     });
-    const bandRow = this.box(this.band, "problem-row", {
+    const bandRow = (this.bandRow = this.box(this.band, "problem-row", {
       height: 1,
       flexDirection: "row",
       onMouseDown: () => this.toggleDetails(),
-    });
+    }));
     this.bandTitle = this.text(bandRow, "problem-title", "", {
       fg: theme.warning,
       flexGrow: 1,
@@ -602,6 +627,15 @@ export class App {
       flexShrink: 0,
       wrapMode: "none",
       selectable: false,
+    });
+    // The second row: what the failure means, and how old the last good read is.
+    this.bandSub = this.text(this.band, "problem-sub", "", {
+      fg: theme.muted,
+      height: 1,
+      wrapMode: "none",
+      truncate: true,
+      selectable: false,
+      onMouseDown: () => this.toggleDetails(),
     });
     this.bandDetail = this.box(this.band, "problem-detail", {
       flexDirection: "column",
@@ -822,8 +856,15 @@ export class App {
       focus: { run: () => this.toggleFocus() },
       refresh: {
         run: () => {
-          // A retry reads Health again too when its last read failed.
-          if (this.history.gap && !this.history.stopped && !this.sampling) {
+          // A retry reads Health again when it is not live, and spend in that read when spend is not.
+          const now = this.now();
+          if (this.sources.spend.freshness(now) !== "live") this.spendAt = 0;
+          if (
+            (this.sources.health.freshness(now) !== "live" ||
+              this.history.gap) &&
+            !this.history.stopped &&
+            !this.sampling
+          ) {
             clearTimeout(this.sampleTimer);
             void this.sampleHealth();
           }
@@ -839,7 +880,7 @@ export class App {
         run: () => this.signIn(),
       },
       details: {
-        available: () => !!this.problem(),
+        available: () => !!this.currentError(),
         run: () => this.toggleDetails(),
       },
       "local-shell": {
@@ -1123,7 +1164,6 @@ export class App {
     if (!copied && automatic)
       this.notify("copy failed · the terminal did not accept it", true);
     else if (!copied) {
-      this.error = "The terminal did not accept the clipboard copy.";
       this.notify("copy failed · the terminal did not accept it", true);
       this.updateActivity();
     } else
@@ -1397,14 +1437,14 @@ export class App {
       return;
     }
     if (this.shells.length >= 4) {
-      this.error = "Close a terminal view before opening another shell.";
-      this.updateActivity();
+      this.notify("Close a terminal view before opening another shell.", true);
       return;
     }
     if (source.remoteName && !source.remote) {
-      this.error =
-        "The remote shell identity is not verified. Refresh its connection first.";
-      this.updateActivity();
+      this.notify(
+        "The remote shell identity is not verified. Refresh its connection first.",
+        true,
+      );
       return;
     }
     this.auxiliaryPending = true;
@@ -1459,10 +1499,11 @@ export class App {
         remote: !!source.remote,
         pid: shell.child.pid,
       });
+      this.actionSucceeded("shell here");
     } catch (e) {
       // A shell that failed before the pair took it has no place in the workspace: close its view.
       if (shell && this.pair?.[1] !== shell) this.discardView(shell);
-      this.error = String(e);
+      this.actionFailed("shell here", e);
       this.updateActivity();
     } finally {
       this.auxiliaryPending = false;
@@ -1609,8 +1650,9 @@ export class App {
         terminal,
         cwd: prepared.source.cwd,
       });
+      this.actionSucceeded("open in Ghostty");
     } catch (e) {
-      this.error = String(e);
+      this.actionFailed("open in Ghostty", e);
       this.updateActivity();
     } finally {
       this.auxiliaryPending = false;
@@ -1718,77 +1760,248 @@ export class App {
     });
     return shell;
   }
-  signInExpired() {
-    return this.problem()?.kind === "signed-out";
+  /**
+   * The failure of one source that its own view shows as a line at its top: a read that failed for
+   * its own reason. While a failure of the whole link shows the band, the views show no line.
+   */
+  viewFailure(source: "sessions" | "health"): Failure | undefined {
+    if (this.currentError()?.scope === "global") return undefined;
+    const failure = this.sources[source].failure;
+    return failure?.kind === "failed" ? failure : undefined;
   }
-  /** The raw failures of the last session read and the last Health read, by source. */
-  failures(): Record<string, string> {
+  /**
+   * The amber line of a failed source, with its keys at the right edge of `width` cells. A title
+   * that does not leave room for the keys wraps, and the keys take the next line.
+   */
+  errorLine(failure: Failure, width: number): Span[][] {
+    const keys = "u retry · e details";
+    const title = `▲ ${failure.title}`;
+    if (title.length + 2 + keys.length <= width)
+      return [
+        [
+          { text: title.padEnd(width - keys.length), tone: "warning" },
+          { text: keys, tone: "dim" },
+        ],
+      ];
+    return [
+      ...wrapText(title, width).map((text): Span[] => [
+        { text, tone: "warning" },
+      ]),
+      [{ text: keys, tone: "dim" }],
+    ];
+  }
+  /**
+   * True when the failure shown offers a retry in the view of `source`: a failure of the whole
+   * link in every view, a failure of one source only in the view that shows it.
+   */
+  retryOffered(source: "sessions" | "health") {
+    const error = this.currentError();
+    if (!error) return false;
+    if (error.scope === "global") return error.recovery === "retry";
+    return this.viewFailure(source) !== undefined;
+  }
+  /** The one failure that every view, the header and the band read. */
+  currentError(): ErrorState | undefined {
+    return errorState(this.sources, this.now());
+  }
+  signInExpired() {
+    return this.currentError()?.kind === "signed-out";
+  }
+  /** The freshness and the last good read time (seconds) of one source, for a receipt event. */
+  receiptFreshness(source: Source) {
+    const status = this.sources[source];
     return {
-      ...(this.sessionsError ? { sessions: this.sessionsError } : {}),
-      ...(this.history.gap && this.history.error
-        ? { health: this.history.error }
-        : {}),
+      freshness: status.freshness(this.now()),
+      read_at: status.okAt / 1000,
     };
   }
-  /** The problem that explains the current failures, or undefined when the reads work. */
-  problem(): Problem | undefined {
-    return worst(Object.values(this.failures()).map(diagnose));
+  /** Record a failed read of one source and return its classified failure. */
+  readFailed(source: Source, error: unknown): Failure {
+    const failure = classify(source, error, this.now());
+    this.sources[source].fail(failure);
+    return failure;
+  }
+  /** A read of one source succeeded: its failure ends. */
+  readSucceeded(source: Source) {
+    const wasGlobal = this.currentError()?.scope === "global";
+    this.sources[source].succeed(this.now());
+    // One good read shows that the link works: the other sources read at once.
+    if (wasGlobal && this.currentError()?.scope !== "global") this.recover();
+  }
+  /**
+   * Read each source that is not live, without a wait for its timer: the sessions at once, Health
+   * at once, and spend in that Health read. A notice about a failure of the link ends, and so does
+   * the details box. Each source stays `last known` until its own read succeeds.
+   */
+  recover() {
+    if (this.disposed) return;
+    const now = this.now();
+    if (this.footerNotice?.cause) {
+      this.footerNotice = undefined;
+      this.footerSignature = "";
+      this.drawFooter();
+    }
+    this.detailsOpen = false;
+    if (this.sources.spend.freshness(now) !== "live") this.spendAt = 0;
+    if (this.sources.health.freshness(now) !== "live" && !this.sampling) {
+      clearTimeout(this.sampleTimer);
+      void this.sampleHealth();
+    }
+    if (this.sources.sessions.freshness(now) !== "live")
+      void (async () => {
+        while (this.sessionsLoading && !this.disposed) await Bun.sleep(100);
+        if (
+          !this.disposed &&
+          this.sources.sessions.freshness(this.now()) !== "live"
+        )
+          await this.refreshSessions();
+      })();
+    this.drawProblem();
   }
   /** Rows that the band takes under the header. */
   bandRows = 0;
   /**
-   * Name the current problem in the band under the header: its cause in plain words, the time
-   * of the last good read, and its key. The raw output stays behind e.
+   * The second row of the band, by kind. Each kind lists its wording from the fullest to the
+   * shortest; the row takes the first that fits `room` cells, so the age of the last good read
+   * stays whole. Only the shortest wording is cut, and then at a word boundary.
+   */
+  bandSubText(state: ErrorState, room = Infinity) {
+    const read = state.lastSuccess
+      ? syncedText(state.lastSuccess, this.now())
+      : undefined;
+    const synced = read ? `Last synced ${read}.` : "Nothing was read yet.";
+    const wording: string[] = (() => {
+      switch (state.kind) {
+        case "signed-out":
+          return [`Live status unavailable. ${synced}`, synced];
+        case "offline":
+          return read
+            ? [
+                `Showing the last known state from ${read}. Retrying every 30 s.`,
+                `Last known state from ${read}. Retrying every 30 s.`,
+                `Showing the last known state from ${read}.`,
+                synced,
+              ]
+            : ["Nothing was read yet. Retrying every 30 s.", synced];
+        case "stopped":
+          return [`Start it in AWS, then press u. ${synced}`, synced];
+        case "not-ready":
+          return [`Tokiwa retries every 30 s. ${synced}`, synced];
+        default:
+          return [state.explanation];
+      }
+    })();
+    const fits = wording.find((text) => text.length <= room);
+    if (fits) return fits;
+    const last = wording[wording.length - 1];
+    const cut = last.slice(0, Math.max(0, room - 1));
+    const word = cut.lastIndexOf(" ");
+    return `${(word > 0 && last[cut.length] !== " " ? cut.slice(0, word) : cut).trimEnd()}…`;
+  }
+  /** The lines of the details box: the facts, one row per failed source, then the launcher text. */
+  detailLines(state: ErrorState, inner: number) {
+    const label = (name: string) => name.padEnd(14);
+    const names: Record<Source, string> = {
+      sessions: "Workspace",
+      health: "Health",
+      spend: "Spend",
+    };
+    const recovery = {
+      "sign-in": "l runs tokiwa login in a local view",
+      retry: "u reads again",
+      none: "Fix it outside the app. Tokiwa reads again every 30 s",
+    }[state.recovery];
+    const facts = [
+      [
+        "Last synced",
+        state.lastSuccess
+          ? syncedText(state.lastSuccess, this.now())
+          : "nothing was read yet",
+      ],
+      ["Affected", state.affected.map((s) => names[s]).join(", ")],
+      ["Recovery", recovery],
+    ].flatMap(([key, value]) =>
+      wrapText(value, Math.max(8, inner - 14)).map(
+        (line, i) => (i ? " ".repeat(14) : label(key)) + line,
+      ),
+    );
+    const rows = state.diagnostics.map((f) => {
+      const call = f.command
+        ? f.code !== null
+          ? `${f.command} exit ${f.code}`
+          : f.command
+        : "launcher";
+      return `${label(f.source)}${call} · ${f.category ?? f.kind} · ${timeOfDay(f.at)}`;
+    });
+    // The cause is usually last, so the box keeps the last six lines of the launcher text.
+    // Each distinct text once: both reads often fail with the same output.
+    const text = [...new Set(state.diagnostics.map((f) => f.detail))]
+      .flatMap((block) => block.split("\n"))
+      .flatMap((line) => wrapText(line, inner))
+      .filter(Boolean)
+      .slice(-6);
+    return [
+      ...facts,
+      ...(rows.length ? ["", ...rows] : []),
+      ...(text.length ? ["", ...text] : []),
+    ];
+  }
+  /**
+   * Name the current global failure in the band under the header: its cause in plain words, then
+   * what it means and the age of the last good read. A failure of one source has no band; its
+   * view shows one line. The launcher text and the diagnostics stay behind e.
    */
   drawProblem() {
     if (!this.band) return;
-    const problem = this.problem();
+    const state = this.currentError();
     this.logFailures();
     const rows = this.bandRows;
-    this.band.visible = !!problem;
-    if (!problem) {
+    const global = state?.scope === "global";
+    this.band.visible = !!state && (global || this.detailsOpen);
+    if (!state) {
       this.detailsOpen = false;
       this.bandDetail.visible = false;
       this.bandRows = 0;
     } else {
-      const signing = problem.kind === "signed-out" && this.signingIn();
-      const since = this.hostOk
-        ? ` Last good read at ${new Date(this.hostOk).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}.`
-        : "";
+      const signing = state.kind === "signed-out" && this.signingIn();
+      this.bandRow.visible = global;
+      this.bandSub.visible = global && !signing;
+      this.bandTitle.fg =
+        state.kind === "setup" ? theme.critical : theme.warning;
       this.bandTitle.content = signing
         ? "▲ Signing in… finish in the browser"
-        : `▲ ${problem.title}.${since}`;
+        : `▲ ${state.title}`;
+      // Indented two cells under the title, which follows the ▲ glyph and a space.
+      this.bandSub.content = `  ${this.bandSubText(
+        state,
+        this.renderer.width - 2 * (this.renderer.width < 70 ? 1 : 2) - 2,
+      )}`;
       const action =
-        problem.kind !== "signed-out"
+        state.recovery === "retry"
           ? "u retry"
-          : signing
-            ? "l shows the sign-in"
-            : "l sign in";
-      const keys = `${action} · ${this.detailsOpen ? "e hides details" : "e details"}`;
+          : state.recovery === "sign-in"
+            ? signing
+              ? "l shows the sign-in"
+              : "l sign in"
+            : "";
+      const keys = `${action ? `${action} · ` : ""}${this.detailsOpen ? "e hides details" : "e details"}`;
       this.bandKeys.content = keys;
       this.bandKeys.width = keys.length;
-      // The cause is usually last, so the box keeps the last six lines.
-      const inner = Math.max(20, this.renderer.width - 8);
-      // Each distinct failure once: both reads often fail with the same output.
-      const lines = [
-        ...new Set(
-          Object.values(this.failures()).map((raw) =>
-            diagnose(raw.replace(/^Error: /, "")).detail.join("\n"),
-          ),
-        ),
-      ]
-        .flatMap((block) => block.split("\n"))
-        .flatMap((line) => wrapText(line, inner))
-        .slice(-6);
+      const lines = this.detailLines(
+        state,
+        Math.max(20, this.renderer.width - 8),
+      );
       this.bandDetail.visible = this.detailsOpen;
       this.bandDetailText.content = lines.join("\n");
       this.bandDetailText.height = lines.length;
-      this.bandRows = 1 + (this.detailsOpen ? lines.length + 2 : 0);
+      this.bandRows =
+        (global ? (signing ? 1 : 2) : 0) +
+        (this.detailsOpen ? lines.length + 2 : 0);
     }
     if (rows !== this.bandRows && this.view === "health") this.drawHealth();
   }
   toggleDetails() {
-    if (!this.problem()) return;
+    if (!this.currentError()) return;
     this.detailsOpen = !this.detailsOpen;
     this.drawProblem();
   }
@@ -1797,13 +2010,27 @@ export class App {
    * once. The log keeps one older file when it passes 1 MB.
    */
   logFailures() {
-    const failures = this.failures();
+    const failures = (["sessions", "health"] as const).flatMap(
+      (source) => this.sources[source].failure ?? [],
+    );
     const file =
       process.env.TOKIWA_ERROR_LOG ??
       join(homedir(), ".local", "state", "tokiwa", "errors.log");
-    for (const [source, raw] of Object.entries(failures)) {
-      if (this.logged[source] === raw || this.options.spawn === false) continue;
-      this.logged[source] = raw;
+    for (const f of failures) {
+      const { source } = f;
+      const header = [
+        source,
+        f.kind,
+        f.command && `command=${f.command}`,
+        f.code !== null && `exit=${f.code}`,
+        f.category && `category=${f.category}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const raw = f.raw.trimEnd() || f.summary;
+      const key = `${header}\n${raw}`;
+      if (this.logged[source] === key || this.options.spawn === false) continue;
+      this.logged[source] = key;
       try {
         mkdirSync(dirname(file), { recursive: true });
         try {
@@ -1811,12 +2038,13 @@ export class App {
         } catch {}
         appendFileSync(
           file,
-          `${new Date().toISOString()} ${source}\n${raw.trimEnd()}\n\n`,
+          `${new Date().toISOString()} ${header}\n${raw}\n\n`,
         );
       } catch {}
     }
     for (const source of Object.keys(this.logged))
-      if (!(source in failures)) delete this.logged[source];
+      if (!failures.some((f) => f.source === source))
+        delete this.logged[source];
   }
   signingIn() {
     return !!this.signInShell && !this.signInShell.exited;
@@ -1856,13 +2084,7 @@ export class App {
       }
       this.signInShell = undefined;
       this.discardView(shell);
-      // The readings resume at once: Health does not wait for its next turn.
-      if (this.history.gap && !this.history.stopped) {
-        clearTimeout(this.sampleTimer);
-        void this.sampleHealth();
-      }
-      while (this.sessionsLoading && !this.disposed) await Bun.sleep(100);
-      await this.refreshSessions();
+      this.recover();
     });
   }
   /**
@@ -1874,16 +2096,19 @@ export class App {
     if (this.sessionsLoading || this.disposed) return;
     this.sessionsLoading = true;
     clearTimeout(this.sessionTimer);
-    const first = !this.sessionsRead;
+    // After a period without a live read the next read has no earlier snapshot to compare with.
+    const wasLive = this.sources.sessions.freshness(this.now()) === "live";
+    // The next read follows soon only after a good read that follows a gap (or the first one).
+    let second = false;
     const started = this.now();
     const selected = this.sessionRows()[this.listSelection]?.name;
     this.drawHeader();
     try {
       const rows = await this.backend.sessions();
       if (this.disposed) return;
-      this.previousSessions = new Map(
-        this.remoteSessions.map((r) => [r.name, r]),
-      );
+      this.previousSessions = wasLive
+        ? new Map(this.remoteSessions.map((r) => [r.name, r]))
+        : new Map();
       this.remoteSessions = this.keepCreated(rows, started);
       // A seen bell stays hidden until the host reports the session without a bell.
       for (const [name, identity] of this.acknowledged) {
@@ -1895,25 +2120,20 @@ export class App {
         const ref = rows.find((r) => r.name === name);
         if (ref?.attention !== at) this.attentionSeen.delete(name);
       }
+      second = !this.sessionsRead || !wasLive;
       this.sessionsRead = true;
-      this.sessionsError = "";
-      this.hostOk = this.now();
-      // A read that succeeds proves the sign-in works: Health does not wait its turn.
-      if (
-        this.history.gap &&
-        !this.history.stopped &&
-        !this.sampling &&
-        diagnose(this.history.error).kind === "signed-out"
-      ) {
-        clearTimeout(this.sampleTimer);
-        void this.sampleHealth();
-      }
-      this.record("remote-sessions-refreshed", { count: rows.length });
+      this.readSucceeded("sessions");
+      this.record("remote-sessions-refreshed", {
+        count: rows.length,
+        ...this.receiptFreshness("sessions"),
+      });
     } catch (e) {
       if (this.disposed) return;
-      this.sessionsError = String((e as Error)?.message ?? e);
-      this.hostFail = this.now();
-      this.record("remote-sessions-error", { error: this.sessionsError });
+      const failure = this.readFailed("sessions", e);
+      this.record("remote-sessions-error", {
+        error: failure.detail || failure.summary,
+        ...this.receiptFreshness("sessions"),
+      });
     } finally {
       this.sessionsLoading = false;
     }
@@ -1930,7 +2150,7 @@ export class App {
           if (this.view === "shell") void this.refreshSessions();
           else this.sessionTimer = undefined;
         },
-        first ? SESSIONS_SECOND_READ_MS : SESSIONS_REFRESH_MS,
+        second ? SESSIONS_SECOND_READ_MS : SESSIONS_REFRESH_MS,
       );
   }
   /**
@@ -1970,11 +2190,26 @@ export class App {
   }
   /** The state of the link, or an empty string before the first read starts. */
   hostState() {
-    if (!this.hostOk && !this.hostFail)
-      return this.sessionsLoading || this.sampling ? "connecting" : "";
-    if (this.hostFail > this.hostOk)
-      return this.signInExpired() ? "signed out" : "offline";
-    if (this.now() - this.hostOk > HOST_STALE_MS) return "reconnecting";
+    // Connectivity first, then the workstation. A failure of one source changes neither.
+    const state = this.currentError();
+    if (state?.scope === "global" && state.link) {
+      const word = {
+        "signed-out": "signed out",
+        offline: "offline",
+        stopped: "stopped",
+        "not-ready": "not ready",
+      }[state.link as string];
+      if (word) return word;
+    }
+    const { sessions, health } = this.sources;
+    const ok = Math.max(sessions.okAt, health.okAt);
+    if (!ok)
+      return !sessions.failAt &&
+        !health.failAt &&
+        (this.sessionsLoading || this.sampling)
+        ? "connecting"
+        : "";
+    if (this.now() - ok > HOST_STALE_MS) return "reconnecting";
     return "connected";
   }
   /**
@@ -2002,7 +2237,8 @@ export class App {
       !this.animate ||
       this.options.spawn === false ||
       this.sessionsRead ||
-      this.hostFail > 0;
+      this.sources.sessions.failAt > 0 ||
+      this.sources.health.failAt > 0;
     const frames = ["◇", "◈", "◆", "◈"];
     const glyph = settled
       ? "◇"
@@ -2096,11 +2332,13 @@ export class App {
         ? "●"
         : state === "reconnecting"
           ? "◐"
-          : state === "signed out" || state === "offline"
+          : /signed out|offline|stopped|not ready/.test(state)
             ? "○"
             : "◌";
     const word = state && state !== "connected" ? ` · ${state}` : "";
-    const warn = /offline|reconnecting|signed out/.test(state);
+    const warn = /offline|reconnecting|signed out|stopped|not ready/.test(
+      state,
+    );
     this.source.content = new StyledText([
       {
         __isChunk: true,
@@ -2176,7 +2414,7 @@ export class App {
         `ended ${pending.ref.name}${!keepShells && pending.children.length ? ` and ${pending.children.length} shell${pending.children.length === 1 ? "" : "s"}` : ""}`,
       );
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`end ${pending.ref.name}`, e);
     }
     if (this.ending === pending) this.ending = undefined;
     await this.refreshSessions();
@@ -2288,7 +2526,7 @@ export class App {
       this.record("remote-operation", { operation: "end-project" });
       this.notify(`ended ${projectTitle(pending.path)}`);
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`end ${projectTitle(pending.path)}`, e);
     }
     if (this.endingProject === pending) this.endingProject = undefined;
     await this.refreshSessions();
@@ -2448,7 +2686,6 @@ export class App {
         )
           throw new Error("A session with this name exists.");
         this.dismiss();
-        this.error = "";
         void this.startSession(
           name,
           pending.operation === "new-session"
@@ -2488,18 +2725,15 @@ export class App {
         }
       }
       this.dismiss();
-      this.error = "";
       this.record("remote-operation", { operation: pending.operation });
       await this.refreshSessions();
     } catch (e) {
-      this.error = String(e);
+      const label = this.operationLabel(pending, value);
       if (this.confirm === pending) {
-        this.confirmStatus = {
-          text: String(e).replace(/^Error: /, ""),
-          failed: true,
-        };
+        this.confirmStatus = { text: this.actionText(label, e), failed: true };
         this.drawActions();
       }
+      this.actionFailed(label, e);
       this.updateActivity();
     }
   }
@@ -2589,12 +2823,13 @@ export class App {
           8000,
         );
       }
+      this.actionSucceeded(`create ${name}`);
       if (known) void this.refreshSessions();
     } catch (e) {
       this.starting.delete(name);
       if (this.disposed) return;
       this.drawSessions();
-      this.notify(String(e).replace(/^Error: /, ""), true, undefined, 8000);
+      this.actionFailed(`create ${name}`, e);
     }
   }
   /**
@@ -2621,7 +2856,6 @@ export class App {
           throw new Error(
             "The session identity changed. Selection was refused.",
           );
-        this.error = "";
         this.acknowledge(name);
         this.active = this.shells.indexOf(shell);
         if (!this.palette) this.show("shell");
@@ -2731,7 +2965,6 @@ export class App {
       };
       terminal.onTerminalResize = (cols, rows) => adapter.resize(cols, rows);
       adapter.resize(terminal.screen().columns, terminal.screen().rows);
-      this.error = "";
       this.acknowledge(name);
       if (
         !this.palette &&
@@ -2747,10 +2980,11 @@ export class App {
         identity: ref.identity,
         pid: adapter.child.pid,
       });
+      this.actionSucceeded(`attach ${name}`);
       if (withChild && !reconnect) opened = shell;
     } catch (e) {
-      this.error = String(e);
-      this.record("remote-error", { name, error: this.error });
+      this.record("remote-error", { name, error: String(e) });
+      this.actionFailed(`attach ${name}`, e);
       this.updateActivity();
     } finally {
       this.remotePending.delete(name);
@@ -2797,23 +3031,29 @@ export class App {
   async sampleHealth() {
     if (this.sampling || this.disposed || this.history.stopped) return;
     this.sampling = true;
-    await this.history.sample(() => this.backend.health());
-    if (this.history.gap) this.hostFail = this.now();
-    else if (!this.history.stopped) this.hostOk = this.now();
-    // A read that succeeds proves the sign-in works: the session read does not wait its turn.
-    if (
-      !this.history.gap &&
-      this.sessionsError &&
-      diagnose(this.sessionsError).kind === "signed-out"
-    )
-      void this.refreshSessions();
+    let readFailed = false;
+    await this.history.sample(async () => {
+      try {
+        return await this.backend.health();
+      } catch (e) {
+        readFailed = true;
+        this.readFailed("health", e);
+        throw e;
+      }
+    });
+    if (this.history.gap) {
+      // A sample that the history rejects (a stale timestamp) never failed in the wrapper above.
+      if (!readFailed) this.readFailed("health", this.history.error);
+    } else this.readSucceeded("health");
     if (!this.disposed && this.now() - this.spendAt >= SPEND_REFRESH_MS) {
       this.spendAt = this.now();
       try {
         this.spend = await this.backend.spend();
         this.spendError = "";
+        this.readSucceeded("spend");
       } catch (e) {
-        this.spend = undefined;
+        this.readFailed("spend", e);
+        // The last reading stays; `sources.spend` says that it is not current.
         this.spendError = spendFailure(e);
       }
     }
@@ -2822,12 +3062,16 @@ export class App {
       this.drawHeader();
       this.drawFooter();
       this.drawHealth();
+      // The list line follows the failure of the whole link, which a Health read can change.
+      if (this.view === "shell" && this.listSignature !== this.rowSignature())
+        this.drawSessions();
       this.record("health-sample", {
         status: this.history.status(),
         count: this.history.samples.length,
         sample: this.history.samples.at(-1),
         error: this.history.error,
         spend_error: this.spendError,
+        ...this.receiptFreshness("health"),
       });
       if (!this.history.stopped)
         this.sampleTimer = setTimeout(() => void this.sampleHealth(), 30000);
@@ -2842,9 +3086,30 @@ export class App {
     // Header, navigation and footer take five rows, and the problem band its own. As in the
     // sheet, the blank row above the view goes first when the view does not fit, then the blank
     // lines between sections.
-    const room = this.renderer.height - 5 - this.bandRows;
+    // A failed read of Health alone shows as a line and a blank row above the sections.
+    const failed = this.viewFailure("health");
+    const top: Span[][] = failed
+      ? [
+          ...this.errorLine(failed, Math.max(20, width)),
+          [{ text: "", tone: "value" }],
+        ]
+      : [];
+    const room = this.renderer.height - 5 - this.bandRows - top.length;
     // A failed read leaves the last readings in a quieter colour until a read succeeds.
     const stale = this.history.gap && !!this.history.error;
+    // A recorded reading is the reading itself; a sample past its limit or a failed read is old.
+    const status = this.history.status(this.now() / 1000);
+    const recorded = status === "recorded";
+    const read = this.sources.health.freshness(this.now());
+    const healthFreshness: Freshness =
+      recorded || (read === "live" && status !== "stale")
+        ? "live"
+        : read === "live"
+          ? "last-known"
+          : read;
+    const spendFreshness: Freshness = recorded
+      ? "live"
+      : this.sources.spend.freshness(this.now());
     const layout = (height: number) =>
       healthLines(
         {
@@ -2858,6 +3123,11 @@ export class App {
           config: this.healthConfig,
           configError: this.healthConfigError,
           device: this.device,
+          healthFreshness,
+          spendFreshness,
+          spendReadAt: this.sources.spend.okAt || undefined,
+          // A source stays `not read` until its own read succeeds, whatever another source reads.
+          globalFailure: this.currentError()?.scope === "global",
         },
         Math.max(20, width),
         height,
@@ -2865,6 +3135,7 @@ export class App {
     let lines = layout(room - 1);
     const padding = lines.length <= room - 1 ? 1 : 0;
     if (!padding) lines = layout(room);
+    lines = [...top, ...lines];
     this.healthScroll.paddingTop = padding;
     const height = room - padding;
     this.healthText.content = new StyledText(
@@ -2882,7 +3153,7 @@ export class App {
         })),
       ]),
     );
-    const overflow = lines.length > height;
+    const overflow = lines.length > height + top.length;
     if (overflow !== this.healthOverflow) {
       this.healthOverflow = overflow;
       this.drawFooter();
@@ -2930,7 +3201,13 @@ export class App {
       part(
         this.footer,
         "footer-state",
-        stateGuide(row.name, status.state, status.others, room),
+        stateGuide(
+          row.name,
+          status.state,
+          status.others,
+          room,
+          dimNeedsYou(status.state, row),
+        ),
       );
       return;
     }
@@ -3071,6 +3348,11 @@ export class App {
       );
     if (this.view === "health")
       return keyFirst([
+        ...(this.signInExpired()
+          ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
+          : this.retryOffered("health")
+            ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
+            : []),
         ...(this.healthOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
         hint("sessions", "w", "sessions", 5, () => this.focusSessions()),
         shortcuts,
@@ -3094,7 +3376,9 @@ export class App {
     return keyFirst([
       ...(this.signInExpired()
         ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
-        : []),
+        : this.retryOffered("sessions")
+          ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
+          : []),
       ...(this.sessionRows().length
         ? [
             hint("select", "↑↓", "select", 1),
@@ -3111,13 +3395,17 @@ export class App {
               : []),
           ]
         : [
-            hint(
-              "refresh",
-              "u",
-              "refresh",
-              3,
-              () => void this.refreshSessions(),
-            ),
+            ...(this.retryOffered("sessions") || this.signInExpired()
+              ? []
+              : [
+                  hint(
+                    "refresh",
+                    "u",
+                    "refresh",
+                    3,
+                    () => void this.refreshSessions(),
+                  ),
+                ]),
             hint("local-shell", "t", "local shell", 4, () =>
               this.runAction("local-shell"),
             ),
@@ -3208,6 +3496,64 @@ export class App {
     if (text) this.copy(text);
     else this.notify("nothing selected · drag over text, then copy", true);
   }
+  /** The label of a confirmed operation in its failure notice. */
+  operationLabel(op: Operation, value: string) {
+    switch (op.operation) {
+      case "project":
+        return `move ${op.ref.name}`;
+      case "new-session":
+        return `create ${value || "session"}`;
+      case "new-project":
+        return "new project";
+      case "rename-project":
+        return `rename ${projectTitle(op.path)}`;
+      case "rename-session":
+        return `rename ${op.ref.name}`;
+    }
+  }
+  /** The notice text of a failed action: the label and the cause, or the plain message. */
+  actionText(action: string, error: unknown) {
+    const message =
+      error instanceof Error ? error.message : String(error ?? "");
+    if (
+      !(error instanceof LauncherError) &&
+      !/^(Launcher |The launcher)/.test(message)
+    )
+      return message.replace(/^Error: /, "");
+    const failure = classify("sessions", error, this.now());
+    return `${action} failed · ${failure.kind === "failed" ? failure.summary : failure.title}`;
+  }
+  /** Show a failed action as a notice. A failed snapshot also fails the session read. */
+  actionFailed(action: string, error: unknown) {
+    if (error instanceof LauncherError && error.command === "--snapshot")
+      this.readFailed("sessions", error);
+    const text = this.actionText(action, error);
+    // The confirm box already shows this failure; the footer does not say it again.
+    if (
+      this.confirm &&
+      this.confirmStatus?.failed &&
+      this.confirmStatus.text === text
+    )
+      return;
+    this.notify(text, true, undefined, 8000);
+    if (this.footerNotice) {
+      this.footerNotice.action = action;
+      // A failure of the whole link ends with a recovery; a failure of one action does not.
+      const message =
+        error instanceof Error ? error.message : String(error ?? "");
+      this.footerNotice.cause =
+        (error instanceof LauncherError ||
+          /^(Launcher |The launcher)/.test(message)) &&
+        classify("sessions", error, this.now()).kind !== "failed";
+    }
+  }
+  /** An action succeeded: a notice about its earlier failure ends. */
+  actionSucceeded(action: string) {
+    if (this.footerNotice?.action !== action) return;
+    this.footerNotice = undefined;
+    this.footerSignature = "";
+    this.drawFooter();
+  }
   /** Show a short message in the footer for a few seconds. */
   notify(
     text: string,
@@ -3258,12 +3604,8 @@ export class App {
     this.drawNavStatus(throb);
     this.drawPending();
   }
-  /** Show an error in the navigation row, or in focus mode the strip of the other sessions. */
+  /** Show the strip of the other sessions in focus mode; the row shows no error. */
   drawNavStatus(throb = throbColor(theme.cpu, Date.now(), this.animate)) {
-    if (this.error) {
-      this.navStatus.content = styled([{ text: this.error, tone: "warning" }]);
-      return;
-    }
     const shown =
       this.focusMode && this.view === "shell" && !this.sessionList.visible;
     // Workspace and Health take 19 cells with their gaps.
@@ -3282,6 +3624,7 @@ export class App {
               return {
                 name: row.name,
                 needs,
+                stale: dimNeedsYou("needs-you", row),
                 word: agent === "waiting" || stopped ? agent : "",
                 agent,
               };
@@ -3386,7 +3729,11 @@ export class App {
   /** The remote sessions and their views. A new remote shell is here before the next snapshot. */
   remoteRows(): SessionRow[] {
     const named = (s: Shell) => s.remote?.name ?? s.remoteName;
+    const freshness = this.sources.sessions.freshness(this.now());
+    const readAt = this.sources.sessions.okAt;
     const remote: SessionRow[] = this.remoteSessions.map((ref) => ({
+      freshness,
+      readAt,
       name: ref.name,
       project: ref.project,
       title: projectTitle(ref.project),
@@ -3479,6 +3826,8 @@ export class App {
       );
       if (state !== "unknown" || !row.ref) return state;
     }
+    // A snapshot that is not live says nothing about what the session does now.
+    if (row.freshness && row.freshness !== "live") return "unknown";
     return row.ref
       ? snapshotActivity(row.ref, this.previousSessions.get(row.name))
       : "unknown";
@@ -3535,7 +3884,10 @@ export class App {
       this.active,
       this.focusMode,
       this.sessionsLoading,
-      this.sessionsError,
+      this.sources.sessions.failure?.at,
+      // The line at the top of the list shows only while no failure of the whole link does.
+      this.viewFailure("sessions")?.at,
+      this.currentError()?.scope,
       this.sessionRows().map((r) => [r.name, this.rowStatus(r)]),
     ]);
   }
@@ -3588,16 +3940,31 @@ export class App {
         ...opts,
         content: styled(spans),
       });
+    // A failed read of the sessions alone shows as a line at the top of the list.
+    const failed = this.viewFailure("sessions");
+    if (failed) {
+      this.errorLine(failed, inner).forEach((spans, i) =>
+        line(`list-error-${i}`, spans),
+      );
+      line("list-error-gap", [{ text: "", tone: "dim" }]);
+    }
     if (!rows.length) {
-      // The band above names the cause; the list says only what it lacks and the key.
-      const reason = this.sessionsError
+      // The band or the line above names the cause. The list adds a key only when neither names
+      // one: not when its own line says `u retry`, and not for a `setup` failure, which has no key.
+      const key = this.signInExpired()
+        ? "l signs in"
+        : failed || this.currentError()?.recovery === "none"
+          ? ""
+          : "u reads them again";
+      const reason = this.sources.sessions.failure
         ? [
             { text: "No sessions read", tone: "dim" as const },
-            { text: "", tone: "dim" as const },
-            {
-              text: this.signInExpired() ? "l signs in" : "u reads them again",
-              tone: "dim" as const,
-            },
+            ...(key
+              ? [
+                  { text: "", tone: "dim" as const },
+                  { text: key, tone: "dim" as const },
+                ]
+              : []),
           ]
         : this.sessionsRead
           ? [
@@ -3643,6 +4010,14 @@ export class App {
     this.listGlyphs = [];
     const throb = throbColor(theme.cpu, Date.now(), this.animate);
     let top = 0;
+    // A title is old only when its own rows come from the session snapshot.
+    this.snapshotProjects.clear();
+    let owner = "";
+    for (const entry of tree) {
+      if (entry.kind === "project") {
+        if (entry.depth === 0) owner = entry.path;
+      } else if (entry.item.freshness) this.snapshotProjects.add(owner);
+    }
     tree.forEach((entry, g) => {
       if (entry.kind === "project") {
         if (entry.depth === 0 && top++)
@@ -3775,7 +4150,11 @@ export class App {
             fg:
               state === "output" || state === "starting"
                 ? throb
-                : tones[STATUS_TONE[state]],
+                : // A stale row with no connected view asks for nothing now: its title says
+                  // `last known`, so the glyph stays dim, not amber.
+                  dimNeedsYou(state, row)
+                  ? tones.dim
+                  : tones[STATUS_TONE[state]],
           },
         );
         this.listGlyphs.push({ text: glyph, state });
@@ -3904,6 +4283,16 @@ export class App {
       content: styled([
         { text: "  ".repeat(entry.depth), tone: "value" },
         { text: entry.title, tone: "title" },
+        // Only a top-level title: the project's rows hold values from an old snapshot.
+        ...(entry.depth === 0 &&
+        this.snapshotProjects.has(entry.path) &&
+        this.sources.sessions.freshness(this.now()) !== "live" &&
+        // A read in progress hides the mark only while the data is stale by age. After a
+        // failure the data stays old until a read succeeds, so the mark stays.
+        (!this.sessionsLoading ||
+          this.sources.sessions.failAt > this.sources.sessions.okAt)
+          ? [{ text: " · last known", tone: "dim" as const }]
+          : []),
       ]),
     });
     if (entry.path === "" || local) return;
@@ -3986,7 +4375,7 @@ export class App {
       this.placeProject(path, before);
       await this.refreshSessions();
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(`move ${item.title}`, e);
     }
   }
   /** Save `path` before `before` (or last) in the order of the top-level projects. */
@@ -4075,7 +4464,10 @@ export class App {
       }
       await this.refreshSessions();
     } catch (e) {
-      this.notify(String(e).replace(/^Error: /, ""), true);
+      this.actionFailed(
+        `move ${item.kind === "session" ? item.ref.name : item.title}`,
+        e,
+      );
     }
   }
   /** Explain the empty right pane: how to attach a session. */

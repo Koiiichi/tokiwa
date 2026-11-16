@@ -69,7 +69,7 @@ async function create(fixture: string) {
 
 async function attach(ref: SessionRef, reconnect: boolean) {
   await app!.attachRemote(ref.name, ref.identity, reconnect);
-  if (app!.error) throw new Error(app!.error);
+  if (app!.footerNotice?.failed) throw new Error(app!.footerNotice.text);
   const shell = app!.shells.find((s) => s.remote?.name === ref.name)!;
   await wait(() => /bash-[\d.]+\$/.test(shell.terminal.screen().text), "UI remote prompt");
   return shell;

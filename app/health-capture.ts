@@ -30,7 +30,7 @@ export async function captureHealth(width: number, height: number) {
     app.history.attempts = 1;
     app.spend = fixtureSpend;
     app.show("health");
-    app.hostOk = fixtureNow;
+    app.sources.sessions.succeed(fixtureNow);
     app.drawHeader();
     app.drawFooter();
     app.drawHealth();
