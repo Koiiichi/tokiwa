@@ -520,7 +520,7 @@ esac
 
     def test_send_refuses_text_checks_on_the_mac_first(self):
         self.env['TOKIWA_ACTOR'] = 'worker-a'
-        for bad in ['/clear', '  !ls', '#x', 'bell\a', '', '  \n', 'x' * 16385]:
+        for bad in ['/clear', '  !ls', '#x', 'bell\a', 'c1\x85next', '', '  \n', 'x' * 16385]:
             result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', bad)
             self.assertEqual(result.returncode, 1, repr(bad))
             self.assertIn('Nothing was sent.', result.stderr)

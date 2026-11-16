@@ -159,7 +159,7 @@ case "$mode" in
   esac
   # The same rules as the host. They run here first, so that a refused message makes no AWS call.
   python3 -I -c '
-import sys
+import sys, unicodedata
 data = open(sys.argv[1], "rb").read()
 if len(data) > 16384:
     sys.exit("The message is over 16384 bytes. Nothing was sent.")
@@ -169,7 +169,7 @@ except UnicodeDecodeError:
     sys.exit("The message is not UTF-8 text. Nothing was sent.")
 if not text.strip():
     sys.exit("The message is empty. Nothing was sent.")
-if any((ord(c) < 32 and c not in "\n\t") or ord(c) == 127 for c in text):
+if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
     sys.exit("The message has a control character. Nothing was sent.")
 if text.lstrip()[:1] in ("/", "!", "#"):
     sys.exit("The message starts with /, ! or #. Nothing was sent.")

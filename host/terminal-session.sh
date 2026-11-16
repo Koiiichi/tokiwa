@@ -229,6 +229,7 @@ import secrets
 import subprocess
 import sys
 import time
+import unicodedata
 
 socket = sys.argv[1]
 # The longest message text, in bytes of UTF-8.
@@ -292,7 +293,7 @@ def text_refusal(text):
         return 'The message is empty. Nothing was sent.'
     if len(text.encode('utf-8')) > MAX_MESSAGE_BYTES:
         return f'The message is over {MAX_MESSAGE_BYTES} bytes. Nothing was sent.'
-    if any((ord(c) < 32 and c not in '\n\t') or ord(c) == 127 for c in text):
+    if any(unicodedata.category(c) == 'Cc' and c not in '\n\t' for c in text):
         return 'The message has a control character. Nothing was sent.'
     return None
 
@@ -319,13 +320,19 @@ def stage_delivery(name, identity, payload, extra=(), check=None):
     # The clients are read before the session, so that a client that attaches in between is counted
     # by the tmux condition and not missed.
     total, writable = client_counts(name, identity)
-    facts, pane, dead, values = read_session(name, identity, extra)
+    # A pane in a mode such as copy mode, or with its input off, would not take a bracketed paste.
+    facts, pane, dead, values = read_session(name, identity, ('#{pane_in_mode}', '#{pane_input_off}', *extra))
     if facts['session'] == 'gone':
         sys.exit('The selected session no longer exists. Nothing was sent.')
     if facts['session'] == 'replaced':
         sys.exit('Session identity changed. Nothing was sent.')
     if dead == '1':
         sys.exit('The pane has ended. Nothing was sent.')
+    in_mode, input_off, *values = values
+    if in_mode != '0':
+        sys.exit('The pane is in copy mode. Nothing was sent.')
+    if input_off != '0':
+        sys.exit('The pane does not take input. Nothing was sent.')
     if writable:
         sys.exit('A client is attached. Nothing was sent.')
     if facts['driver'] != os.environ.get('TOKIWA_ACTOR'):
@@ -481,7 +488,7 @@ pane, clients, buffer, values = stage_delivery(
     sys.argv[2], sys.argv[3], LABEL + '\n' + text,
     ('#{@tokiwa_agent}', '#{@tokiwa_agent_turn}', '#{@tokiwa_agent_pending}'), check)
 turn = values[1]
-print(pane, clients, buffer, turn if turn.isdigit() else '-')
+print(pane, clients, buffer, turn if turn.isascii() and turn.isdigit() else '-')
 PY_AGENT_SEND
 ensure() {
  if ! tm has-session -t "=$name" 2>/dev/null; then
@@ -512,13 +519,15 @@ deliver() {
  session_id=${session_id%%:*}
  local identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
  local pane_ok="#{==:#{pane_id},$pane}"
- local condition="#{&&:$identity_ok,$pane_ok}"
- local refusal="#{?$identity_ok,The session changed. Nothing was sent.,Session identity changed. Nothing was sent.}"
+ # A pane in copy mode or with its input off keeps a paste as raw keys, and a dead pane takes nothing.
+ local ready="#{&&:#{==:#{pane_in_mode},0},#{&&:#{==:#{pane_input_off},0},#{==:#{pane_dead},0}}}"
+ local condition="#{&&:$identity_ok,#{&&:$pane_ok,$ready}}"
+ local refusal="#{?$identity_ok,#{?$ready,The session changed. Nothing was sent.,The pane cannot take input now. Nothing was sent.},Session identity changed. Nothing was sent.}"
  if [[ $guard == 1 ]]; then
   local clients_ok="#{==:#{session_attached},$total}"
   local driver_ok="#{==:#{@tokiwa_driver},$TOKIWA_ACTOR}"
   condition="#{&&:$condition,#{&&:$clients_ok,#{&&:$driver_ok,$layer_condition}}}"
-  refusal="#{?$identity_ok,#{?$clients_ok,#{?$driver_ok,${layer_refusal:-The session changed. Nothing was sent.},Only the driver can send. Claim the session first. Nothing was sent.},A client is attached. Nothing was sent.},Session identity changed. Nothing was sent.}"
+  refusal="#{?$identity_ok,#{?$ready,#{?$clients_ok,#{?$driver_ok,${layer_refusal:-The session changed. Nothing was sent.},Only the driver can send. Claim the session first. Nothing was sent.},A client is attached. Nothing was sent.},The pane cannot take input now. Nothing was sent.},Session identity changed. Nothing was sent.}"
  fi
  local action="paste-buffer${flags:+ $flags} -d -b '$buffer' -t '$pane' ; send-keys -c '' -t '$pane' Enter"
  [[ -z $layer_action ]] || action="$action ; $layer_action"
@@ -559,14 +568,16 @@ core_deliver() {
   fail "${delivery_answer:-The message could not be sent. Refresh the session state.}"
  fi
  audit send "$extra"
- turn_before=$rest
+ # The last field of the stage output, for the layer above to report.
+ stage_rest=$rest
 }
 # A test sources this file with TOKIWA_SOURCE_ONLY=1 to call the functions above.
 [[ ${TOKIWA_SOURCE_ONLY:-} != 1 ]] || return 0
 case "$mode" in
  agent-send)
   core_deliver "$extra" "$agent_send_program" "$agent_lib" agent_layer
-  printf '{"turn_before": %s, "sent_at": %s}\n' "$([[ $turn_before == - ]] && echo 0 || echo "$turn_before")" "$sent_at"
+  # The agent layer reports the turn: `-` means that the agent has reported no turn yet.
+  printf '{"turn_before": %s, "sent_at": %s}\n' "$([[ $stage_rest == - ]] && echo 0 || echo "$stage_rest")" "$sent_at"
   exit ;;
  state)
   # Read only. One JSON object that holds no session text and is not sealed.

@@ -2080,6 +2080,29 @@ exit $code
         self.option('lead', '@tokiwa_agent_pending', self.b64({'id': 'q1', 'kind': 'question', 'at': 5}))
         self.refused(self.send('hello'), 'An item waits for a person. Nothing was sent.')
 
+    def test_send_refuses_a_pane_in_copy_mode(self):
+        self.assertEqual(self.tm('copy-mode', '-t', '=lead:').returncode, 0)
+        self.refused(self.send('hello'), 'The pane is in copy mode. Nothing was sent.')
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_send_refuses_a_pane_that_enters_copy_mode_between_check_and_paste(self):
+        # The wrapper puts the pane in copy mode right after the buffer is loaded.
+        tools = Path(self.temp.name) / 'mode-bin'
+        tools.mkdir()
+        (tools / 'tmux').write_text(f'''#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' load-buffer '* ]]; then {self.tmux} -N -S {self.socket} copy-mode -t =lead:; fi
+exit $code
+''')
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.refused(self.send('hello'), 'The pane cannot take input now. Nothing was sent.')
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_send_refuses_a_pane_with_input_off(self):
+        self.assertEqual(self.tm('select-pane', '-d', '-t', '=lead:').returncode, 0)
+        self.refused(self.send('hello'), 'The pane does not take input. Nothing was sent.')
+
     def test_send_refuses_a_dialog_on_screen(self):
         self.log.unlink()
         self.tm('kill-session', '-t', '=lead')
@@ -2089,7 +2112,7 @@ exit $code
         self.refused(self.send('hello'), 'A dialog is on the screen. Nothing was sent.')
 
     def test_send_refuses_control_characters(self):
-        for bad in ['bell\a', 'esc\x1b[31m', 'cr\rreturn', 'nul\x00', 'del\x7f']:
+        for bad in ['bell\a', 'esc\x1b[31m', 'cr\rreturn', 'nul\x00', 'del\x7f', 'c1\x85next', 'csi\x9b31m']:
             self.refused(self.send(bad), 'control character')
 
     def test_send_refuses_a_leading_slash_bang_or_hash(self):
@@ -2165,4 +2188,5 @@ exec {self.tmux} "$@"
         deliveries = [c for c in calls.splitlines() if 'paste-buffer' in c]
         self.assertEqual(len(deliveries), 1)
         self.assertIn('send-keys', deliveries[0])
-        self.assertIn('@tokiwa_agent', deliveries[0])
+        self.assertIn('set-option', deliveries[0])
+        self.assertIn('working:', deliveries[0])

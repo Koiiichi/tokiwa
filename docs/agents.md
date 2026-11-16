@@ -133,10 +133,10 @@ The result is one JSON object: `turn_before`, the `turn` at the time of the send
 The text:
 
 - is UTF-8, at most 16384 bytes, and not empty;
-- has no control character except newline and tab;
+- has no control character (Unicode category Cc, which includes U+0080 to U+009F) except newline and tab;
 - does not start with `/`, `!` or `#`, also after white space, so that the agent does not read it as a command.
 
-The launcher checks the text first, so a refused message makes no call to AWS. It then encrypts the text to the host key, as `create --run` does (see [Encrypted input](host.md#encrypted-input)). The text never is an argument of a process, a file on the host, a log line or output. The audit log records the send and the actor, never the text.
+The launcher checks the text first, so a refused message makes no call to AWS. It then encrypts the text to the host key, as `create --run` does (see [Encrypted input](host.md#encrypted-input)). On the host the text is never an argument of a process, a file, a log line or output. With `-` or `--file`, it is not in the process list of the Mac either; `--text` puts it in the arguments of the launcher on the Mac. The audit log records the send and the actor, never the text.
 
 The host sends only when all of these hold. They are checked in one tmux command queue, together with the paste and the Enter, so a change in between stops the send:
 
@@ -145,6 +145,7 @@ The host sends only when all of these hold. They are checked in one tmux command
 | The identity matches | `Session identity changed. Nothing was sent.` |
 | No client that can type is attached, and the number of attached clients is still the number that was read. A client that watches with `tokiwa view` does not count. | `A client is attached. Nothing was sent.` |
 | The caller is the driver | `Only the driver can send. Claim the session first. Nothing was sent.` |
+| The pane is not in copy mode, has input on and has not ended | `The pane is in copy mode. Nothing was sent.`, `The pane does not take input. Nothing was sent.` |
 | The pane runs `claude` or `codex` | `The pane does not run an agent. Nothing was sent.` |
 | The agent state is `idle`, `limited` or `error` | `The agent is not idle. Nothing was sent.` |
 | No question or permission request is pending | `An item waits for a person. Nothing was sent.` |
