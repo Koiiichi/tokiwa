@@ -410,6 +410,39 @@ esac
         self.assertIn('The wait result could not be read. Nothing was changed.', result.stderr)
         self.assertNotIn('timeout', result.stdout)
 
+    def test_claim_passes_the_actor_to_the_helper(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        result = self.run_cli('claim', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TOKIWA_ACTOR=worker-a ", self.calls())
+        self.assertIn("terminal-session.sh claim lead '1:$2:3'\"", self.calls())
+        (self.home / 'calls').unlink()
+        self.assertEqual(self.run_cli('claim', 'lead', '1:$2:3', '--replace').returncode, 0)
+        self.assertIn("terminal-session.sh claim lead '1:$2:3' replace", self.calls())
+        (self.home / 'calls').unlink()
+        self.assertEqual(self.run_cli('release', 'lead', '1:$2:3').returncode, 0)
+        self.assertIn("TOKIWA_ACTOR=worker-a ", self.calls())
+        self.assertIn("terminal-session.sh release lead '1:$2:3'\"", self.calls())
+
+    def test_claim_without_tokiwa_actor_is_refused_on_the_mac(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            for mode in ['claim', 'release']:
+                result = self.run_cli(mode, 'lead', '1:$2:3')
+                self.assertEqual(result.returncode, 1, (mode, actor))
+                self.assertIn('TOKIWA_ACTOR', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_claim_and_release_refuse_bad_arguments_before_aws(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for args in [('claim',), ('claim', 'lead'), ('claim', 'lead', 'x;y'), ('claim', 'lead', '1:$2:3', '--force'),
+                     ('claim', 'lead', '1:$2:3', '--replace', 'more'), ('release', 'lead'),
+                     ('release', 'lead', '1:$2:3', '--replace'), ('release', 'bad name', '1:$2:3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_end_is_the_documented_form_of_end_confirmed(self):
         result = self.run_cli('end', 'lead', '1:$2:3')
         self.assertEqual(result.returncode, 0, result.stderr)

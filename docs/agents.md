@@ -99,6 +99,8 @@ Tokiwa has two layers. The **core** layer is sessions, their lifecycle, status a
 | `driver` | The actor that may send to the session, or null |
 | `sampled_at` | The time of the read, in seconds since the epoch |
 
+`tokiwa claim NAME IDENTITY [--replace]` and `tokiwa release NAME IDENTITY` (core, class `control`) set and clear the `driver`. Both need `TOKIWA_ACTOR` and refuse without it before any call to AWS. They have no MCP tool yet. See [Claim and release the driver](host.md#claim-and-release-the-driver).
+
 `tokiwa agent state NAME IDENTITY` (agent, class `read`) prints the same object with these fields added:
 
 | Field | Meaning |

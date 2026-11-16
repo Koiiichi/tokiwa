@@ -15,7 +15,7 @@ run_offset=
 wait_timeout=600
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -40,6 +40,11 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   agent wait NAME IDENTITY --after TURN [--timeout SECONDS]
                 Wait until the agent ends a turn, asks for a person, shows a dialog or exits, then print its state with a reason
                 (turn-ended, pending, dialog, ended or timeout). --timeout is 1 to 3600 seconds (default 600); a timeout exits 3
+  claim NAME IDENTITY [--replace]
+                Become the driver of a session, the one actor that may send to it; the actor is TOKIWA_ACTOR.
+                Refused while a client that can type is attached, and while another actor drives, unless --replace
+  release NAME IDENTITY
+                Give up the driver of a session; only the driver can
   end NAME IDENTITY [--attached-ok]
                 End a session and the programs in its panes; refused while a client is attached, unless --attached-ok
   interrupt NAME IDENTITY
@@ -123,6 +128,14 @@ case "$mode" in
   extra=$3
   # The turn is the fourth argument of the helper.
   lines=$((10#$5)) ;;
+ claim|release)
+  [[ ( $# -eq 3 || ( $mode == claim && $# -eq 4 && $4 == --replace ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail "Use $mode NAME IDENTITY$([[ $mode == claim ]] && echo ' [--replace]')."
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail "Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was changed."
+  extra=$3
+  # The host reads the actor from the environment that the launcher sets below.
+  [[ $# -eq 3 ]] || lines=replace ;;
  end)
   [[ ( $# -eq 3 || ( $# -eq 4 && $4 == --attached-ok ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail 'Use end NAME IDENTITY [--attached-ok].'
@@ -335,7 +348,7 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then

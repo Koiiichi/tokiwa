@@ -304,15 +304,21 @@ The screen check of the agent layer reads the last 15 lines of the active pane w
 
 `end NAME IDENTITY` checks the identity and ends the session in one tmux queue, as it always did. `end NAME IDENTITY check-clients` first reads the clients of the session, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type; a client that watches read only does not count. The queue then also checks that `#{session_attached}` is still the number that was read, so a client that attaches in between stops the end. The launcher sends `check-clients` for `tokiwa end` and no flag for `--attached-ok` or `--end-confirmed`, so a launcher and a helper of different versions still end a session. The refusal sentences go through a tmux format and `display-message -p`, so they hold no comma and no single quote.
 
+### Claim and release the driver
+
+The driver of a session is the tmux option `@tokiwa_driver`: the actor that may send input to the session or answer in it. `create` sets it to `TOKIWA_ACTOR` when the caller has a valid actor, and leaves it empty otherwise. `claim NAME IDENTITY [replace]` sets it to the caller; `release NAME IDENTITY` clears it. Both refuse without a valid `TOKIWA_ACTOR` (1 to 64 letters, digits, dots, colons, hyphens or underscores, starting with a letter or digit).
+
+`claim` reads the clients of the session first and refuses with `A client is attached. Nothing was changed.` while any client can type. The queue then checks, in one tmux call, that the identity matches, that `#{session_attached}` is still the number of clients that was read, and that the session has no driver or the caller is the driver. With `replace`, the last check passes. A refusal names its cause: `Session identity changed. Nothing was changed.`, `A client is attached. Nothing was changed.` or `Another actor is the driver. Nothing was changed. Use --replace to take it.` `release` refuses with `Only the driver can release. Nothing was changed.` when another actor, or no actor, is the driver. A read-only viewer does not count as a client for `claim`.
+
 ## Audit log
 
-The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze` and `resume`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim` and `release`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
 
 ```json
 {"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}
 ```
 
-`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
+`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A `claim` with `--replace` has `replaced`, the name of the driver that it took the session from. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
 
 ## The command list
 

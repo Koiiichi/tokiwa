@@ -33,6 +33,8 @@ class Capabilities(unittest.TestCase):
     def test_each_example_reaches_its_helper_mode(self):
         examples = [(c, c['example']) for c in CAPABILITIES if 'example' in c]
         examples += [(c, t['example']) for c, t in TOOLS if 'example' in t]
+        # claim and release refuse without an actor.
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
         for capability, example in examples:
             with self.subTest(example=example):
                 (self.home / 'calls').unlink(missing_ok=True)

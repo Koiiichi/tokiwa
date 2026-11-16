@@ -350,6 +350,18 @@
       }
     },
     {
+      "command": "claim",
+      "class": "control",
+      "example": ["claim", "lead", "1:$2:3"],
+      "helper": "claim"
+    },
+    {
+      "command": "release",
+      "class": "control",
+      "example": ["release", "lead", "1:$2:3"],
+      "helper": "release"
+    },
+    {
       "command": "end",
       "class": "control",
       "example": ["end", "lead", "1:$2:3"],

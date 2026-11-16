@@ -13,6 +13,7 @@ browser=${TOKIWA_BROWSER:-/opt/agent-platform/rootless/tokiwa-open}
 tm() { tmux -N -S "$socket" "$@"; }
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 valid_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]]; }
+valid_actor() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]]; }
 valid_prompt_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,23}$ ]]; }
 # A secret becomes an environment variable of each new shell; the names that shells and Tokiwa use are refused.
 valid_secret() {
@@ -25,16 +26,19 @@ audit() {
  local via=${TOKIWA_VIA:-cli} actor=${TOKIWA_ACTOR:-}
  [[ $via =~ ^(cli|mcp|app)$ ]] || via=unknown
  # The caller names itself, for example an orchestrator's session; a malformed name is left out.
- [[ $actor =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] || actor=
- python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" "$actor" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
+ valid_actor "$actor" || actor=
+ # $4 is the earlier driver that a claim replaced.
+ python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" "$actor" "${4:-}" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
 import json, os, sys, time
-path, action, name, identity, via, run, actor = sys.argv[1:8]
+path, action, name, identity, via, run, actor, replaced = sys.argv[1:9]
 os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
 entry = {'at': int(time.time()), 'action': action, 'name': name, 'identity': identity, 'via': via}
 if run:
     entry['run'] = run == '1'
 if actor:
     entry['actor'] = actor
+if replaced:
+    entry['replaced'] = replaced
 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
     f.write(json.dumps(entry) + '\n')
 PY_AUDIT
@@ -42,16 +46,16 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end ) && $# -le 4 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|agent-state|agent-wait) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -117,11 +121,17 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == end ]]; then
  [[ $# -le 3 || $4 == check-clients ]] || fail 'The only extra argument of end is check-clients.'
+fi
+if [[ $mode == claim ]]; then
+ [[ $# -le 3 || $4 == replace ]] || fail 'The only extra argument of claim is replace.'
+fi
+if [[ $mode == claim || $mode == release ]]; then
+ valid_actor "${TOKIWA_ACTOR:-}" || fail "Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was changed."
 fi
 if [[ $mode == agent-wait ]]; then
  after=${4:-}
@@ -622,6 +632,45 @@ PY_SNAPSHOT
   audit end "$extra"
   printf 'The selected session ended. Detached background processes may remain.\n'
   exit ;;
+
+ claim)
+  # The driver is the one actor that may send to the session. The checks and the change run in one
+  # tmux command queue, as for end: the identity matches, the number of attached clients is still
+  # the number that was read (so a client that attaches in between stops the claim), and the
+  # session has no driver, or the caller is the driver, or the caller asked to replace it.
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  read -r total writable < <(python3 -c "$session_lib"$'\n'"$client_counts_program" "$socket" "$name" "$extra") ||
+   fail 'The clients of the session could not be read. Nothing was changed.'
+  (( writable == 0 )) || fail 'A client is attached. Nothing was changed.'
+  identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
+  clients_ok="#{==:#{session_attached},$total}"
+  driver_ok="#{||:#{==:#{@tokiwa_driver},},#{==:#{@tokiwa_driver},$TOKIWA_ACTOR}}"
+  [[ ${4:-} != replace ]] || driver_ok=1
+  earlier=$(tm show-options -qv -t "=$name:" @tokiwa_driver)
+  # The answer names the cause. The sentences go through #{?...} and display-message -p '...': they
+  # must stay free of commas and single quotes.
+  refusal="#{?$identity_ok,#{?$clients_ok,Another actor is the driver. Nothing was changed. Use --replace to take it.,A client is attached. Nothing was changed.},Session identity changed. Nothing was changed.}"
+  answer=$(tm if-shell -F -t "=$name:" "#{&&:$identity_ok,#{&&:$clients_ok,$driver_ok}}" \
+   "set-option -t '$session_id' @tokiwa_driver '$TOKIWA_ACTOR'" "display-message -p '$refusal'") || fail 'The driver could not be set. Refresh the session state.'
+  [[ -z $answer ]] || fail "$answer"
+  replaced=
+  [[ ${4:-} != replace || $earlier == "$TOKIWA_ACTOR" ]] || replaced=$earlier
+  audit claim "$extra" '' "$replaced"
+  printf 'The driver of %s is %s.\n' "$name" "$TOKIWA_ACTOR"
+  exit ;;
+ release)
+  # Only the driver releases. The check and the change run in one tmux command queue.
+  tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
+  refusal="#{?$identity_ok,Only the driver can release. Nothing was changed.,Session identity changed. Nothing was changed.}"
+  answer=$(tm if-shell -F -t "=$name:" "#{&&:$identity_ok,#{==:#{@tokiwa_driver},$TOKIWA_ACTOR}}" \
+   "set-option -u -t '$session_id' @tokiwa_driver" "display-message -p '$refusal'") || fail 'The driver could not be released. Refresh the session state.'
+  [[ -z $answer ]] || fail "$answer"
+  audit release "$extra"
+  printf 'The driver of %s was released.\n' "$name"
+  exit ;;
  interrupt)
   # The identity check and the key press run in the same tmux command queue, as for end. Esc stops
   # the current turn of Claude Code and Codex.
@@ -805,6 +854,8 @@ PY_CREATE
   label=''
   [[ $label_b64 == - ]] || label=$(project_label "$label_b64") || exit 1
   start_shell "$name" "$directory" || fail 'The terminal could not be created.'
+  # The actor that creates a session is its driver; a call with no valid actor leaves it with none.
+  if valid_actor "${TOKIWA_ACTOR:-}"; then tm set-option -t "=$name:" @tokiwa_driver "$TOKIWA_ACTOR"; fi
   if [[ -n $label ]]; then
    tm set-option -t "=$name:" @tokiwa_project "$label"
    registry add "$label" "$directory"

@@ -1539,3 +1539,157 @@ class RenameSession(ModelHelpers, Server):
         self.assertNotEqual(self.helper('rename', 'claude-api', self.b64({'to': 'child', 'identity': identity})).returncode, 0)
         self.assertNotEqual(self.helper('rename', 'claude-api', self.b64({'to': 'bad name', 'identity': identity})).returncode, 0)
         self.assertIn('claude-api', self.rows())
+
+
+class Driver(Pty, ModelHelpers, Server):
+    """The driver is the one actor that may send to a session. `claim` and `release` change it."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+
+    def as_actor(self, actor, *args):
+        self.env['TOKIWA_ACTOR'] = actor
+        return self.helper(*args)
+
+    def driver(self, name='lead'):
+        return json.loads(self.helper('state', name, self.identity).stdout)['driver']
+
+    def audit(self):
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+
+    def create(self, name, actor=None):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir(exist_ok=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.env.pop('TOKIWA_ACTOR', None)
+        if actor:
+            self.env['TOKIWA_ACTOR'] = actor
+        result = self.helper('create', name, self.b64({'folder': 'inbox'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(self.helper('state', name, self.rows()[name]['identity']).stdout)
+
+    def test_create_with_an_actor_records_the_driver(self):
+        self.assertEqual(self.create('made', 'orchestrator-a')['driver'], 'orchestrator-a')
+
+    def test_create_without_an_actor_records_none(self):
+        self.assertIsNone(self.create('made')['driver'])
+
+    def test_claim_without_a_driver(self):
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+        self.assertEqual([(e['action'], e['actor']) for e in self.audit()], [('claim', 'worker-a')])
+
+    def test_claim_by_the_driver_again_succeeds(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_of_another_drivers_session_is_refused(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Another actor is the driver. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_replace_takes_it_and_audits_both_names(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'claim', 'lead', self.identity, 'replace')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-b')
+        last = self.audit()[-1]
+        self.assertEqual((last['action'], last['actor'], last['replaced']), ('claim', 'worker-b', 'worker-a'))
+
+    def test_claim_takes_no_other_fourth_argument(self):
+        for flag in ['force', '--replace', '']:
+            self.assertNotEqual(self.as_actor('worker-a', 'claim', 'lead', self.identity, flag).returncode, 0, flag)
+        self.assertIsNone(self.driver())
+
+    def test_claim_is_refused_while_a_writable_client_is_attached(self):
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('A client is attached. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_claim_with_a_read_only_viewer_succeeds(self):
+        self.attach_client('lead', self.identity, 'view')
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_refuses_a_replaced_identity(self):
+        result = self.as_actor('worker-a', 'claim', 'lead', '1:$99:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_a_stale_identity_reaches_the_client_filter(self):
+        # With a writable client attached, only the session id filter of the count lets the answer
+        # be a changed identity: without it the answer would be that a client is attached.
+        self.attach_client('lead', self.identity, 'attach')
+        for args in [('claim', 'lead', '1:$99:1'), ('end', 'lead', '1:$99:1', 'check-clients')]:
+            result = self.as_actor('worker-a', *args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn('Session identity changed.', result.stderr)
+            self.assertNotIn('client is attached', result.stderr)
+
+    def test_claim_refuses_a_client_that_attaches_between_count_and_claim(self):
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('A client is attached. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_claim_without_an_actor_is_refused(self):
+        for actor in ['', 'bad;rm', '-x']:
+            result = self.as_actor(actor, 'claim', 'lead', self.identity)
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_release_by_the_driver(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.driver())
+        self.assertEqual([e['action'] for e in self.audit()], ['claim', 'release'])
+
+    def test_release_by_another_actor_is_refused(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Only the driver can release. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_release_without_a_driver_is_refused(self):
+        result = self.as_actor('worker-a', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([e['action'] for e in self.audit()], [])
+
+    def test_release_refuses_a_replaced_identity(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'release', 'lead', '1:$99:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
