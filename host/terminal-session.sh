@@ -555,6 +555,7 @@ SKIP_LIMIT = 64 << 20
 # The longest text of one event, in characters.
 MAX_TEXT = 2000
 UNREADABLE = 'unreadable line'
+CODEX_CONTEXT = ('# AGENTS.md instructions', '<environment_context>', '<user_instructions>')
 
 def refuse(reason):
     sys.exit(f'{reason} Nothing was read.')
@@ -627,8 +628,10 @@ def codex_events(record, tools, calls):
         return message_events(at, 'notice', text_of(payload.get('message'))) if shape == 'error' else []
     if shape == 'message' and payload.get('role') in ('user', 'assistant'):
         blocks = payload.get('content')
-        text = '\n'.join(text_of(dict_of(block).get('text')) for block in blocks) if isinstance(blocks, list) else ''
-        return message_events(at, payload['role'], text)
+        texts = [text_of(dict_of(block).get('text')) for block in blocks] if isinstance(blocks, list) else []
+        # Codex writes the AGENTS.md files and the environment of a session as user messages; nobody typed them.
+        texts = [t for t in texts if not t.lstrip().startswith(CODEX_CONTEXT)]
+        return message_events(at, payload['role'], '\n'.join(texts))
     if shape in ('function_call', 'custom_tool_call'):
         tool = text_of(payload.get('name')) or None
         calls[text_of(payload.get('call_id'))] = tool

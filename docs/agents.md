@@ -227,7 +227,7 @@ The result is one JSON object:
 
 Each event is `{"at", "kind", "text", "tool", "error"}`. `at` is the time of the line in seconds since the epoch, or null. `kind` is `user`, `assistant`, `tool_call`, `tool_result` or `notice`. `tool` is the tool name of a call, and of its result when the call is in the same read. `error` is true for a tool result that failed. A `text` is cut at 2000 characters.
 
-- Thinking and reasoning never appear. Records that are not messages, tool calls, tool results or notices are left out.
+- Thinking and reasoning never appear. Records that are not messages, tool calls, tool results or notices are left out. So is the context that Codex adds to a session as a user message: its AGENTS.md text and its environment.
 - Without `--tools`, a `tool_call` and a `tool_result` have empty `text`: arguments and output can hold file text and secrets. `--tools` adds them.
 - A line that is not a JSON object becomes a `notice` with the text `unreadable line`. A line over 1 MiB becomes a `notice` with the text `line too long`.
 - A last line without its end waits: the cursor stays before it, and the next read returns it whole.

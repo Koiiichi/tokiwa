@@ -1,4 +1,5 @@
 {"timestamp": "2026-01-01T00:00:00.000Z", "type": "session_meta", "payload": {"id": "session-b", "cwd": "/project-a"}}
+{"timestamp": "2026-01-01T00:00:00.500Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /project-a\n\n<INSTRUCTIONS>\nRule one\n</INSTRUCTIONS>"}, {"type": "input_text", "text": "<environment_context>\n  <cwd>/project-a</cwd>\n</environment_context>"}]}}
 {"timestamp": "2026-01-01T00:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Request one"}]}}
 {"timestamp": "2026-01-01T00:00:02.000Z", "type": "response_item", "payload": {"type": "reasoning", "summary": [], "encrypted_content": "blob-a"}}
 {"timestamp": "2026-01-01T00:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Answer one"}]}}
