@@ -210,6 +210,8 @@ Of the Claude Code hooks of Tokiwa, this is the only synchronous one: Claude Cod
 
 A task in the command line of `create --run`, for example `create --run 'claude "TASK"'`, has no label: the agent gets `TASK` as its first prompt, as if the owner typed it. The `run` class gates it, because the line is a shell command. The labelled way to give a task is `agent send` after the agent is idle, as [Drive a session](#drive-a-session) does.
 
+Codex runs its hooks only from the first prompt of a session, so a new Codex session reports no state and `agent send` refuses it with `The agent is not idle.` Start Codex with a first prompt that is not the task, for example `create --run 'codex "Reply with the single word ready."'`, and send the task with `agent send` after it is idle.
+
 ## Read an agent's transcript
 
 `tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]` (agent, class `read`) reads what the agent said and did, in pages, from the transcript file that its hooks name (`@tokiwa_agent_transcript`). It reads a Claude Code or a Codex transcript, by the shape of each line. The MCP tool is `tokiwa_agent_read`. Like `capture`, the host encrypts the result to a one-time key of the launcher (see [Limits](#limits)).

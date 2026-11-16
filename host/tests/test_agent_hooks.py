@@ -93,6 +93,9 @@ class AgentHooks(unittest.TestCase):
         self.assertNotIn("async", answered)
         self.assertEqual(answered["timeout"], 5)
         self.assertEqual(codex["hooks"]["Stop"][-1]["hooks"][0]["timeout"], 5)
+        # Codex clamps the timeout of these two events to 3 seconds and warns at each start about a longer one.
+        for event in ("SessionEnd", "Interrupt"):
+            self.assertEqual(codex["hooks"][event][-1]["hooks"][0]["timeout"], 3)
 
     def test_install_replaces_an_earlier_hook_that_has_no_arguments_after_the_state(self):
         self.claude.write_text(json.dumps({"hooks": {"Stop": [

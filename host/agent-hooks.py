@@ -44,9 +44,10 @@ CODEX = [
     ("PostToolUse", None, "working"),
     ("PermissionRequest", None, "waiting --kind permission"),
     ("SessionStart", SESSION_STARTS, "idle"),
-    ("SessionEnd", None, "ended"),
+    # Codex clamps the timeout of SessionEnd and Interrupt hooks to 3 seconds and warns at each start about a longer one.
+    ("SessionEnd", None, "ended", {"timeout": 3}),
     ("Stop", None, "idle"),
-    ("Interrupt", None, "idle"),
+    ("Interrupt", None, "idle", {"timeout": 3}),
 ]
 
 
