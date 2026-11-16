@@ -248,14 +248,36 @@ if [[ $mode == login ]]; then
 fi
 note() { [[ ${TOKIWA_DASHBOARD:-0} == 1 ]] || printf "$@"; }
 aws_call() { aws --profile "$profile" --region "$region" --cli-connect-timeout 5 --cli-read-timeout 10 "$@"; }
+# The category of a failed access check, from the AWS CLI text of botocore's connection errors:
+# EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError and ConnectionClosedError.
+# Any other failure, for example an expired token, is auth.
+aws_access_category() {
+ case $1 in
+  *'Could not connect to the endpoint URL'* | *'Connect timeout on endpoint URL'* | *'Read timeout on endpoint URL'* | *'Connection was closed before we received a valid response from endpoint URL'*) printf 'unreachable' ;;
+  *) printf 'auth' ;;
+ esac
+}
+# fail, then name the category on the last line of stderr when the caller asked for it.
+fail_access() {
+ printf 'Tokiwa: %s\n' "$2" >&2
+ [[ ${TOKIWA_ERROR_CATEGORY:-0} != 1 ]] || printf 'tokiwa-error: %s\n' "$1" >&2
+ exit 1
+}
 note 'Tokiwa · checking AWS access…\n' >&2
 # The SSO session ends after the organization's sign-in time limit. In an interactive terminal, start the browser
 # login and continue. The dashboard and scripted calls keep failing with the command to run.
-if ! signed_in=$(aws_call sts get-caller-identity --query Account --output text 2>/dev/null); then
- [[ -t 0 && -t 1 && ${TOKIWA_DASHBOARD:-0} != 1 ]] || fail "AWS authentication failed. Run aws sso login --profile $profile."
+# A network failure fails at once, because a sign-in cannot fix it.
+access_err=$(mktemp)
+if ! signed_in=$(aws_call sts get-caller-identity --query Account --output text 2>"$access_err"); then
+ access_text=$(<"$access_err")
+ rm -f "$access_err"
+ [[ $(aws_access_category "$access_text") == auth ]] || fail_access unreachable 'AWS cannot be reached from this Mac. Check the network, then retry.'
+ [[ -t 0 && -t 1 && ${TOKIWA_DASHBOARD:-0} != 1 ]] || fail_access auth "AWS authentication failed. Run aws sso login --profile $profile."
  note "Tokiwa · AWS sign-in expired; starting aws sso login --profile ${profile}…\\n" >&2
- sso_login >&2 || fail "The AWS login did not complete. Run aws sso login --profile $profile."
- signed_in=$(aws_call sts get-caller-identity --query Account --output text) || fail "AWS authentication failed. Run aws sso login --profile $profile."
+ sso_login >&2 || fail_access auth "The AWS login did not complete. Run aws sso login --profile $profile."
+ signed_in=$(aws_call sts get-caller-identity --query Account --output text) || fail_access auth "AWS authentication failed. Run aws sso login --profile $profile."
+else
+ rm -f "$access_err"
 fi
 [[ -z $account || $signed_in == "$account" ]] || fail "The AWS account does not match account= in $config."
 if [[ $mode == spend ]]; then

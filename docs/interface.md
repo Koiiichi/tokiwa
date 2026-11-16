@@ -78,7 +78,7 @@ While the last session read or the last Health read failed, one band under the h
 | --- | --- | --- |
 | `▲ AWS sign-in expired.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band says `Signing in… finish in the browser`. |
 | `▲ The workstation is stopped.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
-| `▲ AWS cannot be reached from this Mac.` | The AWS endpoint cannot be reached. | `u` retries. |
+| `▲ AWS cannot be reached from this Mac.` | The AWS endpoint cannot be reached, or the launcher's AWS access check failed with a network error. | `u` retries. |
 | `▲ The workbench server is not ready.` | The workbench check on the host failed. | `u` retries. |
 | `▲ <first line>` | Any other failure: its first line of output, without the launcher prefix and without shell warnings about a removed folder. | `u` retries. |
 
