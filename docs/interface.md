@@ -145,7 +145,7 @@ When the list is empty, it says why:
 | `No sessions on EC2` | The read succeeded and the host has no sessions. |
 | `No sessions read` | The read failed. The problem band, or the line at the top of the list, names the cause. The list adds `l signs in` after an expired sign-in, or `u reads them again` after another failure of the whole link. It adds no key when its own line says `u retry`, or when the failure is a setup failure. |
 
-When a read fails and the list holds an earlier read, the list keeps it. The problem band, or the line at the top of the list, names the failure. While the list shows an old read and no read runs, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. The local group never does.
+When a read fails and the list holds an earlier read, the list keeps it. The problem band, or the line at the top of the list, names the failure. While the list shows an old read, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. A read in progress hides the mark only when the data is old by age; after a failed read the mark stays until a read succeeds. The local group never does.
 
 ## Status glyphs
 
@@ -155,7 +155,7 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 | --- | --- | --- |
 | `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two live snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
-| `◈` | Amber | Needs you. A program in the session ran `tokiwa-attention`, or a window rang the bell while no client viewed it. Bringing the session forward clears it; an attach anywhere clears the mark of `tokiwa-attention`, and `tokiwa-attention --clear` clears it from inside. |
+| `◈` | Amber; dim on a row of a stale snapshot with no connected view | Needs you. A program in the session ran `tokiwa-attention`, or a window rang the bell while no client viewed it. Bringing the session forward clears it; an attach anywhere clears the mark of `tokiwa-attention`, and `tokiwa-attention --clear` clears it from inside. |
 | `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
 | (empty) | — | No reading yet, the snapshot did not include the pane activity, or the snapshot is not live (a read failed or is older than 90 s). A row with an attached, connected view keeps its own glyph, and `◈` stays. After a stale period, `◆` and `◇` return only after two live reads, 5 s apart. |
@@ -344,7 +344,7 @@ While the terminal is in view, the navigation row shows the sessions that no vie
 | Remote session | The host creates a new tmux session in the current directory of the source, named `shell-` and eight characters, through `tokiwa new NAME --from SOURCE`. The app checks its identity in the next snapshots before the view takes the keyboard. |
 | Local shell | A new local shell starts in the directory where the source shell started. |
 
-While a remote shell starts, a `new shell` pane holds its place and says `opening a shell in <directory> · <seconds>s`. In a single view, the title of the source says `· opening a shell`. When the app cannot find the new session in the snapshots, the footer shows a notice. With four views open, the navigation row asks you to close a view first.
+While a remote shell starts, a `new shell` pane holds its place and says `opening a shell in <directory> · <seconds>s`. In a single view, the title of the source says `· opening a shell`. When the app cannot find the new session in the snapshots, the footer shows a notice. With four views open, the footer asks you to close a view first.
 
 The new session lists under its source with `└`. When you attach a session that has child shells, its newest child shell reconnects beside it on a second connection, and the session keeps the keyboard. This does not happen when the layout shows a single view, when four views are open, when the session already has a second view, or when every pane of the child ended. The other children stay in the list.
 

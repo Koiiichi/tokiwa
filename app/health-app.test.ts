@@ -167,7 +167,7 @@ test("Health sampling reads spend once per interval", async () => {
   }
 });
 
-test("a launcher setup failure of the spend read says not read", async () => {
+test("an older launcher without a spend command says why, with no band", async () => {
   const t = await createTestRenderer({ width: 100, height: 40 });
   const app = new App(t.renderer, { spawn: false });
   app.backend.health = async () => fresh();
@@ -179,8 +179,13 @@ test("a launcher setup failure of the spend read says not read", async () => {
     clearTimeout(app.sampleTimer);
     app.drawHealth();
     await t.renderOnce();
-    expect(t.captureCharFrame()).toContain("Spent so far:   not read");
-    expect(app.sources.spend.failure?.kind).toBe("setup");
+    const frame = t.captureCharFrame();
+    expect(frame).toContain(
+      "Spent so far:   not available (the launcher has no spend command",
+    );
+    expect(frame).not.toContain("not read");
+    expect(app.sources.spend.failure?.kind).toBe("failed");
+    expect(app.currentError()).toBeUndefined();
   } finally {
     await t.dispose();
   }

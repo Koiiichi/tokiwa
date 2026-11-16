@@ -24,11 +24,9 @@ for (const [width, height] of captureSizes) {
       "○ EC2 · signed out",
       "▲ AWS sign-in expired",
       "l sign in · e details",
-      // The 62-column band shortens this line in the middle (see the task report).
-      width < 70
-        ? "Live status unavailable."
-        : "Live status unavailable. Last synced",
-      "· 41h ago",
+      // The age stays whole at every width; a narrow band drops the first sentence.
+      "Last synced",
+      "· 41h ago.",
       "project-a · last known",
       "◈ worker-b",
     ])
@@ -45,6 +43,8 @@ for (const [width, height] of captureSizes) {
     ])
       expect(authWork).not.toContain(part);
     expect(count(authWork, AUTH)).toBe(0);
+    expect(authWork).not.toContain("...");
+    if (width >= 70) expect(authWork).toContain("Live status unavailable.");
 
     const authHealth = await draw("auth-expired", "health");
     frames.push(authHealth);
@@ -75,8 +75,10 @@ for (const [width, height] of captureSizes) {
       "u retry · e details",
       "Retrying every 30 s",
       "project-a · last known",
+      "· 6m ago.",
     ])
       expect(net).toContain(part);
+    expect(net).not.toContain("...");
     expect(net).not.toContain("signed out");
     expect(net).not.toContain("sign in");
 

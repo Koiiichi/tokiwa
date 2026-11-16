@@ -1789,9 +1789,15 @@ export class App {
       [{ text: keys, tone: "dim" }],
     ];
   }
-  /** True when the failure shown offers a retry. */
-  retryOffered() {
-    return this.currentError()?.recovery === "retry";
+  /**
+   * True when the failure shown offers a retry in the view of `source`: a failure of the whole
+   * link in every view, a failure of one source only in the view that shows it.
+   */
+  retryOffered(source: "sessions" | "health") {
+    const error = this.currentError();
+    if (!error) return false;
+    if (error.scope === "global") return error.recovery === "retry";
+    return this.viewFailure(source) !== undefined;
   }
   /** The one failure that every view, the header and the band read. */
   currentError(): ErrorState | undefined {
@@ -1819,7 +1825,7 @@ export class App {
     const wasGlobal = this.currentError()?.scope === "global";
     this.sources[source].succeed(this.now());
     // One good read shows that the link works: the other sources read at once.
-    if (wasGlobal) this.recover();
+    if (wasGlobal && this.currentError()?.scope !== "global") this.recover();
   }
   /**
    * Read each source that is not live, without a wait for its timer: the sessions at once, Health
@@ -1853,24 +1859,43 @@ export class App {
   }
   /** Rows that the band takes under the header. */
   bandRows = 0;
-  /** The second row of the band, by kind. `when` is the age of the last good read. */
-  bandSubText(state: ErrorState) {
+  /**
+   * The second row of the band, by kind. Each kind lists its wording from the fullest to the
+   * shortest; the row takes the first that fits `room` cells, so the age of the last good read
+   * stays whole. Only the shortest wording is cut, and then at a word boundary.
+   */
+  bandSubText(state: ErrorState, room = Infinity) {
     const read = state.lastSuccess
       ? syncedText(state.lastSuccess, this.now())
       : undefined;
     const synced = read ? `Last synced ${read}.` : "Nothing was read yet.";
-    switch (state.kind) {
-      case "signed-out":
-        return `Live status unavailable. ${synced}`;
-      case "offline":
-        return `${read ? `Showing the last known state from ${read}.` : "Nothing was read yet."} Retrying every 30 s.`;
-      case "stopped":
-        return `Start it in AWS, then press u. ${synced}`;
-      case "not-ready":
-        return `Tokiwa retries every 30 s. ${synced}`;
-      default:
-        return state.explanation;
-    }
+    const wording: string[] = (() => {
+      switch (state.kind) {
+        case "signed-out":
+          return [`Live status unavailable. ${synced}`, synced];
+        case "offline":
+          return read
+            ? [
+                `Showing the last known state from ${read}. Retrying every 30 s.`,
+                `Last known state from ${read}. Retrying every 30 s.`,
+                `Showing the last known state from ${read}.`,
+                synced,
+              ]
+            : ["Nothing was read yet. Retrying every 30 s.", synced];
+        case "stopped":
+          return [`Start it in AWS, then press u. ${synced}`, synced];
+        case "not-ready":
+          return [`Tokiwa retries every 30 s. ${synced}`, synced];
+        default:
+          return [state.explanation];
+      }
+    })();
+    const fits = wording.find((text) => text.length <= room);
+    if (fits) return fits;
+    const last = wording[wording.length - 1];
+    const cut = last.slice(0, Math.max(0, room - 1));
+    const word = cut.lastIndexOf(" ");
+    return `${(word > 0 && last[cut.length] !== " " ? cut.slice(0, word) : cut).trimEnd()}…`;
   }
   /** The lines of the details box: the facts, one row per failed source, then the launcher text. */
   detailLines(state: ErrorState, inner: number) {
@@ -1946,7 +1971,10 @@ export class App {
         ? "▲ Signing in… finish in the browser"
         : `▲ ${state.title}`;
       // Indented two cells under the title, which follows the ▲ glyph and a space.
-      this.bandSub.content = `  ${this.bandSubText(state)}`;
+      this.bandSub.content = `  ${this.bandSubText(
+        state,
+        this.renderer.width - 2 * (this.renderer.width < 70 ? 1 : 2) - 2,
+      )}`;
       const action =
         state.recovery === "retry"
           ? "u retry"
@@ -3098,10 +3126,7 @@ export class App {
           spendFreshness,
           spendReadAt: this.sources.spend.okAt || undefined,
           // A source stays `not read` until its own read succeeds, whatever another source reads.
-          globalFailure: Object.values(this.sources).some(
-            (status) =>
-              status.failure && GLOBAL_KINDS.includes(status.failure.kind),
-          ),
+          globalFailure: this.currentError()?.scope === "global",
         },
         Math.max(20, width),
         height,
@@ -3318,7 +3343,7 @@ export class App {
       return keyFirst([
         ...(this.signInExpired()
           ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
-          : this.retryOffered()
+          : this.retryOffered("health")
             ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
             : []),
         ...(this.healthOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
@@ -3344,7 +3369,7 @@ export class App {
     return keyFirst([
       ...(this.signInExpired()
         ? [hint("sign-in", "l", "sign in", 8, () => this.signIn())]
-        : this.retryOffered()
+        : this.retryOffered("sessions")
           ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
           : []),
       ...(this.sessionRows().length
@@ -3363,7 +3388,7 @@ export class App {
               : []),
           ]
         : [
-            ...(this.retryOffered() || this.signInExpired()
+            ...(this.retryOffered("sessions") || this.signInExpired()
               ? []
               : [
                   hint(
@@ -4117,7 +4142,14 @@ export class App {
             fg:
               state === "output" || state === "starting"
                 ? throb
-                : tones[STATUS_TONE[state]],
+                : // A stale row with no connected view asks for nothing now: its title says
+                  // `last known`, so the glyph stays dim, not amber.
+                  state === "needs-you" &&
+                    row.freshness &&
+                    row.freshness !== "live" &&
+                    !row.shell
+                  ? tones.dim
+                  : tones[STATUS_TONE[state]],
           },
         );
         this.listGlyphs.push({ text: glyph, state });
@@ -4250,7 +4282,10 @@ export class App {
         ...(entry.depth === 0 &&
         this.snapshotProjects.has(entry.path) &&
         this.sources.sessions.freshness(this.now()) !== "live" &&
-        !this.sessionsLoading
+        // A read in progress hides the mark only while the data is stale by age. After a
+        // failure the data stays old until a read succeeds, so the mark stays.
+        (!this.sessionsLoading ||
+          this.sources.sessions.failAt > this.sources.sessions.okAt)
           ? [{ text: " · last known", tone: "dim" as const }]
           : []),
       ]),

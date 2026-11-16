@@ -1,7 +1,7 @@
  ◇ tokiwa  /  Health                       ○ EC2 · signed out 
  ──────────────────────────────────────────────────────────── 
  ▲ AWS sign-in expired                  l sign in · e details 
-   Live status unavailable. L...ynced Dec 10 18:00 · 41h ago. 
+   Last synced Dec 10 18:00 · 41h ago.                        
  Workspace  Health                                            
  Workstation · from mac-a                                     
    Instance:       i-0123456789abcdef0                        

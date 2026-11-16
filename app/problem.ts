@@ -135,14 +135,22 @@ export function classify(source: Source, error: unknown, at: number): Failure {
     return made(
       "setup",
       "The launcher is not installed",
-      "The app could not start the tokiwa launcher. Install it, then refresh and retry.",
+      "The app could not start the tokiwa launcher. Fix it outside the app: install it.",
     );
   if (launcher?.reason === "timeout") return offline();
+  // An older launcher has no spend command. Only the Spend rows lose a value, so it is a
+  // failure of that component, not a setup failure of the whole app.
+  if (code === 2 && command === "spend")
+    return made(
+      "failed",
+      `${LABEL[source]} read failed: the launcher has no spend command`,
+      "The launcher has no spend command. Install the updated launcher.",
+    );
   if (code === 2 && command)
     return made(
       "setup",
       "The launcher is older than the app",
-      "The launcher does not know a command that this app sent. Update the launcher, then refresh and retry.",
+      "The launcher does not know a command that this app sent. Fix it outside the app: update the launcher.",
     );
   if (launcher?.category === "auth") return signedOut();
   if (launcher?.category === "unreachable") return offline();
@@ -230,9 +238,10 @@ export interface ErrorState {
 /**
  * The failure to show, or undefined. A global failure is active while it is later than the newest
  * success of any source: one good read shows that the link works. `stopped` and `not-ready` are
- * workstation states, which a spend read does not disprove; only a session or Health read clears them. Of those, `worst` explains the
- * others. Without one, the newest failure of a source that failed for its own reason is active
- * until that source succeeds. A failed spend read stays in the Spend rows and is never chosen.
+ * workstation states, which a spend read does not disprove; only a session or Health read clears
+ * them. Of those, `worst` explains the others. Without one, the newest failure of a source that
+ * failed for its own reason is active until that source succeeds. A failed spend read stays in
+ * the Spend rows and is never chosen.
  * `now` is part of the call for a later rule; no rule reads it yet.
  */
 export function errorState(

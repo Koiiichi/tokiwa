@@ -29,7 +29,7 @@ Preserve the diamond wordmark, dark ground, muted context and keyboard controls.
 
 ## Colors and typography
 
-Mint identifies CPU, active navigation, keys in the shortcuts sheet, the output glyph `◆`, the session in the pane (its bar and name) and Health bars in the normal state; violet identifies memory. The needs-you glyph `◈` and the disconnected glyph `○` are amber (`warning`); the quiet glyph `◇`, the exited glyph `·`, the client count and the state words are dim. Recent output does not imply success. A Health bar and its figure turn amber at 80 % and soft orange (`critical`) at 95 %.
+Mint identifies CPU, active navigation, keys in the shortcuts sheet, the output glyph `◆`, the session in the pane (its bar and name) and Health bars in the normal state; violet identifies memory. The needs-you glyph `◈` and the disconnected glyph `○` are amber (`warning`), except that `◈` is dim on a row of a stale snapshot with no connected view; the quiet glyph `◇`, the exited glyph `·`, the client count and the state words are dim. Recent output does not imply success. A Health bar and its figure turn amber at 80 % and soft orange (`critical`) at 95 %.
 
 The terminal controls native text size. Bold marks section titles, group titles, the wordmark and the selected row. Muted text carries context: group details, keys and dim hints in the footer, and the header host state. Actions in the sheet, the search and the footer controls use the normal text colour, so a control reads apart from a hint that does nothing. The quick keys in the search are mint, like the keys of the sheet.
 

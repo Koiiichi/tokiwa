@@ -7,6 +7,7 @@ import { BackendClient, LauncherError } from "./backend";
 import { fixtureSpend } from "./health-fixture";
 import { fixtureSample } from "./health-fixture";
 import { landingSessions } from "./landing-fixture";
+import type { ProblemKind } from "./problem";
 
 const NOISE =
   "shell-init: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory\n";
@@ -20,8 +21,9 @@ async function open(
   message: string | undefined,
   login = "exit 0",
   now?: () => number,
+  width = 110,
 ) {
-  const t = await createTestRenderer({ width: 110, height: 32 });
+  const t = await createTestRenderer({ width, height: 32 });
   const state = {
     message,
     /** A failure for one launcher call; it comes before `message`. */
@@ -439,7 +441,7 @@ test("a stopped workstation is a workstation state, not a link state", async () 
   }
 });
 
-test("a spend read clears a signed-out band but not a stopped one", async () => {
+test("a spend read clears a signed-out band", async () => {
   const { t, app, state } = await open(undefined);
   try {
     await pause(5);
@@ -541,7 +543,7 @@ test("a setup failure uses the critical tone and offers no key", async () => {
     expect(lines[2]).toContain("e details");
     expect(lines[2]).not.toContain("l sign in");
     expect(lines[2]).not.toContain("u retry");
-    expect(lines[3]).toContain("Install it");
+    expect(lines[3]).toContain("Fix it outside the app");
     expect(app.bandTitle.fg.toString()).not.toBe(
       RGBA.fromHex(theme.warning).toString(),
     );
@@ -721,7 +723,9 @@ test("the Health footer offers the sign-in key while signed out", async () => {
 });
 
 test("an empty list does not repeat a recovery path that another line names", async () => {
-  const component = await open("Launcher --snapshot exited 255: ssh: unexpected reply");
+  const component = await open(
+    "Launcher --snapshot exited 255: ssh: unexpected reply",
+  );
   try {
     const frame = component.t.captureCharFrame();
     expect(frame).toContain("u retry · e details");
@@ -758,5 +762,169 @@ test("an empty list does not repeat a recovery path that another line names", as
     expect(offline.t.captureCharFrame()).toContain("u reads them again");
   } finally {
     await close(offline.t, offline.app);
+  }
+});
+
+test("a stale row that needs you draws its glyph and word dim, not amber", async () => {
+  const start = new Date(2026, 10, 13, 21, 20).getTime();
+  let clock = start;
+  const { t, app, state } = await open(undefined, "exit 0", () => clock);
+  try {
+    app.drawSessions();
+    const live = app.listGlyphs.find((g) => g.state === "needs-you")!;
+    expect(live).toBeDefined();
+    expect(String(live.text.fg)).toBe(String(RGBA.fromHex(theme.warning)));
+    clock = start + 41 * 3600_000;
+    state.error = launcherFailure(AUTH_TEXT, "auth");
+    await app.refreshSessions();
+    app.drawSessions();
+    await t.renderOnce();
+    const stale = app.listGlyphs.find((g) => g.state === "needs-you")!;
+    expect(stale).toBeDefined();
+    expect(String(stale.text.fg)).toBe(String(RGBA.fromHex(theme.muted)));
+    expect(t.captureCharFrame()).toContain("◈");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a spend success while the workstation is stopped keeps the details and the cause notice", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await pause(5);
+    state.error = (args) =>
+      args[0] === "spend"
+        ? undefined
+        : new Error("The host is stopped. No restart was requested.");
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(app.currentError()?.kind).toBe("stopped");
+    await t.mockInput.typeText("e");
+    await pause();
+    expect(app.detailsOpen).toBe(true);
+    app.notify("Start failed", true, undefined, 8000);
+    app.footerNotice!.cause = true;
+    const before = state.commands.length;
+    await pause(5);
+    app.readSucceeded("spend");
+    await pause();
+    expect(app.currentError()?.kind).toBe("stopped");
+    expect(app.detailsOpen).toBe(true);
+    expect(app.footerNotice?.cause).toBe(true);
+    expect(state.commands.length).toBe(before);
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a project title keeps last known during a session read while the data is stale from a failure", async () => {
+  const start = new Date(2026, 10, 13, 21, 20).getTime();
+  let clock = start;
+  const { t, app, state } = await open(undefined, "exit 0", () => clock);
+  try {
+    clock = start + 60_000;
+    state.error = launcherFailure(AUTH_TEXT, "auth");
+    await app.refreshSessions();
+    // A read that has not returned yet.
+    app.sessionsLoading = true;
+    app.drawSessions();
+    await t.renderOnce();
+    expect(t.captureCharFrame()).toContain("· last known");
+    // Stale by age only: the read in progress hides the mark.
+    app.sessionsLoading = false;
+    state.error = undefined;
+    await app.refreshSessions();
+    clock = start + 5 * 60_000;
+    app.sessionsLoading = true;
+    app.drawSessions();
+    await t.renderOnce();
+    expect(t.captureCharFrame()).not.toContain("· last known");
+  } finally {
+    app.sessionsLoading = false;
+    await close(t, app);
+  }
+});
+
+test("at 62 columns the second band row keeps the age whole and cuts no word", async () => {
+  const start = new Date(2026, 10, 13, 21, 20).getTime();
+  const cases: [ProblemKind, (a: string[]) => Error | undefined, number][] = [
+    ["signed-out", launcherFailure(AUTH_TEXT, "auth"), 41 * 3600_000],
+    [
+      "offline",
+      (args) =>
+        new LauncherError(
+          "The launcher exceeded 90 seconds.",
+          args[0],
+          "timeout",
+          null,
+          "",
+        ),
+      6 * 60_000,
+    ],
+    [
+      "stopped",
+      () =>
+        new Error(
+          "Launcher --snapshot exited 1: Tokiwa: The host is stopped. No restart was requested.",
+        ),
+      6 * 60_000,
+    ],
+  ];
+  for (const [kind, error, later] of cases) {
+    let clock = start;
+    const { t, app, state } = await open(undefined, "exit 0", () => clock, 62);
+    try {
+      clock = start + later;
+      state.error = error;
+      await app.refreshSessions();
+      await app.sampleHealth();
+      clearTimeout(app.sampleTimer);
+      await t.renderOnce();
+      expect(app.currentError()?.kind).toBe(kind);
+      const sub = t.captureCharFrame().split("\n")[3];
+      expect(sub).not.toContain("...");
+      expect(sub).not.toContain("…");
+      expect(sub).toMatch(/ · \d+(m|h) ago\./);
+    } finally {
+      await close(t, app);
+    }
+  }
+});
+
+test("the footer offers u retry only in the view whose source failed", async () => {
+  const footer = (frame: string) => {
+    const lines = frame.split("\n").filter((l) => l.trim());
+    return lines.at(-1)!;
+  };
+  for (const failing of ["health", "sessions"] as const) {
+    const { t, app, state } = await open(undefined);
+    try {
+      state.error = (args) =>
+        (failing === "health" ? args[0] === "health" : args[0] === "--snapshot")
+          ? new Error(
+              "Launcher " + args[0] + " exited 255: ssh: unexpected reply",
+            )
+          : undefined;
+      await app.refreshSessions();
+      await app.sampleHealth();
+      clearTimeout(app.sampleTimer);
+      expect(app.currentError()?.scope).toBe("component");
+      const frames = {} as Record<"health" | "sessions", string>;
+      for (const view of ["health", "sessions"] as const) {
+        if (view === "health") app.show("health");
+        else app.show("shell");
+        app.drawFooter();
+        await pause();
+        await t.renderOnce();
+        frames[view] = footer(t.captureCharFrame());
+      }
+      for (const view of ["health", "sessions"] as const) {
+        if (view === failing) expect(frames[view]).toContain("u retry");
+        else expect(frames[view]).not.toContain("u retry");
+      }
+    } finally {
+      await close(t, app);
+    }
   }
 });

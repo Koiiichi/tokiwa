@@ -27,4 +27,4 @@
                                      │                                                              
                                      │                                                              
   ────────────────────────────────────────────────────────────────────────────────────────────────  
-  u retry · ↑↓ select · enter attach · ? shortcuts                                                  
+  ↑↓ select · enter attach · ? shortcuts                                                            

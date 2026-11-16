@@ -107,6 +107,10 @@ test("a timeout is offline; a spawn failure and exit 2 are setup", () => {
     kind: "setup",
     title: "The launcher is older than the app",
   });
+  // A spend command that an older launcher lacks stays a failure of the Spend rows only.
+  expect(
+    classify("spend", exit("usage: tokiwa", { code: 2, command: "spend" }), 1),
+  ).toMatchObject({ kind: "failed", source: "spend" });
 });
 
 test("the host, workbench and settings sentences each have a kind", () => {

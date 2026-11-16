@@ -19,7 +19,7 @@ The last line gives the time of the sample and its age, for example `Sampled 14:
 
 The spend reading is current for 30 minutes after a successful read. After that, or after a failed read, its values stay and the title says `last known`.
 
-A value that no read has given says `not read` while a failure speaks for the whole link (the sign-in is gone, the network is down, the host is stopped or the launcher is too old). Without such a failure, missing data shows as `not available` with the reason, never as zero:
+A value that no read has given says `not read` while a failure speaks for the whole link (the sign-in is gone, the network is down, the host is stopped or the launcher is too old for the app). A launcher that lacks only the spend command is no such failure: the Spend rows say `not available` with that reason. Without such a failure, missing data shows as `not available` with the reason, never as zero:
 
 | Reason | Cause |
 | --- | --- |
