@@ -84,38 +84,45 @@ With `--allow commands`:
 | --- | --- | --- |
 | `tokiwa_run` | `entry`, optional `args` (an object of strings; leave it out for an entry with no arguments) | The output of `tokiwa run ENTRY NAME=VALUE…`: a run of one entry of the command list, with its state and the first page of its output. Encrypted on the way, and marked as data. |
 
-## Read the state of an agent
+## Read a session and its agent
 
-`tokiwa state NAME IDENTITY` prints one JSON object about the agent in a session. It holds no screen text and is not encrypted, so it is as visible in Run Command history as `tokiwa sessions`. `tokiwa wait` returns the same object when the agent needs the caller. Both are `read` commands. They have no MCP tool yet.
+Tokiwa has two layers. The **core** layer is sessions, their lifecycle, status and the driver. The **agent** layer is what depends on Claude Code or Codex: their hooks, turns and pending questions, and a check of the screen for dialogs. Core never depends on the agent layer. The agent commands start with `tokiwa agent`. They have no MCP tool yet; the tools will be named `tokiwa_agent_*`.
+
+`tokiwa state NAME IDENTITY` (core, class `read`) prints the facts of a session as one JSON object. It holds no screen text and is not encrypted, so it is as visible in Run Command history as `tokiwa sessions`.
 
 | Field | Meaning |
 | --- | --- |
 | `name`, `identity` | The session that was asked for |
 | `session` | `live`; `gone` when no session has the name; `replaced` when the name belongs to a session with another identity. For `gone` and `replaced`, the other fields are empty and nothing of the other session shows. |
 | `program` | `claude` or `codex` from the pane's current command, `shell` for `bash`, `sh`, `zsh` or `fish`, otherwise `other`. Null unless `session` is `live`. |
-| `agent`, `agent_at` | The state that the agent's hooks reported and when it began (see [Agent state](host.md#agent-state)). `none` when no agent runs, so an agent that exited shows as `none`. `unknown` when an agent runs and has reported nothing yet. |
-| `turn` | The number of turns the agent has started |
-| `pending` | Null, or `id`, `kind` and `at` of the question or permission request that waits for a person. The text and options stay on the host. |
-| `dialog` | True when the last 15 lines of the screen hold a dialog marker of the running agent that no hook reported, for example a folder trust prompt |
-| `clients`, `writable_clients` | The attached clients, and those that are not read only |
+| `clients`, `writable_clients` | The attached clients, and those that are not read only, of the session that the identity names |
 | `driver` | The actor that may send to the session, or null |
 | `sampled_at` | The time of the read, in seconds since the epoch |
 
+`tokiwa agent state NAME IDENTITY` (agent, class `read`) prints the same object with these fields added:
+
+| Field | Meaning |
+| --- | --- |
+| `agent`, `agent_at` | The state that the agent's hooks reported and when it began (see [Agent state](host.md#agent-state)). `none` when no agent runs or its pane has ended, so an agent that exited shows as `none`. `unknown` when an agent runs and has reported nothing yet. |
+| `turn` | The number of turns the agent has started |
+| `pending` | Null, or `id`, `kind` and `at` of the question or permission request that waits for a person. The text and options stay on the host. |
+| `dialog` | True when the last 15 lines of the screen hold a dialog marker of the running agent that no hook reported, for example a folder trust prompt |
+
 The screen check is a safety net. It never decides that a turn is done.
 
-`tokiwa wait NAME IDENTITY --after TURN [--timeout SECONDS]` waits until one of these holds, then prints the state with a `reason`. Take `TURN` from the `turn` of an earlier `state`.
+`tokiwa agent wait NAME IDENTITY --after TURN [--timeout SECONDS]` waits until one of these holds, then prints the state with a `reason`. Take `TURN` from the `turn` of an earlier `agent state`. `tokiwa agent` alone, or with an unknown subcommand, prints its usage and exits with status 2.
 
 | `reason` | Condition |
 | --- | --- |
 | `turn-ended` | `turn` is more than `TURN` and `agent` is `idle`, `limited` or `error` |
 | `pending` | A question or permission request waits |
 | `dialog` | The screen check found a dialog |
-| `ended` | The session is gone or replaced, or no agent runs in it |
+| `ended` | The session is gone or replaced, `agent` is `none`, or the pane has ended |
 | `timeout` | None of these before `--timeout` (1 to 3600 seconds, default 600) |
 
-Each call to the host waits up to 20 seconds. The command repeats the call until a reason other than `timeout`, and prints the last object. When `--timeout` ends first, it prints the last object and exits with status 3. A turn that never started, because the agent did not accept the message, shows as `timeout` with `turn` unchanged.
+Each call to the host waits up to 20 seconds. The command repeats the call until a reason other than `timeout`, and prints the last object. When `--timeout` ends first, it prints the last object and exits with status 3. A call that fails, or an output that cannot be read, ends the command with an error and prints no result. A turn that never started, because the agent did not accept the message, shows as `timeout` with `turn` unchanged.
 
-`tokiwa end NAME IDENTITY [--attached-ok]` is the documented form of `--end-confirmed`. It first reads `state`, and it refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while `writable_clients` is more than 0. A client that watches with `tokiwa view` does not count. The check and the end are two calls, so a client can attach between them; the end still checks the identity.
+`tokiwa end NAME IDENTITY [--attached-ok]` (core, class `control`) is the documented form of `--end-confirmed`. The host refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while a client that can type is attached; a client that watches with `tokiwa view` does not count. The host checks the clients and ends the session in one tmux queue, so a client that attaches in between stops the end. `--end-confirmed` and `--attached-ok` skip the check.
 
 ## Read a screen
 

@@ -42,16 +42,16 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( $mode == wait && $# -le 4 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end ) && $# -le 4 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|wait) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|agent-state|agent-wait) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == wait || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -117,10 +117,13 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == wait || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
-if [[ $mode == wait ]]; then
+if [[ $mode == end ]]; then
+ [[ $# -le 3 || $4 == attached-ok ]] || fail 'The only extra argument of end is attached-ok.'
+fi
+if [[ $mode == agent-wait ]]; then
  after=${4:-}
  [[ $after =~ ^[0-9]{1,9}$ ]] || fail 'Use a turn number: the turn count that the caller last saw.'
 fi
@@ -195,8 +198,14 @@ with open(os.path.join(state, 'projects.lock'), 'a') as lock:
     os.replace(temp, path)
 PY_REGISTRY
 }
-# Python that the modes `state` and `wait` share, and that later modes use: the identity read, the
-# count of writable clients and the screen check. A mode adds its own code after it.
+# Tokiwa has two layers. The core layer is sessions, their lifecycle, status and the driver. The agent
+# layer is what depends on Claude Code or Codex: hooks, turns, questions and the screen check. Core
+# never calls agent code. Python for each mode is one program; a program runs after the libraries
+# that it needs, as `python3 -c "$session_lib"$'\n'"$program"`.
+
+# --- Core layer ---------------------------------------------------------------------------------
+# Python that every read mode shares: the tmux call, the clients of a session and its facts.
+# The Python functions for later modes live here too: `client_counts` and `writable_clients`.
 read -r -d '' session_lib <<'PY_SESSION_LIB' || true
 import base64
 import binascii
@@ -207,14 +216,6 @@ import sys
 import time
 
 socket = sys.argv[1]
-# Regular expressions that mark a dialog on the screen, for each agent. A dialog that no hook
-# reported, for example a folder trust prompt, shows only here. Checked against live screens.
-DIALOG_MARKERS = {
-    'claude': [r'Enter to confirm', r'Esc to cancel', r'^\s*❯\s*\d+\.\s', r'Do you want to'],
-    'codex': [r'Press enter to confirm', r'^\s*›\s*\d+\.\s', r'Allow command\?'],
-}
-# The screen check reads this many lines from the bottom of the pane.
-SCREEN_LINES = 15
 AGENTS = ('claude', 'codex')
 SHELLS = ('bash', 'sh', 'zsh', 'fish')
 
@@ -223,10 +224,72 @@ def tmux(*args):
     return subprocess.run(['tmux', '-N', '-u', '-S', socket, *args], capture_output=True,
                           encoding='utf-8', errors='replace', timeout=10)
 
-def writable_clients(name):
-    """The clients of session `name` that can type into it: those whose #{client_readonly} is 0."""
-    listed = tmux('list-clients', '-t', '=' + name, '-F', '#{client_readonly}')
-    return sum(1 for flag in listed.stdout.split() if flag == '0') if listed.returncode == 0 else 0
+def client_counts(name, identity):
+    """(all clients, writable clients) of the session that `identity` names.
+
+    A writable client has #{client_readonly} 0. The session id of each row decides which clients
+    count, so a session that took over the name has none of these clients.
+    """
+    session_id = identity.split(':')[1]
+    listed = tmux('list-clients', '-t', '=' + name, '-F', '#{session_id}\t#{client_readonly}')
+    if listed.returncode:
+        return 0, 0
+    flags = [line.split('\t')[1] for line in listed.stdout.splitlines()
+             if line.count('\t') == 1 and line.split('\t')[0] == session_id]
+    return len(flags), sum(1 for flag in flags if flag == '0')
+
+def writable_clients(name, identity):
+    """The clients of the session `identity` that can type into it."""
+    return client_counts(name, identity)[1]
+
+def read_session(name, identity, extra=()):
+    """Read session `name` in one tmux call, so that its fields agree.
+
+    `extra` lists more tmux formats, for example options. Returns (facts, pane, dead, values): the
+    facts of the core record, the active pane and whether it is dead, and the values of `extra`.
+    The pane is None unless the session is live.
+    """
+    facts = {'name': name, 'identity': identity, 'session': 'gone', 'program': None, 'clients': 0,
+             'writable_clients': 0, 'driver': None, 'sampled_at': int(time.time())}
+    # Without this check, display-message falls back to another session when the name is missing.
+    if tmux('has-session', '-t', '=' + name).returncode:
+        return facts, None, None, []
+    formats = ['#{pid}:#{session_id}:#{session_created}', '#{pane_id}', '#{pane_dead}', '#{session_attached}',
+               '#{pane_current_command}', '#{@tokiwa_driver}', *extra]
+    fields = tmux('display-message', '-p', '-t', '=' + name + ':', '\t'.join(formats))
+    if fields.returncode:
+        return facts, None, None, []
+    current, pane, dead, clients, command, driver, *values = fields.stdout.rstrip('\n').split('\t', len(formats) - 1)
+    if current != identity:
+        # Another session holds the name. Nothing of it is shown.
+        facts['session'] = 'replaced'
+        return facts, None, None, []
+    facts.update(session='live', clients=int(clients), writable_clients=writable_clients(name, identity),
+                 driver=driver or None,
+                 program=command if command in AGENTS else 'shell' if command in SHELLS else 'other')
+    return facts, pane, dead, values
+PY_SESSION_LIB
+# `state`: the facts of a session, with no agent field and no screen read.
+read -r -d '' state_program <<'PY_STATE' || true
+print(json.dumps(read_session(sys.argv[2], sys.argv[3])[0]))
+PY_STATE
+# `end`: the clients of the session, as `ALL WRITABLE`.
+read -r -d '' client_counts_program <<'PY_CLIENT_COUNTS' || true
+print(*client_counts(sys.argv[2], sys.argv[3]))
+PY_CLIENT_COUNTS
+
+# --- Agent layer --------------------------------------------------------------------------------
+# Python for the modes `agent-state` and `agent-wait`: the screen check and the agent fields.
+read -r -d '' agent_lib <<'PY_AGENT_LIB' || true
+# Regular expressions that mark a dialog on the screen, for each agent. A dialog that no hook
+# reported, for example a folder trust prompt, shows only here. Task 9 checks these against live
+# screens; until then they are the expected shapes, not verified ones.
+DIALOG_MARKERS = {
+    'claude': [r'Enter to confirm', r'Esc to cancel', r'^\s*❯\s*\d+\.\s', r'Do you want to'],
+    'codex': [r'Press enter to confirm', r'^\s*›\s*\d+\.\s', r'Allow command\?'],
+}
+# The screen check reads this many lines from the bottom of the pane.
+SCREEN_LINES = 15
 
 def screen_dialog(pane_id, program):
     """True when the last SCREEN_LINES lines of the pane hold a dialog marker of `program`.
@@ -246,7 +309,7 @@ def screen_dialog(pane_id, program):
     return any(re.search(marker, row) for row in rows[-SCREEN_LINES:] for marker in markers)
 
 def pending_item(value):
-    """The `id`, `kind` and `at` of an @tokiwa_pending value. Its text stays on the host."""
+    """The `id`, `kind` and `at` of an @tokiwa_agent_pending value. Its text stays on the host."""
     try:
         item = json.loads(base64.b64decode(value, validate=True))
         return {key: item[key] for key in ('id', 'kind', 'at')}
@@ -254,36 +317,58 @@ def pending_item(value):
         # An item that cannot be read still waits for a person, so it is not hidden.
         return {'id': None, 'kind': None, 'at': None}
 
-def state_record(name, identity):
-    """One JSON-ready record of the session `name`, read in one tmux call so its fields agree."""
-    record = {'name': name, 'identity': identity, 'session': 'gone', 'program': None, 'agent': 'none',
-              'agent_at': None, 'turn': None, 'pending': None, 'dialog': False, 'clients': 0,
-              'writable_clients': 0, 'driver': None, 'sampled_at': int(time.time())}
-    # Without this check, display-message falls back to another session when the name is missing.
-    if tmux('has-session', '-t', '=' + name).returncode:
+def agent_state_record(name, identity):
+    """The core facts of the session, and what its agent reports."""
+    record, pane, dead, values = read_session(
+        name, identity, ('#{@tokiwa_agent}', '#{@tokiwa_agent_turn}', '#{@tokiwa_agent_pending}'))
+    record.update(agent='none', agent_at=None, turn=None, pending=None, dialog=False)
+    if pane is None:
         return record
-    fields = tmux('display-message', '-p', '-t', '=' + name + ':',
-                  '#{pid}:#{session_id}:#{session_created}\t#{pane_id}\t#{pane_dead}\t#{session_attached}\t'
-                  '#{pane_current_command}\t#{@tokiwa_agent}\t#{@tokiwa_turn}\t#{@tokiwa_pending}\t#{@tokiwa_driver}')
-    if fields.returncode:
-        return record
-    current, pane, dead, clients, command, agent, turn, pending, driver = fields.stdout.rstrip('\n').split('\t', 8)
-    if current != identity:
-        # Another session holds the name. Nothing of it is shown.
-        record['session'] = 'replaced'
-        return record
-    program = command if command in AGENTS else 'shell' if command in SHELLS else 'other'
+    agent, turn, pending = values
     state, _, at = agent.partition(':')
-    running = program in AGENTS and dead != '1'
-    record.update(session='live', program=program, turn=int(turn) if turn.isdigit() else 0,
-                  clients=int(clients), writable_clients=writable_clients(name), driver=driver or None,
-                  pending=pending_item(pending) if pending else None)
-    if running:
+    record.update(turn=int(turn) if turn.isdigit() else 0, pending=pending_item(pending) if pending else None)
+    if record['program'] in AGENTS and dead != '1':
         # An agent that has reported nothing yet is `unknown`, which no caller treats as idle.
         record.update(agent=state if at.isdigit() else 'unknown', agent_at=int(at) if at.isdigit() else None,
-                      dialog=screen_dialog(pane, program))
+                      dialog=screen_dialog(pane, record['program']))
     return record
-PY_SESSION_LIB
+PY_AGENT_LIB
+read -r -d '' agent_state_program <<'PY_AGENT_STATE' || true
+print(json.dumps(agent_state_record(sys.argv[2], sys.argv[3])))
+PY_AGENT_STATE
+# Poll until the agent needs the caller: a turn ended, an item is pending, a dialog shows, or the
+# agent is gone. Else return `timeout` after TOKIWA_WAIT_SECONDS (default 20); the launcher repeats.
+read -r -d '' agent_wait_program <<'PY_AGENT_WAIT' || true
+import os
+try:
+    limit = float(os.environ.get('TOKIWA_WAIT_SECONDS', '20'))
+except ValueError:
+    limit = 20.0
+after = int(sys.argv[4])
+# The agent states in which a turn is over.
+DONE = ('idle', 'limited', 'error')
+
+def reason(record):
+    # `none` is also the state of a pane whose program has ended, so a dead pane is `ended` too.
+    if record['session'] != 'live' or record['agent'] == 'none':
+        return 'ended'
+    if record['turn'] > after and record['agent'] in DONE:
+        return 'turn-ended'
+    if record['pending']:
+        return 'pending'
+    if record['dialog']:
+        return 'dialog'
+    return None
+
+deadline = time.monotonic() + limit
+while True:
+    record = agent_state_record(sys.argv[2], sys.argv[3])
+    found = reason(record)
+    if found or time.monotonic() >= deadline:
+        break
+    time.sleep(0.5)
+print(json.dumps(dict(record, reason=found or 'timeout')))
+PY_AGENT_WAIT
 ensure() {
  if ! tm has-session -t "=$name" 2>/dev/null; then
   printf 'Creating terminal: %s\n' "$name" >&2
@@ -296,44 +381,14 @@ ensure() {
 case "$mode" in
  state)
   # Read only. One JSON object that holds no session text and is not sealed.
-  python3 -c "$session_lib
-print(json.dumps(state_record(sys.argv[2], sys.argv[3])))" "$socket" "$name" "$extra"
+  python3 -c "$session_lib"$'\n'"$state_program" "$socket" "$name" "$extra"
   exit ;;
- wait)
-  # Poll until the agent needs the caller: a turn ended, an item is pending, a dialog shows, or the
-  # agent is gone. Else return `timeout` after TOKIWA_WAIT_SECONDS (default 20); the launcher repeats.
-  python3 -c "$session_lib
-import os
-try:
-    limit = float(os.environ.get('TOKIWA_WAIT_SECONDS', '20'))
-except ValueError:
-    limit = 20.0
-after = int(sys.argv[4])
-# The agent states in which a turn is over.
-DONE = ('idle', 'limited', 'error')
-
-def reason(record):
-    if record['session'] != 'live' or record['program'] not in AGENTS:
-        return 'ended'
-    if record['turn'] > after and record['agent'] in DONE:
-        return 'turn-ended'
-    if record['pending']:
-        return 'pending'
-    if record['dialog']:
-        return 'dialog'
-    return None
-
-deadline = time.monotonic() + limit
-while True:
-    record = state_record(sys.argv[2], sys.argv[3])
-    found = reason(record)
-    if found or time.monotonic() >= deadline:
-        break
-    time.sleep(0.5)
-print(json.dumps(dict(record, reason=found or 'timeout')))" "$socket" "$name" "$extra" "$after"
+ agent-state)
+  python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$agent_state_program" "$socket" "$name" "$extra"
   exit ;;
-esac
-case "$mode" in
+ agent-wait)
+  python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$agent_wait_program" "$socket" "$name" "$extra" "$after"
+  exit ;;
  capture)
   # Read only. The text is the last lines of the active pane, with its scrollback, without colour.
   # The output is encrypted to the one-time certificate of the caller. There is no plain output.
@@ -541,11 +596,24 @@ print(json.dumps({'sessions': sessions, 'projects': projects}))
 PY_SNAPSHOT
   exit ;;
  end)
-  # Both the identity check and deletion run in the same tmux command queue.
+  # The identity check, the client check and the deletion run in the same tmux command queue. The
+  # clients are read first, and the queue ends the session only while the number of attached clients
+  # is still the number that was read, so that a client that attaches in between stops it.
   tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
   session_id=${extra#*:}; session_id=${session_id%%:*}
-  answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
-   "kill-session -t '$session_id'" "display-message -p 'Session identity changed. Nothing was ended.'") || fail 'The session could not be ended. Refresh its state.'
+  identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
+  condition=$identity_ok
+  refusal='Session identity changed. Nothing was ended.'
+  if [[ ${4:-} != attached-ok ]]; then
+   read -r total writable < <(python3 -c "$session_lib"$'\n'"$client_counts_program" "$socket" "$name" "$extra") ||
+    fail 'The clients of the session could not be read. Nothing was changed.'
+   (( writable == 0 )) || fail 'A client is attached. Nothing was changed. Use --attached-ok to end it anyway.'
+   condition="#{&&:$identity_ok,#{==:#{session_attached},$total}}"
+   # The answer names the cause: an identity that still matches means that a client attached.
+   refusal="#{?$identity_ok,A client is attached. Nothing was changed. Use --attached-ok to end it anyway.,Session identity changed. Nothing was ended.}"
+  fi
+  answer=$(tm if-shell -F -t "=$name:" "$condition" \
+   "kill-session -t '$session_id'" "display-message -p '$refusal'") || fail 'The session could not be ended. Refresh its state.'
   [[ -z $answer ]] || fail "$answer"
   audit end "$extra"
   printf 'The selected session ended. Detached background processes may remain.\n'

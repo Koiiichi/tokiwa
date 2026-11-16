@@ -1146,8 +1146,36 @@ class SavedProjects(ModelHelpers, Server):
         self.assertEqual(self.projects(), {})
 
 
-class AgentStateRecord(AgentPanes, Server):
-    """`state` reports the agent of one session as JSON; `wait` returns when the agent needs a caller."""
+class Pty:
+    """Clients that attach through the helper in a pseudo-terminal, ended at the end of the test."""
+
+    def attach_client(self, name, identity, mode):
+        """Attach with helper mode `attach` or `view`. Return when tmux lists the new client."""
+        before = len(self.tm('list-clients', '-t', '=' + name).stdout.splitlines())
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(self.env, TERM='xterm-256color')
+            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), mode, name, identity)
+        self.addCleanup(self.end_client, name, pid, fd)
+        for _ in range(200):
+            if select.select([fd], [], [], 0.02)[0]:
+                os.read(fd, 65536)
+            if len(self.tm('list-clients', '-t', '=' + name).stdout.splitlines()) > before:
+                return
+        self.fail('The client did not attach.')
+
+    def end_client(self, name, pid, fd):
+        # Detach first, so that no client is left to write to a terminal that is closed.
+        self.tm('detach-client', '-s', '=' + name)
+        os.close(fd)
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+
+
+class CoreState(Pty, ModelHelpers, Server):
+    """`state` reports facts of a session, with no agent field and no screen read."""
+
+    KEYS = ['name', 'identity', 'session', 'program', 'clients', 'writable_clients', 'driver', 'sampled_at']
 
     def identity(self, name):
         return self.rows()[name]['identity']
@@ -1157,12 +1185,138 @@ class AgentStateRecord(AgentPanes, Server):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_core_state_has_no_agent_fields(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        record = self.state('plain')
+        self.assertEqual(sorted(record), sorted(self.KEYS))
+        self.assertEqual((record['session'], record['program'], record['driver']), ('live', 'shell', None))
+        self.assertEqual((record['clients'], record['writable_clients']), (0, 0))
+
+    def test_core_state_of_a_missing_or_replaced_session(self):
+        record = self.state('nothing', '1:$2:3')
+        self.assertEqual((sorted(record), record['session'], record['program']), (sorted(self.KEYS), 'gone', None))
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.assertEqual(self.state('plain', '1:$99:1')['session'], 'replaced')
+
+    def test_core_state_shows_the_driver_and_other_programs(self):
+        self.tm('new-session', '-d', '-s', 'job', 'sleep 300')
+        self.tm('set-option', '-t', '=job:', '@tokiwa_driver', 'orchestrator-a')
+        record = self.state('job')
+        self.assertEqual((record['program'], record['driver']), ('other', 'orchestrator-a'))
+
+    def test_core_state_reads_no_screen(self):
+        # A wrapper that records each tmux call shows that `state` never captures a pane.
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        log = Path(self.temp.name) / 'calls.log'
+        (tools / 'tmux').write_text(f'#!/bin/bash\necho "$*" >> {log}\nexec {self.tmux} "$@"\n')
+        (tools / 'tmux').chmod(0o755)
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        identity = self.identity('plain')
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.assertEqual(self.helper('state', 'plain', identity).returncode, 0)
+        self.assertNotIn('capture-pane', log.read_text())
+
+    def test_writable_and_read_only_clients_are_counted_by_session(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.assertEqual(self.helper('ensure', 'other').returncode, 0)
+        identity = self.identity('lead')
+        self.attach_client('lead', identity, 'view')
+        self.attach_client('lead', identity, 'attach')
+        self.attach_client('other', self.identity('other'), 'attach')
+        record = self.state('lead')
+        self.assertEqual((record['clients'], record['writable_clients']), (2, 1))
+        self.assertEqual(self.state('other')['writable_clients'], 1)
+        # The identity decides, not the name: another identity under the name counts nothing.
+        self.assertEqual(self.state('lead', '1:$99:1')['writable_clients'], 0)
+
+
+class EndGuard(Pty, ModelHelpers, Server):
+    """`end` refuses a session that a person can type into, on the host and in one tmux queue."""
+
+    SENTENCE = 'A client is attached. Nothing was changed. Use --attached-ok to end it anyway.'
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+
+    def alive(self):
+        return self.tm('has-session', '-t', '=lead').returncode == 0
+
+    def test_end_refuses_a_writable_client_on_the_host(self):
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.helper('end', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(self.SENTENCE, result.stderr)
+        self.assertTrue(self.alive())
+
+    def test_end_with_a_read_only_viewer_succeeds(self):
+        self.attach_client('lead', self.identity, 'view')
+        result = self.helper('end', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.alive())
+
+    def test_end_attached_ok_ends_it(self):
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.helper('end', 'lead', self.identity, 'attached-ok')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.alive())
+
+    def test_end_takes_no_other_fourth_argument(self):
+        for flag in ['force', 'attached_ok', '']:
+            self.assertNotEqual(self.helper('end', 'lead', self.identity, flag).returncode, 0, flag)
+        self.assertTrue(self.alive())
+
+    def test_end_of_a_replaced_session_still_refuses_by_identity(self):
+        result = self.helper('end', 'lead', '1:$99:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('identity changed', result.stderr)
+        self.assertTrue(self.alive())
+
+    def test_end_refuses_a_client_that_attaches_between_count_and_end(self):
+        # A wrapper around tmux that, right after the client list, attaches a control client
+        # that can write. The count that the helper read is then one too low.
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        result = self.helper('end', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.SENTENCE, result.stderr)
+        self.assertTrue(self.alive())
+
+
+class AgentStateRecord(Pty, AgentPanes, Server):
+    """`agent-state` reports the agent of one session as JSON; `agent-wait` returns when the agent needs a caller."""
+
+    def identity(self, name):
+        return self.rows()[name]['identity']
+
+    def state(self, name, identity=None):
+        result = self.helper('agent-state', name, identity or self.identity(name))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
     def option(self, name, key, value):
         self.assertEqual(self.tm('set-option', '-t', f'={name}:', key, value).returncode, 0)
 
     def wait(self, name, after, identity=None, seconds='20'):
         self.env['TOKIWA_WAIT_SECONDS'] = seconds
-        result = self.helper('wait', name, identity or self.identity(name), str(after))
+        result = self.helper('agent-wait', name, identity or self.identity(name), str(after))
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -1176,7 +1330,7 @@ class AgentStateRecord(AgentPanes, Server):
     def test_state_of_an_idle_agent(self):
         self.agent('lead', 'claude')
         self.option('lead', '@tokiwa_agent', 'idle:100')
-        self.option('lead', '@tokiwa_turn', '3')
+        self.option('lead', '@tokiwa_agent_turn', '3')
         identity = self.identity('lead')
         record = self.state('lead')
         self.assertEqual(record['name'], 'lead')
@@ -1228,15 +1382,15 @@ class AgentStateRecord(AgentPanes, Server):
     def test_state_shows_the_pending_id_but_not_its_text(self):
         self.agent('lead', 'claude')
         item = {'id': 'toolu_x', 'kind': 'question', 'summary': 'Which database should it use?', 'options': ['sqlite', 'postgres'], 'at': 90}
-        self.option('lead', '@tokiwa_pending', self.b64(item))
-        result = self.helper('state', 'lead', self.identity('lead'))
+        self.option('lead', '@tokiwa_agent_pending', self.b64(item))
+        result = self.helper('agent-state', 'lead', self.identity('lead'))
         self.assertEqual(json.loads(result.stdout)['pending'], {'id': 'toolu_x', 'kind': 'question', 'at': 90})
         for text in ['Which database', 'sqlite']:
             self.assertNotIn(text, result.stdout)
 
     def test_state_reports_a_pending_item_that_cannot_be_read(self):
         self.agent('lead', 'claude')
-        self.option('lead', '@tokiwa_pending', 'not-base64!')
+        self.option('lead', '@tokiwa_agent_pending', 'not-base64!')
         self.assertIsNotNone(self.state('lead')['pending'])
 
     def test_state_reports_a_dialog(self):
@@ -1259,40 +1413,24 @@ class AgentStateRecord(AgentPanes, Server):
         self.screen('lead', 'line 19')
         self.assertFalse(self.state('lead')['dialog'])
 
-    def test_writable_and_read_only_clients_are_counted(self):
+    def test_agent_state_holds_the_core_facts(self):
         self.agent('lead', 'claude')
-        identity = self.identity('lead')
-        clients = []
-        try:
-            for flag in ['view', 'attach']:
-                pid, fd = pty.fork()
-                if pid == 0:
-                    os.environ.update(self.env, TERM='xterm-256color')
-                    os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), flag, 'lead', identity)
-                clients.append((pid, fd))
-                for _ in range(200):
-                    if select.select([fd], [], [], 0.02)[0]:
-                        os.read(fd, 65536)
-                    if len(self.tm('list-clients', '-t', '=lead').stdout.splitlines()) == len(clients):
-                        break
-            record = self.state('lead')
-            self.assertEqual((record['clients'], record['writable_clients']), (2, 1))
-        finally:
-            # Detach first, so that no client is left to write to a terminal that is closed.
-            self.tm('detach-client', '-s', '=lead')
-            for pid, fd in clients:
-                os.close(fd)
-                os.kill(pid, 9)
-                os.waitpid(pid, 0)
+        self.attach_client('lead', self.identity('lead'), 'attach')
+        record = self.state('lead')
+        self.assertTrue({'name', 'identity', 'session', 'program', 'clients', 'writable_clients', 'driver', 'sampled_at'} <= set(record))
+        self.assertEqual((record['clients'], record['writable_clients']), (1, 1))
+        self.assertTrue({'agent', 'agent_at', 'turn', 'pending', 'dialog'} <= set(record))
 
     def test_wait_returns_turn_ended(self):
         self.agent('lead', 'claude')
-        self.option('lead', '@tokiwa_agent', 'idle:100')
-        self.option('lead', '@tokiwa_turn', '3')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_agent_turn', '3')
 
         def finish():
-            self.option('lead', '@tokiwa_turn', '4')
+            # The order of the hook: the state first, then the turn.
             self.option('lead', '@tokiwa_agent', 'idle:200')
+            time.sleep(0.2)
+            self.option('lead', '@tokiwa_agent_turn', '4')
         self.later(0.5, finish)
         record = self.wait('lead', 3)
         self.assertEqual((record['reason'], record['turn'], record['agent']), ('turn-ended', 4, 'idle'))
@@ -1300,12 +1438,12 @@ class AgentStateRecord(AgentPanes, Server):
     def test_wait_does_not_return_for_a_turn_that_is_still_working(self):
         self.agent('lead', 'claude')
         self.option('lead', '@tokiwa_agent', 'working:100')
-        self.option('lead', '@tokiwa_turn', '4')
+        self.option('lead', '@tokiwa_agent_turn', '4')
         self.assertEqual(self.wait('lead', 3, seconds='1')['reason'], 'timeout')
 
     def test_wait_on_limited_and_error_is_turn_ended(self):
         self.agent('lead', 'claude')
-        self.option('lead', '@tokiwa_turn', '4')
+        self.option('lead', '@tokiwa_agent_turn', '4')
         for state in ['limited', 'error']:
             self.option('lead', '@tokiwa_agent', f'{state}:100')
             self.assertEqual(self.wait('lead', 3)['reason'], 'turn-ended', state)
@@ -1313,12 +1451,12 @@ class AgentStateRecord(AgentPanes, Server):
     def test_wait_returns_pending(self):
         self.agent('lead', 'claude')
         self.option('lead', '@tokiwa_agent', 'working:100')
-        self.option('lead', '@tokiwa_turn', '3')
+        self.option('lead', '@tokiwa_agent_turn', '3')
         item = {'id': 'toolu_p', 'kind': 'permission', 'summary': 'Bash: ls', 'options': [], 'at': 150}
 
         def ask():
             self.option('lead', '@tokiwa_agent', 'waiting:150')
-            self.option('lead', '@tokiwa_pending', self.b64(item))
+            self.option('lead', '@tokiwa_agent_pending', self.b64(item))
         self.later(0.5, ask)
         record = self.wait('lead', 3)
         self.assertEqual((record['reason'], record['pending']['id']), ('pending', 'toolu_p'))
@@ -1337,6 +1475,19 @@ class AgentStateRecord(AgentPanes, Server):
         record = self.wait('lead', 3)
         self.assertEqual((record['reason'], record['program'], record['agent']), ('ended', 'shell', 'none'))
 
+    def test_wait_reports_ended_for_a_dead_pane_and_for_agent_none(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.tm('set-option', '-w', '-t', '=lead:', 'remain-on-exit', 'on')
+        self.tm('send-keys', '-t', '=lead:', 'C-c')
+        self.tm('send-keys', '-t', '=lead:', 'exit', 'Enter')
+        for _ in range(100):
+            if self.tm('display-message', '-p', '-t', '=lead:', '#{pane_dead}').stdout.strip() == '1':
+                break
+            time.sleep(.05)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['agent']), ('ended', 'none'))
+
     def test_wait_reports_ended_for_a_missing_or_replaced_session(self):
         self.assertEqual(self.wait('nothing', 3, '1:$2:3')['reason'], 'ended')
         self.agent('lead', 'claude')
@@ -1346,15 +1497,16 @@ class AgentStateRecord(AgentPanes, Server):
     def test_wait_times_out(self):
         self.agent('lead', 'claude')
         self.option('lead', '@tokiwa_agent', 'working:100')
-        self.option('lead', '@tokiwa_turn', '3')
+        self.option('lead', '@tokiwa_agent_turn', '3')
         started = time.monotonic()
         record = self.wait('lead', 3, seconds='1')
         self.assertEqual((record['reason'], record['turn']), ('timeout', 3))
         self.assertTrue(1 <= time.monotonic() - started < 5)
 
     def test_state_and_wait_check_their_arguments(self):
-        for args in [('state', 'lead'), ('state', 'lead', 'x'), ('state', 'bad name', '1:$2:3'), ('wait', 'lead', '1:$2:3'),
-                     ('wait', 'lead', '1:$2:3', 'x'), ('wait', 'lead', '1:$2:3', '-1'), ('wait', 'lead', '1:$2:3', '3', '4')]:
+        for args in [('agent-state', 'lead'), ('agent-state', 'lead', 'x'), ('agent-state', 'bad name', '1:$2:3'),
+                     ('agent-wait', 'lead', '1:$2:3'), ('agent-wait', 'lead', '1:$2:3', 'x'), ('agent-wait', 'lead', '1:$2:3', '-1'),
+                     ('agent-wait', 'lead', '1:$2:3', '3', '4'), ('state', 'lead', '1:$2:3', 'more'), ('wait', 'lead', '1:$2:3', '3')]:
             result = self.helper(*args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertEqual(result.stdout, '', args)

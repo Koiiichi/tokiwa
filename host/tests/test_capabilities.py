@@ -22,8 +22,10 @@ class Capabilities(unittest.TestCase):
 
     def test_the_table_and_the_help_list_the_same_commands(self):
         # A command line of the help is indented two spaces; a wrapped line is indented further.
-        listed = {line.split()[0] for line in self.run_cli('--help').stdout.splitlines()
-                  if line.startswith('  ') and not line.startswith('   ')}
+        # `agent` is a family of commands: its subcommand is part of the name, as in `agent state`.
+        words = [line.split() for line in self.run_cli('--help').stdout.splitlines()
+                 if line.startswith('  ') and not line.startswith('   ')]
+        listed = {' '.join(w[:2]) if w[0] == 'agent' else w[0] for w in words}
         described = {c['command'] for c in CAPABILITIES if not c.get('hidden')}
         described |= {alias for c in CAPABILITIES for alias in c.get('aliases', [])}
         self.assertEqual(listed, described)

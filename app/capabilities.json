@@ -124,10 +124,16 @@
       "helper": "state"
     },
     {
-      "command": "wait",
+      "command": "agent state",
       "class": "read",
-      "example": ["wait", "lead", "1:$2:3", "--after", "3"],
-      "helper": "wait"
+      "example": ["agent", "state", "lead", "1:$2:3"],
+      "helper": "agent-state"
+    },
+    {
+      "command": "agent wait",
+      "class": "read",
+      "example": ["agent", "wait", "lead", "1:$2:3", "--after", "3"],
+      "helper": "agent-wait"
     },
     {
       "command": "spend",

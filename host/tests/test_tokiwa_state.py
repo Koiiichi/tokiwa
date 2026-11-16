@@ -60,24 +60,24 @@ class TokiwaState(unittest.TestCase):
     def test_turn_increments_on_turn_start(self):
         self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
         self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
-        self.assertEqual(self.option("@tokiwa_turn"), "2")
+        self.assertEqual(self.option("@tokiwa_agent_turn"), "2")
 
     def test_working_without_turn_keeps_the_turn(self):
         self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
         self.record("working", stdin=fixture("claude-pre-tool-use-bash"))
-        self.assertEqual(self.option("@tokiwa_turn"), "1")
+        self.assertEqual(self.option("@tokiwa_agent_turn"), "1")
 
     def test_transcript_and_session_id_are_recorded(self):
         for name, session in [("claude-user-prompt-submit", "claude-session-a"),
                               ("codex-user-prompt-submit", "codex-thread-a")]:
             data = json.loads(fixture(name))
             self.record("working", "--turn", stdin=fixture(name))
-            self.assertEqual(self.option("@tokiwa_transcript"), data["transcript_path"])
+            self.assertEqual(self.option("@tokiwa_agent_transcript"), data["transcript_path"])
             self.assertEqual(self.option("@tokiwa_agent_session"), session)
 
     def test_question_tool_records_a_question(self):
         self.record("waiting", "--kind", "question", stdin=fixture("claude-pre-tool-use-ask-user-question"))
-        pending = self.decoded("@tokiwa_pending")
+        pending = self.decoded("@tokiwa_agent_pending")
         self.assertEqual(pending["kind"], "question")
         self.assertEqual(pending["id"], "toolu_question_a")
         self.assertEqual(pending["options"], ["Text parser", "Binary parser"])
@@ -88,41 +88,41 @@ class TokiwaState(unittest.TestCase):
         data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
         data["tool_input"]["questions"][0]["question"] = "q" * 900
         self.record("waiting", "--kind", "question", stdin=json.dumps(data))
-        self.assertEqual(len(self.decoded("@tokiwa_pending")["summary"]), 500)
+        self.assertEqual(len(self.decoded("@tokiwa_agent_pending")["summary"]), 500)
 
     def test_permission_notification_uses_the_last_tool(self):
         self.record("note", stdin=fixture("claude-pre-tool-use-bash"))
         self.record("waiting", "--kind", "permission", stdin=fixture("claude-notification-permission"))
-        pending = self.decoded("@tokiwa_pending")
+        pending = self.decoded("@tokiwa_agent_pending")
         self.assertEqual(pending["kind"], "permission")
         self.assertIn("Bash", pending["summary"])
         self.assertIn("make check", pending["summary"])
-        self.assertEqual(self.decoded("@tokiwa_last_tool")["tool"], "Bash")
+        self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["tool"], "Bash")
 
     def test_codex_permission_request_names_the_tool(self):
         self.record("waiting", "--kind", "permission", stdin=fixture("codex-permission-request"))
-        pending = self.decoded("@tokiwa_pending")
+        pending = self.decoded("@tokiwa_agent_pending")
         self.assertIn("rm -rf build/", pending["summary"])
         self.assertEqual(len(pending["id"]), 16)
 
     def test_url_elicitation_is_a_permission(self):
         self.record("waiting", "--kind", "question", stdin=fixture("claude-elicitation-url"))
-        pending = self.decoded("@tokiwa_pending")
+        pending = self.decoded("@tokiwa_agent_pending")
         self.assertEqual(pending["kind"], "permission")
         self.assertIn("https://auth.example.com/login", pending["summary"])
 
     def test_form_elicitation_stays_a_question(self):
         self.record("waiting", "--kind", "question", stdin=fixture("claude-elicitation-form"))
-        pending = self.decoded("@tokiwa_pending")
+        pending = self.decoded("@tokiwa_agent_pending")
         self.assertEqual(pending["kind"], "question")
         self.assertEqual(pending["summary"], "Please provide a name")
 
     def test_working_and_idle_clear_the_pending_item(self):
         for state in ["working", "idle"]:
             self.record("waiting", "--kind", "question", stdin=fixture("claude-elicitation-form"))
-            self.assertTrue(self.option("@tokiwa_pending"))
+            self.assertTrue(self.option("@tokiwa_agent_pending"))
             self.record(state, stdin=fixture("claude-pre-tool-use-bash"))
-            self.assertEqual(self.option("@tokiwa_pending"), "")
+            self.assertEqual(self.option("@tokiwa_agent_pending"), "")
 
     def test_session_start_records_idle(self):
         self.record("idle", stdin=fixture("claude-session-start"))
@@ -132,7 +132,7 @@ class TokiwaState(unittest.TestCase):
         self.record("waiting", "--kind", "question", stdin=fixture("claude-elicitation-form"))
         self.record("ended", stdin=fixture("claude-session-end"))
         self.assertEqual(self.option("@tokiwa_agent"), "")
-        self.assertEqual(self.option("@tokiwa_pending"), "")
+        self.assertEqual(self.option("@tokiwa_agent_pending"), "")
 
     def test_note_changes_no_state(self):
         self.record("working", stdin=fixture("claude-pre-tool-use-bash"))
@@ -149,12 +149,12 @@ class TokiwaState(unittest.TestCase):
     def test_bad_json_records_the_state_and_exits_0(self):
         self.record("waiting", "--kind", "question", stdin="{not json")
         self.assertTrue(self.option("@tokiwa_agent").startswith("waiting:"))
-        self.assertEqual(self.decoded("@tokiwa_pending")["kind"], "question")
+        self.assertEqual(self.decoded("@tokiwa_agent_pending")["kind"], "question")
 
     def test_unknown_state_exits_0_and_changes_nothing(self):
         self.record("bogus", stdin=fixture("claude-pre-tool-use-bash"))
         self.assertEqual(self.option("@tokiwa_agent"), "")
-        self.assertEqual(self.option("@tokiwa_transcript"), "")
+        self.assertEqual(self.option("@tokiwa_agent_transcript"), "")
 
     def test_outside_tmux_exits_0(self):
         env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
@@ -167,7 +167,7 @@ class TokiwaState(unittest.TestCase):
         self.record("working", stdin=json.dumps(data), timeout=10)
         # The input is cut at 64 KiB, so it does not parse and nothing of it is recorded.
         self.assertTrue(self.option("@tokiwa_agent").startswith("working:"))
-        self.assertEqual(self.option("@tokiwa_transcript"), "")
+        self.assertEqual(self.option("@tokiwa_agent_transcript"), "")
 
 
 if __name__ == "__main__":

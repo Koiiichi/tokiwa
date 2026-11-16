@@ -8,12 +8,12 @@ Every error ends in exit status 0. The hook settings decide which event means wh
 command only records it. The hook event arrives as JSON on stdin.
 
 Options that it sets on the session:
-  @tokiwa_agent          STATE:EPOCH. The time is when the state began. `note` never changes it.
-  @tokiwa_turn           The number of turns, counted by --turn.
-  @tokiwa_transcript     The transcript path from the event.
-  @tokiwa_agent_session  The session id of the agent from the event.
-  @tokiwa_pending        Base64 JSON of the question or permission request that waits for a person.
-  @tokiwa_last_tool      Base64 JSON of the last tool call that a `note` event reported.
+  @tokiwa_agent             STATE:EPOCH. The time is when the state began. `note` never changes it.
+  @tokiwa_agent_turn        The number of turns, counted by --turn.
+  @tokiwa_agent_transcript  The transcript path from the event.
+  @tokiwa_agent_session     The session id of the agent from the event.
+  @tokiwa_agent_pending     Base64 JSON of the question or permission request that waits for a person.
+  @tokiwa_agent_last_tool   Base64 JSON of the last tool call that a `note` event reported.
 """
 
 import base64
@@ -142,26 +142,26 @@ def record(argv):
         # The time is when the state began: a report of the state that is already there keeps it.
         put("@tokiwa_agent", f"{state}:{int(time.time())}")
     if "--turn" in flags:
-        turn = option(pane, "@tokiwa_turn")
-        put("@tokiwa_turn", str(int(turn) + 1 if turn.isdigit() else 1))
-    for name, key in (("@tokiwa_transcript", "transcript_path"), ("@tokiwa_agent_session", "session_id")):
+        turn = option(pane, "@tokiwa_agent_turn")
+        put("@tokiwa_agent_turn", str(int(turn) + 1 if turn.isdigit() else 1))
+    for name, key in (("@tokiwa_agent_transcript", "transcript_path"), ("@tokiwa_agent_session", "session_id")):
         if text(event.get(key)):
             put(name, event[key])
     if state == "note" and event.get("tool_name"):
         last = {"tool": text(event["tool_name"]), "summary": tool_detail(event.get("tool_input"))[:MAX_SUMMARY],
                 "at": int(time.time())}
-        put("@tokiwa_last_tool", encode(last))
+        put("@tokiwa_agent_last_tool", encode(last))
     if state in CLEARS_PENDING:
-        tmux("set-option", "-qu", "-t", pane, "@tokiwa_pending")
+        tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_pending")
     elif state == "waiting" and kind in KINDS:
         last_tool = {}
         try:
-            last_tool = json.loads(base64.b64decode(option(pane, "@tokiwa_last_tool")))
+            last_tool = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_last_tool")))
         except ValueError:
             pass
         if not isinstance(last_tool, dict):
             last_tool = {}
-        put("@tokiwa_pending", encode(pending_item(event, raw, kind, last_tool)))
+        put("@tokiwa_agent_pending", encode(pending_item(event, raw, kind, last_tool)))
 
 
 def main(argv):

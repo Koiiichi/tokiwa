@@ -270,11 +270,11 @@ The command also records these options of the tmux session, which later commands
 | Option | Value |
 | --- | --- |
 | `@tokiwa_agent` | `STATE:EPOCH`. The time is when the state began. |
-| `@tokiwa_turn` | The number of turns. Each event with `--turn` adds one. |
-| `@tokiwa_transcript` | The `transcript_path` of the event. |
+| `@tokiwa_agent_turn` | The number of turns. Each event with `--turn` adds one. |
+| `@tokiwa_agent_transcript` | The `transcript_path` of the event. |
 | `@tokiwa_agent_session` | The `session_id` of the event. |
-| `@tokiwa_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options` and `at`. `working`, `idle` and `ended` remove it. |
-| `@tokiwa_last_tool` | The last tool call that a `note` reported: base64 of JSON with `tool`, `summary` and `at`. |
+| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options` and `at`. `working`, `idle` and `ended` remove it. |
+| `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `tool`, `summary` and `at`. |
 
 For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. `options` lists the option labels of a question. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
 
@@ -286,11 +286,23 @@ What the states cannot tell:
 - Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself; after an Esc that you type, the state changes at the next turn or after a minute of no input.
 - Whether a usage limit of a Claude plan arrives as `rate_limit` is not documented.
 
-### Read the state of a session
+### Layers and read modes
 
-The helper has two read modes for the state that these options hold. `state NAME IDENTITY` prints one JSON object, and `wait NAME IDENTITY AFTER_TURN` polls every 0.5 seconds for up to `TOKIWA_WAIT_SECONDS` seconds (default 20) and prints the same object with a `reason`. Neither prints screen text, seals its output or writes to the audit log. The fields and reasons are in [Read the state of an agent](agents.md#read-the-state-of-an-agent). A mode reads the identity, the options and the active pane in one tmux call, so the fields agree.
+Tokiwa has two layers. The core layer is sessions, their lifecycle, status and the driver. The agent layer is what depends on Claude Code or Codex: the hooks and their options above, and the screen check. Core never calls the agent layer. Options of the agent layer start with `@tokiwa_agent`; `@tokiwa_driver` and `@tokiwa_project` belong to core. In `terminal-session.sh`, one Python library serves the core modes, and a second library, in a section marked as the agent layer, serves the agent modes.
 
-The screen check reads the last 15 lines of the active pane with `capture-pane -p -J` and matches the regular expressions of `DIALOG_MARKERS` for the running agent, `claude` or `codex`. Other programs have no markers. The markers are examples of dialogs, not a complete list: change them in `terminal-session.sh` when a live screen shows a dialog that they miss.
+| Mode | Layer | Prints |
+| --- | --- | --- |
+| `state NAME IDENTITY` | Core | The facts of a session: `name`, `identity`, `session`, `program`, `clients`, `writable_clients`, `driver`, `sampled_at`. It reads no screen. |
+| `agent-state NAME IDENTITY` | Agent | The same, and `agent`, `agent_at`, `turn`, `pending` and `dialog` |
+| `agent-wait NAME IDENTITY AFTER_TURN` | Agent | The `agent-state` object with a `reason`. It polls every 0.5 seconds for up to `TOKIWA_WAIT_SECONDS` seconds (default 20). |
+
+No mode of this table seals its output or writes to the audit log. The fields and reasons are in [Read a session and its agent](agents.md#read-a-session-and-its-agent). A mode reads the identity, the options and the active pane in one tmux call, so the fields agree. `writable_clients` counts the clients of the session that the identity names, whose `#{client_readonly}` is 0.
+
+The screen check of the agent layer reads the last 15 lines of the active pane with `capture-pane -p -J` and matches the regular expressions of `DIALOG_MARKERS` for the running agent, `claude` or `codex`. Other programs have no markers. The markers are the expected shapes of dialogs, not verified ones: they are checked against live screens in a later step, and `terminal-session.sh` is where to change them when a live screen shows a dialog that they miss.
+
+### End a session
+
+`end NAME IDENTITY [attached-ok]` reads the clients of the session first, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type. A client that watches read only does not count. The end then runs in one tmux queue with the identity check and a check that `#{session_attached}` is still the number that was read, so a client that attaches in between stops it. With `attached-ok` only the identity is checked.
 
 ## Audit log
 
