@@ -304,3 +304,25 @@ test("receipt events carry freshness and read time", async () => {
     await w.close();
   }
 });
+
+test("stale project titles say last known", async () => {
+  const w = await open();
+  try {
+    w.app.show("shell");
+    const frame = async () => {
+      await w.t.renderOnce();
+      return w.t.captureCharFrame();
+    };
+    expect(await frame()).not.toContain("· last known");
+    w.mode.fail = true;
+    w.clock.at = 30_000;
+    await w.app.refreshSessions();
+    expect(await frame()).toContain("workspaces/workbench · last known");
+    w.mode.fail = false;
+    w.clock.at = 40_000;
+    await w.app.refreshSessions();
+    expect(await frame()).not.toContain("workspaces/workbench · last known");
+  } finally {
+    await w.close();
+  }
+});

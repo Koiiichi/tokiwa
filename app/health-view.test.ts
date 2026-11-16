@@ -368,6 +368,82 @@ test("missing readings and failed parts give a reason, never a zero", () => {
   );
 });
 
+test("last-known Health sections say so on their titles", () => {
+  const lines = healthLines(
+    fixtureModel({ healthFreshness: "last-known" }),
+    96,
+  );
+  const all = text(lines);
+  for (const title of [
+    "Workbench limits · last known",
+    "Storage · last known",
+    "Network · ens5 · last known",
+  ])
+    expect(all).toContain(title);
+  const at = new Date(fixtureSample.sampled_at * 1000);
+  const time = at.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  expect(lineText(row(lines, "Uptime:"))).toMatch(
+    new RegExp(`Uptime: +3d 4h 12m · at ${time}$`),
+  );
+  const footer = row(lines, "Sampled");
+  expect(lineText(footer)).toMatch(/Sampled .* · last known$/);
+  expect(footer.every((s) => s.tone === "warning")).toBe(true);
+  // A sample from another day names the day.
+  const later = healthLines(
+    fixtureModel({
+      healthFreshness: "last-known",
+      now: fixtureNow + 3 * 86400000,
+    }),
+    96,
+  );
+  expect(lineText(row(later, "Uptime:"))).toMatch(
+    new RegExp(`· at [A-Z][a-z]{2} \\d{1,2} ${time}$`),
+  );
+  // A live view has none of these marks.
+  expect(text(healthLines(fixtureModel(), 96))).not.toContain("last known");
+});
+
+test("last-known spend keeps its values and says so", () => {
+  const live = healthLines(fixtureModel(), 96);
+  const lines = healthLines(fixtureModel({ spendFreshness: "last-known" }), 96);
+  const all = text(lines);
+  expect(all).toContain("Spend (estimate · last known)");
+  expect(lineText(row(lines, "Instance:"))).toMatch(/ · last known$/);
+  for (const label of ["Spent so far:", "Forecast:", "Month to date:"])
+    expect(lineText(row(lines, label))).toBe(lineText(row(live, label)));
+});
+
+test("a value that was never read says not read under a global failure", () => {
+  const all = text(
+    healthLines(
+      fixtureModel({ spend: undefined, globalFailure: true }),
+      96,
+    ),
+  );
+  expect(all).toContain("Spent so far:   not read");
+  expect(all).toContain("Instance:       not read");
+  expect(all).not.toContain("not available");
+});
+
+test("a component spend failure keeps its reason", () => {
+  const reason = "no price for m7i.2xlarge in health.json";
+  const all = text(
+    healthLines(
+      fixtureModel({
+        spend: undefined,
+        globalFailure: false,
+        spendError: reason,
+      }),
+      96,
+    ),
+  );
+  expect(all).toContain(`not available (${reason})`);
+});
+
 test("a stuck connection shows as an amber row with its PID, age and CPU share", () => {
   const sample = structuredClone(fixtureSample);
   sample.host!.stuck_connections = [

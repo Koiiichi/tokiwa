@@ -92,6 +92,9 @@ export function fixtureModel(
     spendError: "",
     config: fixtureConfig,
     configError: "",
+    healthFreshness: "live",
+    spendFreshness: "live",
+    globalFailure: false,
     ...overrides,
   };
 }

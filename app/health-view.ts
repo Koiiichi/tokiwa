@@ -1,6 +1,7 @@
 /** Plain-text Health view: configuration, spend estimate and the line layout. */
 import { readFileSync } from "node:fs";
 import type { HealthSample } from "./backend";
+import type { Freshness } from "./state";
 
 export interface HealthConfig {
   /** Without a budget, Spend shows amounts only, with no bar and no share. */
@@ -279,6 +280,14 @@ export interface HealthViewModel {
   configError: string;
   /** The name of this Mac, which reads the workstation. */
   device?: string;
+  /** Whether the host sample is current. `last-known` marks every host value as old. */
+  healthFreshness: Freshness;
+  /** Whether the spend reading is current. */
+  spendFreshness: Freshness;
+  /** When the spend reading was last read, in milliseconds. */
+  spendReadAt?: number;
+  /** True while a failure that speaks for the whole link is active: a missing value is `not read`. */
+  globalFailure: boolean;
 }
 export const lineText = (line: Span[]) => line.map((s) => s.text).join("");
 
@@ -308,6 +317,26 @@ const GiB = 1024 ** 3;
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
 
 const missing = (reason: string) => `not available (${reason})`;
+const NOT_READ = "not read";
+const LAST_KNOWN = "last known";
+/** The text of a value that no read has given: `not read` under a global failure, else the reason. */
+const absent = (m: HealthViewModel, reason: string) =>
+  m.globalFailure ? NOT_READ : missing(reason);
+/** When a last-known sample was taken: the time, with the date when it is not today. */
+function sampledAt(m: HealthViewModel, sampledAt: number) {
+  const at = new Date(sampledAt * 1000);
+  const time = at.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const today = new Date(m.now);
+  const sameDay =
+    at.getFullYear() === today.getFullYear() &&
+    at.getMonth() === today.getMonth() &&
+    at.getDate() === today.getDate();
+  return sameDay ? time : `${MONTHS[at.getMonth()]} ${at.getDate()} ${time}`;
+}
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 const gib = (bytes: number) => (bytes / GiB).toFixed(1);
 const cores = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
@@ -400,7 +429,9 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     const { instance_id, instance, region } = m.spend;
     const state = instance.state === "running" ? "" : ` · ${instance.state}`;
     const tone = state ? "warning" : undefined;
-    const joined = `${instance_id} · ${instance.type} · ${region}${state}`;
+    const known =
+      m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
+    const joined = `${instance_id} · ${instance.type} · ${region}${state}${known}`;
     if (joined.length <= valueWidth)
       rows.push({ kind: "pair", label: "Instance:", value: joined, tone });
     else
@@ -409,7 +440,7 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
         {
           kind: "pair",
           label: "Type:",
-          value: `${instance.type} · ${region}${state}`,
+          value: `${instance.type} · ${region}${state}${known}`,
           tone,
         },
       );
@@ -417,16 +448,19 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     rows.push({
       kind: "pair",
       label: "Instance:",
-      value: missing(m.spendError || "no AWS reading yet"),
+      value: absent(m, m.spendError || "no AWS reading yet"),
       tone: "dim",
     });
   const host = m.sample?.host;
   const uptime = !m.sample
-    ? missing("no health reading yet")
+    ? absent(m, "no health reading yet")
     : !host
       ? missing("host health script is older")
       : typeof host.uptime_seconds === "number"
-        ? formatDuration(host.uptime_seconds)
+        ? formatDuration(host.uptime_seconds) +
+          (m.healthFreshness === "last-known"
+            ? ` · at ${sampledAt(m, m.sample.sampled_at)}`
+            : "")
         : missing("uptime is unreadable");
   rows.push({
     kind: "pair",
@@ -478,10 +512,13 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
 }
 
 function spend(m: HealthViewModel): Row[] {
-  const rows: Row[] = [{ kind: "title", text: "Spend", note: " (estimate)" }];
-  const unavailable = (reason: string) => {
+  const known = m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
+  const rows: Row[] = [
+    { kind: "title", text: "Spend", note: ` (estimate${known})` },
+  ];
+  const unavailable = (reason: string, value = missing(reason)) => {
     for (const label of ["Spent so far:", "Forecast:", "Month to date:"])
-      rows.push({ kind: "pair", label, value: missing(reason), tone: "dim" });
+      rows.push({ kind: "pair", label, value, tone: "dim" });
     return rows;
   };
   if (m.configError) {
@@ -493,7 +530,10 @@ function spend(m: HealthViewModel): Row[] {
     });
     return unavailable("configuration is invalid");
   }
-  if (!m.spend) return unavailable(m.spendError || "no AWS reading yet");
+  if (!m.spend) {
+    const reason = m.spendError || "no AWS reading yet";
+    return unavailable(reason, absent(m, reason));
+  }
   const estimate = estimateSpend(m.spend, m.config, m.now);
   if ("error" in estimate) return unavailable(estimate.error);
   const since =
@@ -567,7 +607,12 @@ function hostSection(
   build: (host: NonNullable<HealthSample["host"]>) => Row[],
   note?: string,
 ): Row[] {
-  const head: Row = { kind: "title", text: title, note };
+  const known = m.sample && m.healthFreshness === "last-known";
+  const head: Row = {
+    kind: "title",
+    text: title,
+    note: known ? `${note ?? ""} · ${LAST_KNOWN}` : note,
+  };
   const host = m.sample?.host;
   const reason = !m.sample
     ? "no health reading yet"
@@ -577,7 +622,12 @@ function hostSection(
   if (reason)
     return [
       head,
-      { kind: "note", text: missing(reason), tone: "dim", at: "indent" },
+      {
+        kind: "note",
+        text: m.sample ? missing(reason) : absent(m, reason),
+        tone: "dim",
+        at: "indent",
+      },
     ];
   try {
     return [head, ...build(host!)];
@@ -706,13 +756,18 @@ function footer(m: HealthViewModel): Row[] {
       second: "2-digit",
       hour12: false,
     });
-    // After a failed read, the band under the header names the cause; the readings are stale.
-    const status = m.error ? "stale" : m.status;
-    const state = status === "live" ? "" : ` · ${status}`;
+    // After a failed read, the band under the header names the cause; the readings are last known.
+    const known =
+      m.healthFreshness === "last-known" || m.status === "stale" || !!m.error;
+    const state = known
+      ? ` · ${LAST_KNOWN}`
+      : m.status === "live"
+        ? ""
+        : ` · ${m.status}`;
     rows.push({
       kind: "note",
       text: `Sampled ${time} · ${age(m.now / 1000 - sample.sampled_at)}${state}`,
-      tone: status === "stale" ? "warning" : "dim",
+      tone: known ? "warning" : "dim",
       at: "start",
     });
   } else

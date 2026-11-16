@@ -147,7 +147,7 @@ test("a failed Health read keeps the last readings, marks them stale and shows n
     await t.renderOnce();
     const frame = t.captureCharFrame();
     expect(frame).toContain("▲ AWS sign-in expired");
-    expect(frame).toContain("· stale");
+    expect(frame).toContain("· last known");
     expect(frame).not.toContain("Last read failed");
     expect(frame).not.toContain("getcwd");
     expect(frame).toContain("Workstation");

@@ -47,7 +47,13 @@ import {
   WorkspaceState,
   type Freshness,
 } from "./state";
-import { classify, worst, type Failure, type Source } from "./problem";
+import {
+  classify,
+  GLOBAL_KINDS,
+  worst,
+  type Failure,
+  type Source,
+} from "./problem";
 import {
   healthLines,
   loadHealthConfig,
@@ -2907,6 +2913,19 @@ export class App {
     const room = this.renderer.height - 5 - this.bandRows;
     // A failed read leaves the last readings in a quieter colour until a read succeeds.
     const stale = this.history.gap && !!this.history.error;
+    // A recorded reading is the reading itself; a sample past its limit or a failed read is old.
+    const status = this.history.status(this.now() / 1000);
+    const recorded = status === "recorded";
+    const read = this.sources.health.freshness(this.now());
+    const healthFreshness: Freshness =
+      recorded || (read === "live" && status !== "stale")
+        ? "live"
+        : read === "live"
+          ? "last-known"
+          : read;
+    const spendFreshness: Freshness = recorded
+      ? "live"
+      : this.sources.spend.freshness(this.now());
     const layout = (height: number) =>
       healthLines(
         {
@@ -2920,6 +2939,12 @@ export class App {
           config: this.healthConfig,
           configError: this.healthConfigError,
           device: this.device,
+          healthFreshness,
+          spendFreshness,
+          spendReadAt: this.sources.spend.okAt || undefined,
+          globalFailure: Object.values(this.lastFailure).some((f) =>
+            GLOBAL_KINDS.includes(f.kind),
+          ),
         },
         Math.max(20, width),
         height,
@@ -4001,6 +4026,13 @@ export class App {
       content: styled([
         { text: "  ".repeat(entry.depth), tone: "value" },
         { text: entry.title, tone: "title" },
+        // Only a top-level title: the project's rows hold values from an old snapshot.
+        ...(entry.depth === 0 &&
+        this.remoteSessions.length &&
+        this.sources.sessions.freshness(this.now()) !== "live" &&
+        !this.sessionsLoading
+          ? [{ text: " · last known", tone: "dim" as const }]
+          : []),
       ]),
     });
     if (entry.path === "" || local) return;
