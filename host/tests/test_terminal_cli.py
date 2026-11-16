@@ -540,6 +540,56 @@ esac
             self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
         self.assertFalse((self.home / 'calls').exists())
 
+    def test_answer_choice_must_be_1_to_9(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        base = ('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1')
+        for bad in [('--choice', '0'), ('--choice', '10'), ('--choice', 'x'), ('--choice', ''), ('--choice', '-1'), ('--choice',), (),
+                    ('--choice', '1', '--text', 'x'), ('--text',), ('--bogus', '1'), ('--choice', '1', 'more')]:
+            self.assertNotEqual(self.run_cli(*base, *bad).returncode, 0, bad)
+        for pending in ['', 'a b', 'x' * 129, 'a;b', '$(x)']:
+            self.assertNotEqual(self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', pending, '--choice', '1').returncode, 0, pending)
+        for args in [('agent', 'answer', 'lead', '1:$2:3', '--choice', '1'), ('agent', 'answer', 'lead', '--pending', 'toolu_q1', '--choice', '1'),
+                     ('agent', 'answer', 'bad name', '1:$2:3', '--pending', 'toolu_q1', '--choice', '1')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+        for choice in '19':
+            result = self.run_cli(*base, '--choice', choice)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"terminal-session.sh agent-answer lead '1:$2:3' toolu_q1 {choice}", self.send_calls())
+
+    def test_answer_without_tokiwa_actor_is_refused(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--choice', '1')
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('TOKIWA_ACTOR', result.stderr)
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_answer_text_is_not_in_the_parameters(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'marker-text-5d1e and \u00e4\u00f6 more'
+        result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--text', text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.send_calls()
+        encoded = base64.b64encode(text.encode()).decode()
+        for part in ['marker-text', encoded, encoded.rstrip('=')]:
+            self.assertNotIn(part, calls)
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + text.encode())
+        answer = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(answer, r"set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=cli TOKIWA_ACTOR=worker-a /opt/agent-platform/rootless/terminal-session\.sh agent-answer lead")
+        self.assertTrue(answer.endswith("toolu_q1 text'\"], \"executionTimeout\": [\"30\"]} --query Command.CommandId --output text"))
+
+    def test_answer_text_refuses_text_checks_on_the_mac_first(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for bad in ['/clear', '  !ls', '#x', 'bell\a', 'c1\x85next', '', '  \n', 'x' * 16385]:
+            result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--text', bad)
+            self.assertEqual(result.returncode, 1, repr(bad))
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_send_without_tokiwa_actor_is_refused(self):
         for actor in [None, '', 'bad;rm']:
             self.env.pop('TOKIWA_ACTOR', None)

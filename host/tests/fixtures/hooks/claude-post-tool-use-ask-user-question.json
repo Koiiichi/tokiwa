@@ -1,0 +1,33 @@
+{
+  "session_id": "claude-session-a",
+  "transcript_path": "/home/worker-a/.claude/projects/project-a/session-a.jsonl",
+  "cwd": "/workspace/project-a",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_use_id": "toolu_question_a",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which parser should the test cover?",
+        "header": "Parser",
+        "options": [
+          {
+            "label": "Text parser",
+            "description": "Plain text input"
+          },
+          {
+            "label": "Binary parser",
+            "description": "Packed input"
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  "tool_response": {
+    "answers": {
+      "Which parser should the test cover?": "Binary parser"
+    }
+  }
+}

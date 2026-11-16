@@ -278,10 +278,11 @@ The command also records these options of the tmux session, which later commands
 | `@tokiwa_agent_session` | The `session_id` of the event. |
 | `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options` and `at`. `working`, `idle` and `ended` remove it. |
 | `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `tool`, `summary` and `at`. |
+| `@tokiwa_agent_input` | The label of an answer that an agent chose: base64 of JSON with `actor`, `pending_id` and `at`. `tokiwa agent answer` sets it, and `tokiwa-state answered` prints the label for the agent and removes it. |
 
 For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. `options` lists the option labels of a question. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
 
-The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and they run without holding the agent. Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
+The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and they run without holding the agent, except `tokiwa-state answered`, a synchronous hook of Claude Code on `PostToolUse` of `AskUserQuestion` with a timeout of 5 seconds (see [The label of an answer](agents.md#the-label-of-an-answer)). Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
 
 What the states cannot tell:
 
@@ -331,13 +332,13 @@ The launcher pins the certificate on first use: see [the pin](configuration.md#f
 
 ## Audit log
 
-The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim` and `release`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send` and `answer`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
 
 ```json
 {"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}
 ```
 
-`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A `claim` with `--replace` has `replaced`, the name of the driver that it took the session from. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
+`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A `claim` with `--replace` has `replaced`, the name of the driver that it took the session from. An `answer` has `pending`, the id of the item that it answered. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
 
 ## The command list
 

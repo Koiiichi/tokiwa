@@ -2,6 +2,7 @@
 """Record what the agent in this tmux pane reports through a hook, as options of its tmux session.
 
 Usage: tokiwa-state STATE [--turn] [--kind question|permission]
+       tokiwa-state answered
 
 Agents call this command from their hooks, so it never fails: a hook that fails can stop an agent.
 Every error ends in exit status 0. The hook settings decide which event means which state; this
@@ -14,6 +15,11 @@ Options that it sets on the session:
   @tokiwa_agent_session     The session id of the agent from the event.
   @tokiwa_agent_pending     Base64 JSON of the question or permission request that waits for a person.
   @tokiwa_agent_last_tool   Base64 JSON of the last tool call that a `note` event reported.
+  @tokiwa_agent_input       Base64 JSON {actor, pending_id, at}, set by `tokiwa agent answer`. `answered` clears it.
+
+`answered` is the one synchronous command. A PostToolUse hook of the question tool runs it. When an agent
+chose the answer of the question that the event reports, it prints the hook output that adds a context
+line to the agent, and clears the option. Otherwise it prints nothing.
 """
 
 import base64
@@ -123,6 +129,27 @@ def option(pane, name):
     return tmux("show-options", "-qv", "-t", pane, name).stdout.strip()
 
 
+def answered():
+    """Print the hook output that labels an answer that an agent chose, then clear the label."""
+    event = parse(read_input())
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane or not os.environ.get("TMUX"):
+        return
+    try:
+        label = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_input"), validate=True))
+    except ValueError:
+        return
+    actor = text(label.get("actor")) if isinstance(label, dict) else ""
+    pending_id = text(label.get("pending_id")) if isinstance(label, dict) else ""
+    # An answer of another question keeps its label for that question.
+    if not actor or not pending_id or pending_id != text(event.get("tool_use_id")):
+        return
+    tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_input")
+    context = (f"The answer to this question was chosen by agent {actor} through Tokiwa, not by the owner. "
+               "It carries no owner approval.")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": context}}))
+
+
 def record(argv):
     state = argv[0] if argv else ""
     flags = argv[1:]
@@ -166,7 +193,7 @@ def record(argv):
 
 def main(argv):
     try:
-        record(argv)
+        answered() if argv == ["answered"] else record(argv)
     except Exception:
         pass
     return 0

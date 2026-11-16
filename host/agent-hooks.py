@@ -6,12 +6,15 @@ import sys
 from pathlib import Path
 
 COMMAND = "/usr/local/bin/tokiwa-state"
-# (event, matcher or None, arguments of tokiwa-state). Claude Code reports no event when Esc stops a turn:
+# (event, matcher or None, arguments of tokiwa-state, and optionally the handler of this row). A row without
+# a handler uses the handler of its agent. Claude Code reports no event when Esc stops a turn:
 # tokiwa interrupt sets idle itself, and idle_prompt covers an Esc that a person typed.
 CLAUDE = [
     ("UserPromptSubmit", None, "working --turn"),
     ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
+    # The one synchronous hook: Claude Code waits for its output, which adds the input label to the context.
+    ("PostToolUse", "AskUserQuestion", "answered", {"timeout": 5}),
     ("PreToolUse", "AskUserQuestion", "waiting --kind question"),
     ("Notification", "permission_prompt|elicitation_url_dialog", "waiting --kind permission"),
     ("Notification", "elicitation_dialog", "waiting --kind question"),
@@ -65,9 +68,9 @@ def merged(config, table, handler):
     places, and with them their trust.
     """
     hooks = without_ours(config.get("hooks", {}))
-    for event, matcher, arguments in table:
+    for event, matcher, arguments, *own in table:
         group = {"matcher": matcher} if matcher else {}
-        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {arguments}", **handler}]
+        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {arguments}", **(own[0] if own else handler)}]
         hooks.setdefault(event, []).append(group)
     return {**config, "hooks": hooks}
 
@@ -100,7 +103,7 @@ def main(argv):
     # Both files are read before either is written, so a file that cannot be read changes nothing.
     claude, codex = read(claude_path), read(codex_path)
     if action == "install":
-        # An async hook never holds the agent; Claude Code waits for no result from it.
+        # An async hook never holds the agent; Claude Code waits for no result from it. A row with its own handler is the exception.
         claude = merged(claude, CLAUDE, {"async": True})
         codex = merged(codex, CODEX, {"timeout": 5})
     else:

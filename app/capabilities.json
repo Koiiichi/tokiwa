@@ -2,6 +2,7 @@
   "classes": {
     "read": "Reads only. The MCP server offers its tool by default.",
     "control": "Changes a session or a project. The MCP server offers its tool only with --allow control.",
+    "answer": "Answers an agent's question. The MCP server offers its tool only with --allow answer.",
     "run": "Runs a command on the host. The MCP server offers it only with --allow run.",
     "commands": "Runs an entry of the owner's command list on the host. The MCP server offers its tool only with --allow commands.",
     "human": "Needs a person or a terminal: a browser sign-in, hidden input, a root shell or an attached view. Never an MCP tool."
@@ -360,6 +361,12 @@
       "class": "control",
       "example": ["agent", "send", "lead", "1:$2:3", "--text", "Read LEAD.md."],
       "helper": "agent-send"
+    },
+    {
+      "command": "agent answer",
+      "class": "answer",
+      "example": ["agent", "answer", "lead", "1:$2:3", "--pending", "toolu_q1", "--choice", "1"],
+      "helper": "agent-answer"
     },
     {
       "command": "claim",

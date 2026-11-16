@@ -124,6 +124,41 @@ class TokiwaState(unittest.TestCase):
             self.record(state, stdin=fixture("claude-pre-tool-use-bash"))
             self.assertEqual(self.option("@tokiwa_agent_pending"), "")
 
+    def agent_input(self, pending_id="toolu_question_a", actor="orchestrator-a"):
+        item = {"actor": actor, "pending_id": pending_id, "at": 5}
+        self.tm("set-option", "-t", "=worker-a:", "@tokiwa_agent_input",
+                base64.b64encode(json.dumps(item).encode()).decode())
+
+    def test_answered_hook_adds_the_label_for_the_matching_question(self):
+        self.agent_input()
+        result = self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PostToolUse")
+        self.assertEqual(output["additionalContext"],
+                         "The answer to this question was chosen by agent orchestrator-a through Tokiwa, "
+                         "not by the owner. It carries no owner approval.")
+        # The label is used once.
+        self.assertEqual(self.option("@tokiwa_agent_input"), "")
+
+    def test_answered_hook_is_silent_for_another_question(self):
+        self.agent_input(pending_id="toolu_other")
+        result = self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
+        self.assertEqual(result.stdout, "")
+
+    def test_answered_hook_is_silent_without_an_agent_answer(self):
+        self.assertEqual(self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question")).stdout, "")
+        # A value that is not an input record, and bad JSON, are silent too and exit 0.
+        self.tm("set-option", "-t", "=worker-a:", "@tokiwa_agent_input", "not-base64!")
+        self.assertEqual(self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question")).stdout, "")
+        self.assertEqual(self.record("answered", stdin="{not json").stdout, "")
+
+    def test_answered_hook_does_not_change_the_state(self):
+        self.record("waiting", "--kind", "question", stdin=fixture("claude-pre-tool-use-ask-user-question"))
+        before = self.option("@tokiwa_agent")
+        self.agent_input()
+        self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
+        self.assertEqual(self.option("@tokiwa_agent"), before)
+
     def test_session_start_records_idle(self):
         self.record("idle", stdin=fixture("claude-session-start"))
         self.assertTrue(self.option("@tokiwa_agent").startswith("idle:"))

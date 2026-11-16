@@ -85,6 +85,12 @@ class AgentHooks(unittest.TestCase):
         self.assertEqual(states(codex, "Interrupt"), [(None, "idle")])
         claude_handler = claude["hooks"]["Stop"][-1]["hooks"][0]
         self.assertTrue(claude_handler["async"])
+        # The answered hook adds context to the agent, so it is synchronous and has a timeout.
+        self.assertIn(("AskUserQuestion", "answered"), states(claude, "PostToolUse"))
+        answered = [h for g in claude["hooks"]["PostToolUse"] if g.get("matcher") == "AskUserQuestion" for h in g["hooks"]
+                    if h["command"].endswith(" answered")][0]
+        self.assertNotIn("async", answered)
+        self.assertEqual(answered["timeout"], 5)
         self.assertEqual(codex["hooks"]["Stop"][-1]["hooks"][0]["timeout"], 5)
 
     def test_install_replaces_an_earlier_hook_that_has_no_arguments_after_the_state(self):

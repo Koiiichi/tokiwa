@@ -6,6 +6,7 @@ A local agent reaches Tokiwa in one of two ways: the `tokiwa` command, for an ag
 | --- | --- | --- | --- |
 | `read` | sessions, a screen, health, status | yes | always |
 | `control` | changes to a session or a project | yes | only with `tokiwa mcp --allow control` |
+| `answer` | an answer to an agent's question, `agent answer` | yes | only with `tokiwa mcp --allow answer` (no tool yet) |
 | `run` | a command that runs on the host, `create --run` | yes | only with `tokiwa mcp --allow run` |
 | `commands` | an entry of the owner's command list, run on the host | yes | only with `tokiwa mcp --allow commands` |
 | `human` | sign-in, `secret`, `admin`, an attached view | yes, for a person | never |
@@ -154,6 +155,38 @@ The host sends only when all of these hold. They are checked in one tmux command
 The agent sees the message as one bracketed paste, with line feeds unchanged, and its first line is fixed: `[Message from agent ACTOR through Tokiwa. It is not from the owner and carries no owner approval.]`. In the same queue, the host sets the agent state to `working`, so a second send before the agent's own hook runs is refused as `The agent is not idle.`
 
 The paste and the Enter are one core delivery step, which has no agent checks and no command of its own. `create --run` uses the same step.
+
+## Answer an agent's question
+
+`tokiwa agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)` (agent, class `answer`) answers the question that the agent of a session asks. `--choice N` presses the digit `N` (1 to 9) of an option and then Enter. `ID` is the `id` of the pending item, from `tokiwa agent read --pending`. The command needs `TOKIWA_ACTOR`, and that actor must be the driver. It has no MCP tool yet. The result is `{"pending_id": ID, "choice": N}`.
+
+An orchestrator may answer any question: Tokiwa does not refuse a question because of what it asks. The agent is told that an agent chose the answer, not the owner (see [the label](#the-label-of-an-answer)). A `permission` item, a sign-in or OAuth page included, has no answer path. Its only key is `tokiwa interrupt`, which sends Esc and so refuses it. A person approves it in the interface or by attaching.
+
+The host answers only when all of these hold. They are checked in one tmux command queue, together with the keys, so a change in between stops the answer:
+
+| Check | Refusal |
+| --- | --- |
+| The identity matches | `Session identity changed. Nothing was sent.` |
+| No client that can type is attached, and the number of attached clients is still the number that was read | `A client is attached. Nothing was sent.` |
+| The caller is the driver | `Only the driver can send. Claim the session first. Nothing was sent.` |
+| The pane is not in copy mode, has input on and has not ended | `The pane is in copy mode. Nothing was sent.`, `The pane does not take input. Nothing was sent.` |
+| The pane runs `claude` or `codex` | `The pane does not run an agent. Nothing was sent.` |
+| An item is pending | `No item waits for an answer. Nothing was sent.` |
+| The item is a `question`, not a `permission` request | `A permission item has no answer path. Use interrupt to refuse it. Nothing was sent.` |
+| The item has the `id` that the caller named, and its value is still the value that the host read | `The pending item is not the one named. Nothing was sent.` |
+| `N` is not more than the number of options that the item lists | `The choice is not one of the options. Nothing was sent.` |
+
+The screen check for a dialog does not apply: a question is itself a dialog. In the same queue, the host removes the pending item and sets the input label.
+
+`--text` is for a free-text answer. It applies the text checks of `agent send` (see [Send a message to an agent](#send-a-message-to-an-agent)) on the Mac and on the host, and the text reaches the host encrypted, as for `send`. It then refuses with `Free-text answers are not supported for this agent. Nothing was sent.` The key sequence that selects the free-text entry of a question is not documented: the Claude Code documentation describes an "Other" choice only for the SDK callback, not for the terminal dialog. The live check records the real keys; until then, `--text` types nothing.
+
+### The label of an answer
+
+`agent send` puts a fixed first line before its text. An answer has no text, so `agent answer` records the label in the same tmux queue as the keys: the option `@tokiwa_agent_input`, base64 of JSON with `actor`, `pending_id` and `at`. A Claude Code hook on `PostToolUse` of `AskUserQuestion` runs `tokiwa-state answered`. When the `pending_id` is the `tool_use_id` of the event, the command prints the hook output that adds this line to the context of the agent, and removes the option:
+
+`The answer to this question was chosen by agent ACTOR through Tokiwa, not by the owner. It carries no owner approval.`
+
+This hook is the only synchronous one: Claude Code waits for it, with a timeout of 5 seconds. Every other hook of Tokiwa is async. When the hook fails or times out, the answer still stands, and the agent gets no label. Codex has no question tool. A Codex pane has no `question` item, and a message to it carries the message label. The label is a statement in the context of the worker, not a security boundary.
 
 ## Read an agent's transcript
 

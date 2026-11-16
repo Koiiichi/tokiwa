@@ -11,7 +11,7 @@ query=
 digest_json=0
 run_payload=
 run_id=
-input_file=
+input_file= answer_pending= answer_choice=
 run_offset=
 wait_timeout=600
 # One cleanup for every private temporary folder: the plain text of a message, and the key of a sealed result.
@@ -20,7 +20,7 @@ cleanup() { [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf
 trap cleanup EXIT
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|agent send NAME IDENTITY|agent read NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|agent send NAME IDENTITY|agent answer NAME IDENTITY|agent read NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -50,6 +50,11 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 The text is at most 16384 bytes of UTF-8, with no control character except newline and tab, and does not
                 start with /, ! or #. It reaches the host encrypted. The agent sees a first line that names the sender.
                 The result is JSON with turn_before, the turn count to give to agent wait --after
+  agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
+                Answer the pending question of the agent: press the digit N (1 to 9) of an option, then Enter. ID is the id of the
+                pending item from agent read --pending; the question must still wait and the caller must drive. A permission item
+                has no answer; refuse it with interrupt. The agent is told that an agent chose the answer, not the owner.
+                --text is not supported yet and refuses. Needs TOKIWA_ACTOR
   agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
                 Read the transcript of the agent in pages, as JSON events, encrypted on the way. Without --tools a tool call and
                 its result carry no text. --after CURSOR continues from the cursor of an earlier read. --pending reads the
@@ -108,19 +113,41 @@ agent_usage() {
 Usage: tokiwa agent state NAME IDENTITY
        tokiwa agent wait NAME IDENTITY --after TURN [--timeout SECONDS]
        tokiwa agent send NAME IDENTITY (--text TEXT | --file PATH | -)
+       tokiwa agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
        tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
 
 Commands for the agent in a session, Claude Code or Codex. They read what its hooks report.
   state   The facts of the session, and the agent's state, turn, pending item and dialog, as JSON
   wait    Wait until a turn ends, an item is pending, a dialog shows or the agent exits
   send    Send a message to an idle agent; the text reaches the host encrypted
+  answer  Answer the pending question of the agent by the number of an option
   read    Read the transcript of the agent in pages, or its pending item; the result is encrypted on the way
 EOF
 }
 fail() { printf 'Tokiwa: %s\n' "$*" >&2; exit 1; }
+# The same rules as the host, for the message in $input_file. They run here first, so that a refused
+# message makes no AWS call.
+check_message_text() {
+  python3 -I -c '
+import sys, unicodedata
+data = open(sys.argv[1], "rb").read()
+if len(data) > 16384:
+    sys.exit("The message is over 16384 bytes. Nothing was sent.")
+try:
+    text = data.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit("The message is not UTF-8 text. Nothing was sent.")
+if not text.strip():
+    sys.exit("The message is empty. Nothing was sent.")
+if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
+    sys.exit("The message has a control character. Nothing was sent.")
+if text.lstrip()[:1] in ("/", "!", "#"):
+    sys.exit("The message starts with /, ! or #. Nothing was sent.")
+' "$input_file" || exit 1
+}
 # `tokiwa agent SUBCOMMAND ...` is the agent layer. Its helper mode is `agent-SUBCOMMAND`.
 if [[ $mode == agent ]]; then
- case ${2:-} in state|wait|send|read) ;; *) agent_usage >&2; exit 2 ;; esac
+ case ${2:-} in state|wait|send|answer|read) ;; *) agent_usage >&2; exit 2 ;; esac
  set -- "agent-$2" "${@:3}"
  mode=$1
  name=${2:-}
@@ -180,23 +207,26 @@ case "$mode" in
            head -c 16385 < "$5" > "$input_file" ;;
    -) head -c 16385 > "$input_file" ;;
   esac
-  # The same rules as the host. They run here first, so that a refused message makes no AWS call.
-  python3 -I -c '
-import sys, unicodedata
-data = open(sys.argv[1], "rb").read()
-if len(data) > 16384:
-    sys.exit("The message is over 16384 bytes. Nothing was sent.")
-try:
-    text = data.decode("utf-8")
-except UnicodeDecodeError:
-    sys.exit("The message is not UTF-8 text. Nothing was sent.")
-if not text.strip():
-    sys.exit("The message is empty. Nothing was sent.")
-if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
-    sys.exit("The message has a control character. Nothing was sent.")
-if text.lstrip()[:1] in ("/", "!", "#"):
-    sys.exit("The message starts with /, ! or #. Nothing was sent.")
-' "$input_file" || exit 1 ;;
+  check_message_text ;;
+ agent-answer)
+  answer_usage='Use agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT), with N from 1 to 9.'
+  [[ $# -eq 7 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && $4 == --pending && $5 =~ ^[A-Za-z0-9_.:-]{1,128}$ ]] \
+   || fail "$answer_usage"
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail 'Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was sent.'
+  extra=$3
+  answer_pending=$5
+  case $6 in
+   --choice) [[ $7 =~ ^[1-9]$ ]] || fail "$answer_usage"
+             answer_choice=$7 ;;
+   --text) answer_choice=text
+           # The same private folder and the same text checks as agent send.
+           input_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-input.XXXXXX") || fail 'A message needs a temporary folder.'
+           input_file=$input_dir/message
+           printf '%s' "$7" > "$input_file"
+           check_message_text ;;
+   *) fail "$answer_usage" ;;
+  esac ;;
  claim|release)
   [[ ( $# -eq 3 || ( $mode == claim && $# -eq 4 && $4 == --replace ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail "Use $mode NAME IDENTITY$([[ $mode == claim ]] && echo ' [--replace]')."
@@ -432,11 +462,11 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
-  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"})
+  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"})
   remote="$remote $quoted"
  fi
  # Run Command keeps its output in the account, so the host encrypts a result to a key that
@@ -528,7 +558,7 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
    || fail 'The message could not be encrypted. Nothing was sent.'
  }
  if [[ $mode == input-cert ]]; then host_cert; exit 0; fi
- if [[ ( $mode == create || $mode == agent-send ) && -n $input_file ]]; then
+ if [[ ( $mode == create || $mode == agent-send || $mode == agent-answer ) && -n $input_file ]]; then
   # Run Command runs as root. Root decrypts the line and pipes it to the helper, which reads it
   # from stdin: the text is never an argument, a file or output on the host.
   sealed_line=$(seal_input "$input_file") || exit 1
