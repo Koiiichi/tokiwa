@@ -49,7 +49,7 @@ test("an expired sign-in offers the sign-in key in the band, the list, the pane 
 test("another read failure keeps its message, and the sign-in key does nothing", async () => {
   const { t, app } = await open("Launcher --snapshot exited 255: timeout");
   try {
-    expect(t.captureCharFrame()).toContain("▲ timeout.");
+    expect(t.captureCharFrame()).toContain("▲ Sessions read failed: timeout.");
     await t.mockInput.typeText("l");
     await pause();
     expect(app.shells).toHaveLength(0);

@@ -39,7 +39,7 @@ import {
   type SessionRef,
 } from "./backend";
 import { activity, HealthHistory, WorkspaceState } from "./state";
-import { diagnose, worst, type Problem } from "./problem";
+import { classify, worst, type Failure, type Source } from "./problem";
 import {
   healthLines,
   loadHealthConfig,
@@ -290,7 +290,11 @@ export class App {
   previousSessions = new Map<string, SessionRef>();
   sessionsRead = false;
   sessionsLoading = false;
-  sessionsError = "";
+  /** The failure of the last read of each source; `readFailed` and `readSucceeded` write it. */
+  lastFailure: Partial<Record<Source, Failure>> = {};
+  get sessionsError() {
+    return this.lastFailure.sessions?.detail ?? "";
+  }
   sessionTimer?: ReturnType<typeof setTimeout>;
   /** Times in milliseconds of the last successful and the last failed read from the EC2 host. */
   hostOk = 0;
@@ -1721,18 +1725,25 @@ export class App {
   signInExpired() {
     return this.problem()?.kind === "signed-out";
   }
-  /** The raw failures of the last session read and the last Health read, by source. */
-  failures(): Record<string, string> {
-    return {
-      ...(this.sessionsError ? { sessions: this.sessionsError } : {}),
-      ...(this.history.gap && this.history.error
-        ? { health: this.history.error }
-        : {}),
-    };
+  /** Record a failed read of one source and return its classified failure. */
+  readFailed(source: Source, error: unknown): Failure {
+    const failure = classify(source, error, this.now());
+    this.lastFailure[source] = failure;
+    return failure;
   }
-  /** The problem that explains the current failures, or undefined when the reads work. */
-  problem(): Problem | undefined {
-    return worst(Object.values(this.failures()).map(diagnose));
+  /** A read of one source succeeded: its failure ends. */
+  readSucceeded(source: Source) {
+    delete this.lastFailure[source];
+  }
+  /** The failures of the last session read and the last Health read. */
+  failures(): Failure[] {
+    return [this.lastFailure.sessions, this.lastFailure.health].filter(
+      (f): f is Failure => !!f,
+    );
+  }
+  /** The failure that explains the current failures, or undefined when the reads work. */
+  problem(): Failure | undefined {
+    return worst(this.failures());
   }
   /** Rows that the band takes under the header. */
   bandRows = 0;
@@ -1770,13 +1781,7 @@ export class App {
       // The cause is usually last, so the box keeps the last six lines.
       const inner = Math.max(20, this.renderer.width - 8);
       // Each distinct failure once: both reads often fail with the same output.
-      const lines = [
-        ...new Set(
-          Object.values(this.failures()).map((raw) =>
-            diagnose(raw.replace(/^Error: /, "")).detail.join("\n"),
-          ),
-        ),
-      ]
+      const lines = [...new Set(this.failures().map((f) => f.detail))]
         .flatMap((block) => block.split("\n"))
         .flatMap((line) => wrapText(line, inner))
         .slice(-6);
@@ -1801,7 +1806,7 @@ export class App {
     const file =
       process.env.TOKIWA_ERROR_LOG ??
       join(homedir(), ".local", "state", "tokiwa", "errors.log");
-    for (const [source, raw] of Object.entries(failures)) {
+    for (const { source, detail: raw } of failures) {
       if (this.logged[source] === raw || this.options.spawn === false) continue;
       this.logged[source] = raw;
       try {
@@ -1816,7 +1821,8 @@ export class App {
       } catch {}
     }
     for (const source of Object.keys(this.logged))
-      if (!(source in failures)) delete this.logged[source];
+      if (!failures.some((f) => f.source === source))
+        delete this.logged[source];
   }
   signingIn() {
     return !!this.signInShell && !this.signInShell.exited;
@@ -1896,14 +1902,14 @@ export class App {
         if (ref?.attention !== at) this.attentionSeen.delete(name);
       }
       this.sessionsRead = true;
-      this.sessionsError = "";
+      this.readSucceeded("sessions");
       this.hostOk = this.now();
       // A read that succeeds proves the sign-in works: Health does not wait its turn.
       if (
         this.history.gap &&
         !this.history.stopped &&
         !this.sampling &&
-        diagnose(this.history.error).kind === "signed-out"
+        this.lastFailure.health?.kind === "signed-out"
       ) {
         clearTimeout(this.sampleTimer);
         void this.sampleHealth();
@@ -1911,7 +1917,7 @@ export class App {
       this.record("remote-sessions-refreshed", { count: rows.length });
     } catch (e) {
       if (this.disposed) return;
-      this.sessionsError = String((e as Error)?.message ?? e);
+      this.readFailed("sessions", e);
       this.hostFail = this.now();
       this.record("remote-sessions-error", { error: this.sessionsError });
     } finally {
@@ -2797,14 +2803,27 @@ export class App {
   async sampleHealth() {
     if (this.sampling || this.disposed || this.history.stopped) return;
     this.sampling = true;
-    await this.history.sample(() => this.backend.health());
-    if (this.history.gap) this.hostFail = this.now();
-    else if (!this.history.stopped) this.hostOk = this.now();
+    await this.history.sample(async () => {
+      try {
+        return await this.backend.health();
+      } catch (e) {
+        this.readFailed("health", e);
+        throw e;
+      }
+    });
+    if (this.history.gap) {
+      // A sample that the history rejects (a stale timestamp) never reached the wrapper above.
+      if (!this.lastFailure.health)
+        this.readFailed("health", this.history.error);
+      this.hostFail = this.now();
+    } else {
+      this.readSucceeded("health");
+      if (!this.history.stopped) this.hostOk = this.now();
+    }
     // A read that succeeds proves the sign-in works: the session read does not wait its turn.
     if (
       !this.history.gap &&
-      this.sessionsError &&
-      diagnose(this.sessionsError).kind === "signed-out"
+      this.lastFailure.sessions?.kind === "signed-out"
     )
       void this.refreshSessions();
     if (!this.disposed && this.now() - this.spendAt >= SPEND_REFRESH_MS) {
@@ -2812,7 +2831,9 @@ export class App {
       try {
         this.spend = await this.backend.spend();
         this.spendError = "";
+        this.readSucceeded("spend");
       } catch (e) {
+        this.readFailed("spend", e);
         this.spend = undefined;
         this.spendError = spendFailure(e);
       }

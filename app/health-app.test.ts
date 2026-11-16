@@ -231,7 +231,7 @@ test("only a failed read is reported as a failed read", async () => {
     await t.renderOnce();
     // The band under the header names the failed read; the readings stay and are stale.
     const frame = t.captureCharFrame();
-    expect(frame).toContain("▲ offline.");
+    expect(frame).toContain("▲ Health read failed: offline.");
     expect(frame).toContain("· stale");
     expect(frame).not.toContain("Last read failed");
   } finally {

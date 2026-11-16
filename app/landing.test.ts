@@ -79,7 +79,7 @@ test("a failed session read names the reason in the band and the header shows th
   try {
     const frame = t.captureCharFrame();
     expect(frame).toContain("○ EC2 · offline");
-    expect(frame).toContain("▲ timeout.");
+    expect(frame).toContain("▲ Sessions read failed: timeout.");
     expect(frame).toContain("No sessions read");
   } finally {
     await t.dispose();

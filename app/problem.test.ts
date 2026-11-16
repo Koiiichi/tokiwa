@@ -1,76 +1,174 @@
 import { test, expect } from "bun:test";
-import { diagnose, worst } from "./problem";
+import { readFileSync } from "node:fs";
+import { LauncherError, type LauncherCategory } from "./backend";
+import { MAPPED_SENTENCES, classify, worst, GLOBAL_KINDS } from "./problem";
 
 const NOISE =
   "shell-init: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory\n" +
   "chdir: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory\n";
 
-test("an expired AWS sign-in is named in plain words, without the shell noise before it", () => {
-  const p = diagnose(
-    "Error: Launcher health exited 1: " +
-      NOISE +
-      "Tokiwa: AWS authentication failed. Run aws sso login --profile work.",
+function exit(
+  stderr: string,
+  opts: { code?: number; category?: LauncherCategory; command?: string } = {},
+) {
+  const command = opts.command ?? "--snapshot";
+  const code = opts.code ?? 1;
+  return new LauncherError(
+    `Launcher ${command} exited ${code}: ${stderr}`,
+    command,
+    "exit",
+    code,
+    stderr,
+    opts.category,
   );
-  expect(p.kind).toBe("signed-out");
-  expect(p.title).toBe("AWS sign-in expired");
-  // The details keep the raw output for a person who wants it.
-  expect(p.detail.join("\n")).toContain("getcwd");
-  expect(
-    diagnose(
-      "Error when retrieving token from sso: Token has expired and refresh failed",
-    ).kind,
-  ).toBe("signed-out");
-  expect(
-    diagnose(
-      "Tokiwa: The AWS login did not complete. Run aws sso login --profile work.",
-    ).kind,
-  ).toBe("signed-out");
-});
+}
+const plain = (message: string) => new Error(message);
+const read = (error: unknown) => classify("sessions", error, 1);
 
-test("a stopped workstation, a missing network and a server that is not ready each have a cause", () => {
-  expect(
-    diagnose("Tokiwa: The host is stopped. No restart was requested."),
-  ).toMatchObject({
-    kind: "stopped",
-    title: "The workstation is stopped",
-  });
-  expect(
-    diagnose(
-      'Could not connect to the endpoint URL: "https://ec2.us-east-1.amazonaws.com/"',
-    ),
-  ).toMatchObject({
+test("a category from the launcher decides the kind, whatever the text says", () => {
+  const text =
+    "Tokiwa: AWS authentication failed. Run aws sso login --profile profile-a.";
+  expect(read(exit(text, { category: "unreachable" }))).toMatchObject({
     kind: "offline",
     title: "AWS cannot be reached from this Mac",
+    category: "unreachable",
   });
-  expect(
-    diagnose(
-      "Tokiwa: The workbench check returned failed. No service was started.",
-    ),
-  ).toMatchObject({
-    kind: "failed",
-    title: "The workbench server is not ready",
+  expect(read(exit(text, { category: "auth" }))).toMatchObject({
+    kind: "signed-out",
+    title: "AWS sign-in expired",
   });
 });
 
-test("an unknown failure shows its first meaningful line, without the launcher prefix", () => {
-  const p = diagnose(
-    "Error: Launcher --snapshot exited 255: " +
-      NOISE +
-      "ssh: unexpected reply\nmore",
+test("an older launcher's sign-in sentence still means signed-out", () => {
+  const f = read(
+    plain(
+      "Launcher --snapshot exited 1: Tokiwa: AWS authentication failed. Run aws sso login --profile profile-a.",
+    ),
   );
-  expect(p.kind).toBe("failed");
-  expect(p.title).toBe("ssh: unexpected reply");
-  expect(diagnose("Launcher --snapshot exited 1:").title).toBe(
+  expect(f.kind).toBe("signed-out");
+  expect(f.command).toBe("--snapshot");
+  expect(f.code).toBe(1);
+});
+
+test("AWS CLI text without a category is a component failure", () => {
+  expect(
+    read(
+      plain("Launcher health exited 1: Could not connect to the endpoint URL"),
+    ).kind,
+  ).toBe("failed");
+  expect(
+    read(plain("Launcher health exited 1: getaddrinfo ENOTFOUND host")).kind,
+  ).toBe("failed");
+});
+
+test("a later AWS read failure is offline, not a workstation state", () => {
+  for (const sentence of [
+    "Tokiwa: The host state could not be read.",
+    "Tokiwa: The host check could not be submitted.",
+  ])
+    expect(read(exit(sentence))).toMatchObject({
+      kind: "offline",
+      title: "An AWS request failed",
+    });
+});
+
+test("a timeout is offline; a spawn failure and exit 2 are setup", () => {
+  expect(
+    read(
+      new LauncherError(
+        "The launcher exceeded 90 seconds.",
+        "health",
+        "timeout",
+        null,
+        "",
+      ),
+    ),
+  ).toMatchObject({ kind: "offline" });
+  expect(
+    read(
+      new LauncherError(
+        "Launcher health could not start: x",
+        "health",
+        "spawn",
+        null,
+        "x",
+      ),
+    ),
+  ).toMatchObject({ kind: "setup", title: "The launcher is not installed" });
+  expect(read(exit("usage: tokiwa", { code: 2 }))).toMatchObject({
+    kind: "setup",
+    title: "The launcher is older than the app",
+  });
+});
+
+test("the host, workbench and settings sentences each have a kind", () => {
+  expect(
+    read(exit("Tokiwa: The host is stopped. No restart was requested.")),
+  ).toMatchObject({ kind: "stopped", title: "The workstation is stopped" });
+  expect(
+    read(
+      exit(
+        "Tokiwa: The workbench check returned Failed. No service was started.",
+      ),
+    ).kind,
+  ).toBe("not-ready");
+  for (const sentence of [
+    "Set the host in /home/user/.config/tokiwa/host.conf: instance=, profile= and region=.",
+    "/home/user/.config/tokiwa/host.conf has a line that is not KEY=VALUE for instance, profile, region, account or end.",
+    "/home/user/.config/tokiwa/host.conf: region= must be an AWS region, for example us-east-1.",
+    "The end time in /home/user/.config/tokiwa/host.conf has passed. No host was started.",
+    "The AWS account does not match account= in /home/user/.config/tokiwa/host.conf.",
+  ]) {
+    const f = read(exit(`Tokiwa: ${sentence}`));
+    expect(f.kind).toBe("setup");
+    expect(f.title).toBe("The host settings need a fix");
+    expect(f.explanation).toBe(`Tokiwa: ${sentence}`.replace(/^Tokiwa: /, ""));
+  }
+});
+
+test("titles carry no trailing period, no launcher prefix and no shell noise", () => {
+  const f = read(
+    plain(
+      "Error: Launcher --snapshot exited 255: " +
+        NOISE +
+        "ssh: unexpected reply",
+    ),
+  );
+  expect(f.kind).toBe("failed");
+  expect(f.summary).toBe("ssh: unexpected reply");
+  expect(f.title).toBe("Sessions read failed: ssh: unexpected reply");
+  expect(f.detail).not.toContain("Launcher");
+  expect(f.detail).not.toContain("getcwd");
+  expect(read(plain("Launcher --snapshot exited 1:")).summary).toBe(
     "The launcher failed",
   );
-  expect(diagnose("Error: offline").title).toBe("offline");
+  expect(classify("health", "Tokiwa: Bad thing happened.", 1).title).toBe(
+    "Health read failed: bad thing happened",
+  );
 });
 
-test("the sign-in explains every other failure, so it wins; the others keep their order", () => {
-  const signedOut = diagnose("Tokiwa: AWS authentication failed.");
-  const failed = diagnose("ssh: unexpected reply");
-  const offline = diagnose("Could not connect to the endpoint URL");
-  expect(worst([failed, signedOut])).toBe(signedOut);
-  expect(worst([failed, offline])).toBe(offline);
+test("worst ranks setup, signed-out, offline, stopped, not-ready, failed", () => {
+  const kinds = [
+    ["failed", "ssh: unexpected reply"],
+    ["not-ready", "The workbench check returned Failed."],
+    ["stopped", "The host is stopped. No restart was requested."],
+    ["offline", "The host state could not be read."],
+    ["signed-out", "AWS authentication failed."],
+    ["setup", "Set the host in x: instance="],
+  ] as const;
+  const all = kinds.map(([kind, text]) => {
+    const f = read(plain(text));
+    expect(f.kind).toBe(kind);
+    return f;
+  });
+  for (let i = all.length - 1; i > 0; i--)
+    expect(worst(all.slice(0, i + 1))).toBe(all[i]);
   expect(worst([])).toBeUndefined();
+  expect(GLOBAL_KINDS).not.toContain("failed");
+  expect(GLOBAL_KINDS).toHaveLength(5);
+});
+
+test("each sentence that classify maps exists in bin/tokiwa", () => {
+  const launcher = readFileSync("../bin/tokiwa", "utf8");
+  for (const sentence of MAPPED_SENTENCES) expect(launcher).toContain(sentence);
 });

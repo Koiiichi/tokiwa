@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { readFileSync } from "node:fs";
 import { App } from "./app";
-import { BackendClient } from "./backend";
+import { BackendClient, LauncherError } from "./backend";
 import { fixtureSpend } from "./health-fixture";
 import { fixtureSample } from "./health-fixture";
 import { landingSessions } from "./landing-fixture";
@@ -118,7 +118,7 @@ test("another failure names its first meaningful line and offers a retry", async
   );
   try {
     const frame = t.captureCharFrame();
-    expect(frame).toContain("▲ ssh: unexpected reply");
+    expect(frame).toContain("▲ Sessions read failed: ssh: unexpected reply");
     expect(frame).toContain("u retry · e details");
     expect(headerLine(frame)).toContain("○ EC2 · offline");
     // The sign-in key does nothing when the sign-in is not the cause.
@@ -170,12 +170,11 @@ test("Health names this Mac, which left the header", async () => {
   }
 });
 
-test("each new failure is written to the error log with its raw output", async () => {
+test("each new failure is written to the error log with its output", async () => {
   const { t, app } = await open(EXPIRED);
   try {
     const log = readFileSync(process.env.TOKIWA_ERROR_LOG!, "utf8");
     expect(log).toContain("Tokiwa: AWS authentication failed");
-    expect(log).toContain("getcwd");
   } finally {
     await close(t, app);
   }
@@ -208,6 +207,29 @@ test("the details show one copy of a failure that both reads report", async () =
     await t.renderOnce();
     const frame = t.captureCharFrame();
     expect(frame.split("Tokiwa: AWS authentication failed").length - 1).toBe(1);
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("the band title has one period", async () => {
+  const { t, app } = await open(undefined);
+  try {
+    app.readFailed(
+      "sessions",
+      new LauncherError(
+        "The launcher exceeded 90 seconds.",
+        "--snapshot",
+        "timeout",
+        null,
+        "",
+      ),
+    );
+    app.drawProblem();
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("▲ AWS cannot be reached from this Mac.");
+    expect(frame).not.toContain("..");
   } finally {
     await close(t, app);
   }
