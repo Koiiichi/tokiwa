@@ -293,7 +293,8 @@ export class App {
   /** The failure of the last read of each source; `readFailed` and `readSucceeded` write it. */
   lastFailure: Partial<Record<Source, Failure>> = {};
   get sessionsError() {
-    return this.lastFailure.sessions?.detail ?? "";
+    const f = this.lastFailure.sessions;
+    return f ? f.detail || f.summary : "";
   }
   sessionTimer?: ReturnType<typeof setTimeout>;
   /** Times in milliseconds of the last successful and the last failed read from the EC2 host. */
@@ -1806,9 +1807,21 @@ export class App {
     const file =
       process.env.TOKIWA_ERROR_LOG ??
       join(homedir(), ".local", "state", "tokiwa", "errors.log");
-    for (const { source, detail: raw } of failures) {
-      if (this.logged[source] === raw || this.options.spawn === false) continue;
-      this.logged[source] = raw;
+    for (const f of failures) {
+      const { source } = f;
+      const header = [
+        source,
+        f.kind,
+        f.command && `command=${f.command}`,
+        f.code !== null && `exit=${f.code}`,
+        f.category && `category=${f.category}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const raw = f.raw.trimEnd() || f.summary;
+      const key = `${header}\n${raw}`;
+      if (this.logged[source] === key || this.options.spawn === false) continue;
+      this.logged[source] = key;
       try {
         mkdirSync(dirname(file), { recursive: true });
         try {
@@ -1816,7 +1829,7 @@ export class App {
         } catch {}
         appendFileSync(
           file,
-          `${new Date().toISOString()} ${source}\n${raw.trimEnd()}\n\n`,
+          `${new Date().toISOString()} ${header}\n${raw}\n\n`,
         );
       } catch {}
     }
@@ -2805,7 +2818,10 @@ export class App {
     this.sampling = true;
     await this.history.sample(async () => {
       try {
-        return await this.backend.health();
+        const sample = await this.backend.health();
+        // The read itself worked; a sample that the history rejects is a new failure below.
+        this.readSucceeded("health");
+        return sample;
       } catch (e) {
         this.readFailed("health", e);
         throw e;
@@ -2821,10 +2837,7 @@ export class App {
       if (!this.history.stopped) this.hostOk = this.now();
     }
     // A read that succeeds proves the sign-in works: the session read does not wait its turn.
-    if (
-      !this.history.gap &&
-      this.lastFailure.sessions?.kind === "signed-out"
-    )
+    if (!this.history.gap && this.lastFailure.sessions?.kind === "signed-out")
       void this.refreshSessions();
     if (!this.disposed && this.now() - this.spendAt >= SPEND_REFRESH_MS) {
       this.spendAt = this.now();
@@ -3611,7 +3624,7 @@ export class App {
       });
     if (!rows.length) {
       // The band above names the cause; the list says only what it lacks and the key.
-      const reason = this.sessionsError
+      const reason = this.lastFailure.sessions
         ? [
             { text: "No sessions read", tone: "dim" as const },
             { text: "", tone: "dim" as const },

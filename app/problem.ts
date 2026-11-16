@@ -25,6 +25,8 @@ export interface Failure {
   category?: LauncherCategory;
   /** The output of the failed read, one line each, without the launcher prefix or shell noise. */
   detail: string;
+  /** The message as the launcher call raised it, for the error log. */
+  raw: string;
   at: number;
 }
 
@@ -62,7 +64,7 @@ const LAUNCHER = /^(Error: )?Launcher (\S+) exited (-?\d+):\s*/;
 const STOPPED = /The host is (\S+?)\.? No restart was requested/;
 const AWS_REQUEST_FAILED =
   /The host state could not be read|The host check could not be submitted/;
-const NOT_READY = /The workbench check returned/;
+const NOT_READY = /The workbench check returned (\S+?)\.?(\s|$)/;
 const SETTINGS = new RegExp(
   [
     "Set the host in",
@@ -112,6 +114,7 @@ export function classify(source: Source, error: unknown, at: number): Failure {
     code,
     ...(launcher?.category ? { category: launcher.category } : {}),
     detail,
+    raw: message,
     at,
   });
   const signedOut = () =>
@@ -166,7 +169,15 @@ export function classify(source: Source, error: unknown, at: number): Failure {
       `The workstation is ${stopped[1]}`,
       `The workstation is ${stopped[1]}. The app does not start it.`,
     );
-  if (NOT_READY.test(text))
+  const check = NOT_READY.exec(text);
+  // Only Failed is a verdict. Any other status word comes from polls that did not finish.
+  if (check && check[1] !== "Failed")
+    return made(
+      "offline",
+      "An AWS request did not finish",
+      "A request to AWS did not finish, so the workbench state is unknown. Refresh and retry.",
+    );
+  if (check)
     return made(
       "not-ready",
       "The workbench server is not ready",

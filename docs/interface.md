@@ -72,17 +72,19 @@ Session Manager carries no ICMP, so a try is a TCP connection. The app makes a t
 
 ### Problem band
 
-While the last session read or the last Health read failed, one band under the header names the problem. The band shows on every view. When both reads failed, it names the cause that explains the other: an expired sign-in first, then a stopped workstation, then a network failure, then any other failure.
+While the last session read or the last Health read failed, one band under the header names the problem. The band shows on every view. When both reads failed, it names the cause that explains the other: a setup problem first, then an expired sign-in, then a network failure, then a stopped workstation, then a workbench that is not ready, then any other failure.
 
 | Band | Cause | Key |
 | --- | --- | --- |
 | `▲ AWS sign-in expired.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band says `Signing in… finish in the browser`. |
+| `▲ The launcher is not installed.`, `▲ The launcher is older than the app.`, `▲ The host settings need a fix.` | The launcher is missing or too old for the app, or the host settings file is wrong. | `u` retries after the fix. |
 | `▲ The workstation is stopped.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
-| `▲ AWS cannot be reached from this Mac.` | The AWS endpoint cannot be reached, or the launcher's AWS access check failed with a network error. | `u` retries. |
-| `▲ The workbench server is not ready.` | The workbench check on the host failed. | `u` retries. |
-| `▲ <first line>` | Any other failure: its first line of output, without the launcher prefix and without shell warnings about a removed folder. | `u` retries. |
+| `▲ AWS cannot be reached from this Mac.` | The launcher reported a network failure in its AWS access check, or a read took longer than 90 seconds. | `u` retries. |
+| `▲ An AWS request failed.`, `▲ An AWS request did not finish.` | An AWS request failed after the access check passed, or the workbench check ended with a status other than Failed. The workstation state is unknown. | `u` retries. |
+| `▲ The workbench server is not ready.` | The workbench check on the host returned Failed. | `u` retries. |
+| `▲ Sessions read failed: <first line>` | Any other failure of a read (`Sessions`, `Health` or `Spend`): its first line of output, without the launcher prefix and without shell warnings about a removed folder. | `u` retries. |
 
-After the cause, the band gives the time of the last good read, for example `Last good read at 13:08.`. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. `e`, or a click on the band, opens the last six lines of the raw output in a box under the band, with one copy of a failure that both reads report; `e` closes it. The app also writes each new failure, with its raw output, to the error log. See [Files](configuration.md#files).
+After the cause, the band gives the time of the last good read, for example `Last good read at 13:08.`. A read that succeeds after an expired sign-in starts the other read at once, so the band clears without a wait. `e`, or a click on the band, opens the last six lines of the raw output in a box under the band, with one copy of a failure that both reads report; `e` closes it. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
 
 ## Session list
 

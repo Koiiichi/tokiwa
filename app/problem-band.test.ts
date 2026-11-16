@@ -170,11 +170,14 @@ test("Health names this Mac, which left the header", async () => {
   }
 });
 
-test("each new failure is written to the error log with its output", async () => {
+test("each new failure is written to the error log with its source, command, exit code and raw message", async () => {
   const { t, app } = await open(EXPIRED);
   try {
     const log = readFileSync(process.env.TOKIWA_ERROR_LOG!, "utf8");
     expect(log).toContain("Tokiwa: AWS authentication failed");
+    expect(log).toContain("sessions signed-out command=--snapshot exit=1");
+    expect(log).toContain("Launcher --snapshot exited 1:");
+    expect(log).toContain("getcwd");
   } finally {
     await close(t, app);
   }
@@ -230,6 +233,39 @@ test("the band title has one period", async () => {
     const frame = t.captureCharFrame();
     expect(frame).toContain("▲ AWS cannot be reached from this Mac.");
     expect(frame).not.toContain("..");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a failure with empty stderr still reads as a failed read", async () => {
+  const { t, app } = await open("Launcher --snapshot exited 255: ");
+  try {
+    expect(app.lastFailure.sessions?.detail).toBe("");
+    expect(app.sessionsError).not.toBe("");
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("▲ Sessions read failed");
+    expect(frame).toContain("No sessions read");
+    expect(frame).not.toContain("No sessions on EC2");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a later, different Health failure replaces the earlier one", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    state.message = "Tokiwa: AWS authentication failed.";
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(app.lastFailure.health?.kind).toBe("signed-out");
+    state.message = undefined;
+    // A sample with an old timestamp is rejected by the history, outside the read.
+    app.backend.health = async () => ({ ...fixtureSample, sampled_at: 1 });
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    expect(app.lastFailure.health?.kind).toBe("failed");
+    expect(app.lastFailure.health?.detail).toContain("stale");
   } finally {
     await close(t, app);
   }

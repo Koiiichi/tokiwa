@@ -172,3 +172,36 @@ test("each sentence that classify maps exists in bin/tokiwa", () => {
   const launcher = readFileSync("../bin/tokiwa", "utf8");
   for (const sentence of MAPPED_SENTENCES) expect(launcher).toContain(sentence);
 });
+
+test("only a Failed workbench check is a verdict; any other status is an unfinished AWS request", () => {
+  for (const status of [
+    "Pending",
+    "InProgress",
+    "Delayed",
+    "TimedOut",
+    "Cancelled",
+  ])
+    expect(
+      read(
+        exit(
+          `Tokiwa: The workbench check returned ${status}. No service was started.`,
+        ),
+      ),
+    ).toMatchObject({
+      kind: "offline",
+      title: "An AWS request did not finish",
+    });
+  expect(
+    read(
+      exit(
+        "Tokiwa: The workbench check returned Failed. No service was started.",
+      ),
+    ).kind,
+  ).toBe("not-ready");
+});
+
+test("a failure keeps its raw message", () => {
+  expect(read(exit("x", { code: 255 })).raw).toBe(
+    "Launcher --snapshot exited 255: x",
+  );
+});
