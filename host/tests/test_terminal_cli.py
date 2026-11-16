@@ -64,6 +64,13 @@ case "$*" in
    printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
    printf '{"id": "20261112T183000-7f3a", "state": "done", "exit": 0, "text": "ok"}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\\n'
    echo
+  elif [[ $last == *'terminal-session.sh agent-read '* ]]; then
+   ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
+   # Act as the host: encrypt to the certificate that the launcher sent.
+   cert=$(grep -o "agent-read [^ ]* '[^']*' [^ ]* [^ ]* [A-Za-z0-9+/=]*" "$HOME/calls" | tail -1 | awk '{print $NF}')
+   printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
+   printf '{"events": [], "cursor": "0123456789ab:0", "more": false, "transcript_changed": false}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\n'
+   echo
   elif grep -q 'terminal-session.sh capture' "$HOME/calls"; then
    ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
    # Act as the host: encrypt to the certificate that the launcher sent.
@@ -398,13 +405,14 @@ esac
             self.assertFalse((self.home / 'calls').exists(), args)
 
     def test_agent_without_a_subcommand_prints_usage(self):
-        for args in [('agent',), ('agent', 'read'), ('agent', 'bogus', 'lead', '1:$2:3')]:
+        for args in [('agent',), ('agent', 'delete'), ('agent', 'bogus', 'lead', '1:$2:3')]:
             result = self.run_cli(*args)
             self.assertEqual(result.returncode, 2, args)
             self.assertIn('Usage: tokiwa agent', result.stderr)
             self.assertIn('state NAME IDENTITY', result.stderr)
             self.assertIn('wait NAME IDENTITY --after TURN', result.stderr)
             self.assertIn('send NAME IDENTITY', result.stderr)
+            self.assertIn('read NAME IDENTITY', result.stderr)
         self.assertFalse((self.home / 'calls').exists())
 
     def test_the_old_top_level_wait_is_not_a_command(self):
@@ -859,6 +867,50 @@ esac
             self.assertNotEqual(result.returncode, 0, args)
         self.assertFalse((self.home / 'calls').exists())
 
+    def test_agent_read_runs_the_helper_and_opens_the_sealed_result(self):
+        self.scratch()
+        cursor = '0123456789ab:42'
+        cases = [(('agent', 'read', 'backend', '1:$2:3'), "agent-read backend '1:$2:3' - - "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--tools'), "agent-read backend '1:$2:3' - tools "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--pending'), "agent-read backend '1:$2:3' - pending "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--pending', '--tools', '--after', cursor),
+                  f"agent-read backend '1:$2:3' {cursor} tools,pending ")]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                (self.home / 'calls').unlink(missing_ok=True)
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, self.sent())
+                self.assertEqual(json.loads(result.stdout)['cursor'], '0123456789ab:0')
+                self.assertNotIn('PRIVATE KEY', (self.home / 'calls').read_text())
+        self.assertEqual(list((self.home / 'scratch').iterdir()), [])
+
+    def test_agent_read_files_are_private_and_the_key_is_new_each_time(self):
+        self.scratch()
+        result = subprocess.run(['bash', '-c', 'umask 022; exec bash "$@"', 'bash', str(CLI), 'agent', 'read', 'backend', '1:$2:3'],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex((self.home / 'modes').read_text(), r'(?m)^-r[w-]-r')
+        first = re.findall(r'[A-Za-z0-9+/=]{200,}', self.sent())[-1]
+        self.run_cli('agent', 'read', 'backend', '1:$2:3')
+        self.assertNotEqual(re.findall(r'[A-Za-z0-9+/=]{200,}', self.sent())[-1], first)
+
+    def test_failed_agent_read_prints_no_sealed_output(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('agent', 'read', 'backend', '1:$2:3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
+    def test_agent_read_rejects_bad_input_before_aws(self):
+        cursor = '0123456789ab:42'
+        for args in [('bad;name', '1:$2:3'), ('backend', '123;id'), ('backend',), ('backend', '1:$2:3', '--after'),
+                     ('backend', '1:$2:3', '--after', 'x'), ('backend', '1:$2:3', '--after', '0123456789AB:1'),
+                     ('backend', '1:$2:3', '--after', cursor, '--after', cursor), ('backend', '1:$2:3', '--tools', '--tools'),
+                     ('backend', '1:$2:3', '--all'), ('backend', '1:$2:3', 'extra')]:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.run_cli('agent', 'read', *args).returncode, 0)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_capture_starts_no_service(self):
         self.run_cli('capture', 'backend', '1:$2:3')
         self.assertIn('systemctl is-active', self.sent())
@@ -1094,7 +1146,7 @@ esac
         self.stub_sleep()
         self.env['TEST_STATUS'] = 'InProgress'
         cases = [(('run', 'review-pr', 'pr=42'), 40), (('run-status', '20261112T183000-7f3a'), 40),
-                 (('capture', 'backend', '1:$2:3'), 40), (('status',), 15), (('commands',), 15)]
+                 (('capture', 'backend', '1:$2:3'), 40), (('agent', 'read', 'backend', '1:$2:3'), 40), (('status',), 15), (('commands',), 15)]
         for args, polls in cases:
             with self.subTest(args=args):
                 (self.home / 'calls').unlink(missing_ok=True)

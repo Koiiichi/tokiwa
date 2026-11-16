@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import json
 import base64
+import hashlib
 import pty
 import re
 import select
@@ -2190,3 +2191,241 @@ exec {self.tmux} "$@"
         self.assertIn('send-keys', deliveries[0])
         self.assertIn('set-option', deliveries[0])
         self.assertIn('working:', deliveries[0])
+
+
+class AgentRead(ModelHelpers, Server):
+    """`agent-read` reads the transcript that an agent's hooks name, in pages, sealed to the caller."""
+
+    FIXTURES = ROOT / 'tests/fixtures/transcripts'
+    KINDS = ['user', 'assistant', 'tool_call', 'tool_result', 'tool_call', 'tool_result', 'notice', 'user', 'assistant']
+    TEXTS = ['Request one', 'Answer one', '', '', '', '', 'Notice one', 'Request two', 'Answer two']
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+        self.folder = Path(self.temp.name) / 'transcripts'
+        self.folder.mkdir()
+        self.transcript = self.use('claude.jsonl', 'one.jsonl')
+        self.keys()
+
+    def use(self, fixture, name):
+        """Copy a fixture to a transcript file that the session names. Return its path."""
+        path = self.folder / name
+        shutil.copy(self.FIXTURES / fixture, path)
+        self.name(path)
+        return path
+
+    def name(self, path, session='lead'):
+        self.tm('set-option', '-t', f'={session}:', '@tokiwa_agent_transcript', str(path))
+
+    def keys(self):
+        self.key = Path(self.temp.name) / 'key.pem'
+        self.cert = Path(self.temp.name) / 'cert.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(self.key),
+                        '-out', str(self.cert), '-subj', '/CN=tokiwa-capture', '-days', '1'],
+                       check=True, capture_output=True)
+        self.recipient = base64.b64encode(self.cert.read_bytes()).decode()
+
+    def run_read(self, cursor='-', flags='-', identity=None, name='lead'):
+        return self.helper('agent-read', name, identity or self.identity, cursor, flags, self.recipient)
+
+    def open(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey', str(self.key),
+                                 '-recip', str(self.cert)], input=base64.b64decode(result.stdout), capture_output=True)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        self.opened = opened.stdout
+        return json.loads(opened.stdout)
+
+    def read(self, cursor='-', flags='-'):
+        return self.open(self.run_read(cursor, flags))
+
+    def cursor_of(self, path, offset):
+        return hashlib.sha256(str(path).encode()).hexdigest()[:12] + f':{offset}'
+
+    def test_read_from_the_start(self):
+        page = self.read()
+        self.assertEqual([e['kind'] for e in page['events']], self.KINDS)
+        self.assertEqual([e['text'] for e in page['events']], self.TEXTS)
+        self.assertEqual(page['events'][0], {'at': 1767225601, 'kind': 'user', 'text': 'Request one', 'tool': None, 'error': False})
+        self.assertEqual(page['cursor'], self.cursor_of(self.transcript, self.transcript.stat().st_size))
+        self.assertIs(page['more'], False)
+        self.assertIs(page['transcript_changed'], False)
+
+    def test_read_resumes_at_the_cursor(self):
+        first = self.read()
+        line = {'type': 'assistant', 'timestamp': '2026-01-01T00:00:12.000Z',
+                'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Answer three'}]}}
+        with self.transcript.open('a') as f:
+            f.write(json.dumps(line) + '\n')
+        page = self.read(first['cursor'])
+        self.assertEqual([e['text'] for e in page['events']], ['Answer three'])
+        self.assertIs(page['transcript_changed'], False)
+        self.assertEqual(self.read(page['cursor'])['events'], [])
+
+    def test_a_partial_last_line_waits(self):
+        complete = self.transcript.stat().st_size
+        line = json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Answer three'}]}})
+        with self.transcript.open('a') as f:
+            f.write(line[:30])
+        page = self.read()
+        self.assertEqual(len(page['events']), len(self.KINDS))
+        self.assertEqual(page['cursor'], self.cursor_of(self.transcript, complete))
+        with self.transcript.open('a') as f:
+            f.write(line[30:] + '\n')
+        self.assertEqual([e['text'] for e in self.read(page['cursor'])['events']], ['Answer three'])
+
+    def test_pages_at_the_limit_and_sets_more(self):
+        lines = [json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': f'{i:03d}' + 'x' * 997}]}})
+                 for i in range(60)]
+        self.transcript.write_text('\n'.join(lines) + '\n')
+        cursor, texts, pages = '-', [], 0
+        while True:
+            page = self.read(cursor)
+            pages += 1
+            self.assertLessEqual(len(self.opened), 15000)
+            self.assertTrue(page['events'])
+            texts += [e['text'][:3] for e in page['events']]
+            cursor = page['cursor']
+            if not page['more']:
+                break
+        self.assertGreater(pages, 3)
+        self.assertEqual(texts, [f'{i:03d}' for i in range(60)])
+
+    def test_a_line_with_more_text_than_a_page_still_moves_on(self):
+        big = json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'y' * 200000}]}})
+        self.transcript.write_text(big + '\n')
+        page = self.read()
+        self.assertLessEqual(len(self.opened), 15000)
+        self.assertEqual(len(page['events']), 1)
+        self.assertIs(page['more'], False)
+
+    def test_thinking_is_left_out(self):
+        page = self.read(flags='tools')
+        self.assertNotIn(b'Private reasoning', self.opened)
+        self.assertEqual(len(page['events']), len(self.KINDS))
+
+    def test_tool_results_carry_no_text_without_tools(self):
+        page = self.read()
+        self.assertNotIn(b'Result body one', self.opened)
+        self.assertNotIn(b'Failure body two', self.opened)
+        self.assertNotIn(b'notes-a.txt', self.opened)
+        self.assertEqual([e['text'] for e in page['events'] if e['kind'].startswith('tool')], [''] * 4)
+        self.assertEqual([e['error'] for e in page['events']], [False] * 5 + [True] + [False] * 3)
+        self.assertEqual([e['tool'] for e in page['events'] if e['kind'].startswith('tool')], ['Read', 'Read', 'Bash', 'Bash'])
+
+    def test_tool_results_carry_text_with_tools(self):
+        events = self.read(flags='tools')['events']
+        self.assertEqual([e['text'] for e in events if e['kind'] == 'tool_result'], ['Result body one', 'Failure body two'])
+        self.assertIn('notes-a.txt', events[2]['text'])
+
+    def test_new_transcript_path_restarts(self):
+        first = self.read()
+        other = self.use('claude.jsonl', 'two.jsonl')
+        page = self.read(first['cursor'])
+        self.assertIs(page['transcript_changed'], True)
+        self.assertEqual(len(page['events']), len(self.KINDS))
+        self.assertEqual(page['cursor'], self.cursor_of(other, other.stat().st_size))
+
+    def test_cursor_past_the_end_restarts(self):
+        first = self.read()
+        self.transcript.write_text((self.FIXTURES / 'claude.jsonl').read_text().splitlines()[1] + '\n')
+        page = self.read(first['cursor'])
+        self.assertIs(page['transcript_changed'], True)
+        self.assertEqual([e['text'] for e in page['events']], ['Request one'])
+
+    def test_codex_transcript_maps_to_the_same_events(self):
+        self.use('codex.jsonl', 'three.jsonl')
+        page = self.read()
+        self.assertEqual([e['kind'] for e in page['events']], self.KINDS)
+        self.assertEqual([e['text'] for e in page['events']], self.TEXTS)
+        self.assertEqual([e['error'] for e in page['events']], [False] * 5 + [True] + [False] * 3)
+        self.assertEqual([e['tool'] for e in page['events'] if e['kind'].startswith('tool')], ['shell'] * 4)
+        self.assertEqual(page['events'][0]['at'], 1767225601)
+        events = self.read(flags='tools')['events']
+        self.assertEqual([e['text'] for e in events if e['kind'] == 'tool_result'], ['Result body one', 'Failure body two'])
+        self.assertNotIn(b'encrypted_content', self.opened)
+
+    def test_read_without_a_transcript_names_capture(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_transcript')
+        result = self.run_read()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('capture', result.stderr)
+        self.assertIn('Nothing was read.', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_read_pending_returns_the_summary(self):
+        item = {'id': 'item-a', 'kind': 'question', 'summary': 'Which folder?', 'options': ['a', 'b'], 'at': 1767225601}
+        self.assertEqual(self.read(flags='pending')['pending'], None)
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent_pending', self.b64(item))
+        self.assertEqual(self.read(flags='pending'), {'pending': item})
+        self.assertEqual(self.read(flags='tools,pending'), {'pending': item})
+
+    def test_read_pending_needs_no_transcript(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_transcript')
+        self.assertEqual(self.read(flags='pending'), {'pending': None})
+
+    def test_read_output_holds_no_plain_text(self):
+        result = self.run_read(flags='tools')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'^[A-Za-z0-9+/=]+\n$')
+        raw = base64.b64decode(result.stdout)
+        for text in ['Answer one', 'Result body one', 'Request two']:
+            self.assertNotIn(text.encode(), raw)
+            self.assertNotIn(text, result.stdout)
+
+    def test_read_refuses_a_replaced_identity(self):
+        old = self.identity
+        self.tm('kill-session', '-t', '=lead')
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.name(self.transcript)
+        result = self.run_read(identity=old)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was read.', result.stderr)
+        self.assertEqual(result.stdout, '')
+        gone = self.helper('agent-read', 'absent', old, '-', '-', self.recipient)
+        self.assertEqual(gone.returncode, 1)
+        self.assertIn('Nothing was read.', gone.stderr)
+
+    def test_a_link_or_a_non_transcript_file_is_refused(self):
+        secret = Path(self.temp.name) / 'secret.txt'
+        secret.write_text('secret-value-a\n')
+        link = self.folder / 'link.jsonl'
+        link.symlink_to(self.transcript)
+        folder_link = self.folder / 'folder.jsonl'
+        folder_link.mkdir()
+        fifo = self.folder / 'fifo.jsonl'
+        os.mkfifo(fifo)
+        for path in [link, folder_link, fifo, secret, self.folder / 'missing.jsonl', 'relative.jsonl']:
+            with self.subTest(path=str(path)):
+                self.name(path)
+                result = self.run_read()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Nothing was read.', result.stderr)
+                self.assertNotIn('secret-value-a', result.stderr + result.stdout)
+                self.assertNotIn('Traceback', result.stderr)
+
+    def test_untrusted_lines_become_notices_and_never_leak(self):
+        lines = ['secret-value-a', '[1, 2]', '"text"', '{"type": "user", "message": 5}',
+                 '{"type": "assistant", "message": {"content": [5, null, {"type": "text", "text": 7}]}}',
+                 '[' * 100000, '{"type": "response_item", "payload": 3}', '', '{"type": "user", "message": {"content": "kept"}}']
+        self.transcript.write_text('\n'.join(lines) + '\n')
+        page = self.read(flags='tools')
+        self.assertNotIn(b'secret-value-a', self.opened)
+        self.assertEqual([e['text'] for e in page['events']][-1], 'kept')
+        notices = [e for e in page['events'] if e['kind'] == 'notice']
+        self.assertTrue(notices)
+        self.assertEqual({e['text'] for e in notices}, {'unreadable line'})
+        self.assertIs(page['more'], False)
+
+    def test_bad_arguments_are_refused(self):
+        for cursor, flags in [('abc', '-'), ('0123456789ab:', '-'), ('0123456789ab:1234567890123', '-'), ('-', 'all'),
+                              ('-', 'tools,'), ('-', ''), ('0123456789AB:1', '-')]:
+            with self.subTest(cursor=cursor, flags=flags):
+                result = self.run_read(cursor, flags)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Nothing was read.', result.stderr)
+        no_recipient = self.helper('agent-read', 'lead', self.identity, '-', '-', 'not base64!')
+        self.assertEqual(no_recipient.returncode, 1)
+        self.assertIn('Nothing was read.', no_recipient.stderr)

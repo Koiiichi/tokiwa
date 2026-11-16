@@ -1,0 +1,12 @@
+{"type": "mode", "mode": "default", "sessionId": "session-a"}
+{"type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "sessionId": "session-a", "message": {"role": "user", "content": "Request one"}}
+{"type": "assistant", "timestamp": "2026-01-01T00:00:02.000Z", "sessionId": "session-a", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Private reasoning one", "signature": "sig-a"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:00:03.000Z", "sessionId": "session-a", "message": {"role": "assistant", "content": [{"type": "text", "text": "Answer one"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:00:04.000Z", "sessionId": "session-a", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "call-a", "name": "Read", "input": {"file_path": "notes-a.txt"}}]}}
+{"type": "user", "timestamp": "2026-01-01T00:00:05.000Z", "sessionId": "session-a", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call-a", "content": "Result body one"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:00:06.000Z", "sessionId": "session-a", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "call-b", "name": "Bash", "input": {"command": "run-b"}}]}}
+{"type": "user", "timestamp": "2026-01-01T00:00:07.000Z", "sessionId": "session-a", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call-b", "content": "Failure body two", "is_error": true}]}}
+{"type": "system", "subtype": "informational", "timestamp": "2026-01-01T00:00:08.000Z", "sessionId": "session-a", "content": "Notice one"}
+{"type": "user", "timestamp": "2026-01-01T00:00:09.000Z", "sessionId": "session-a", "isMeta": true, "message": {"role": "user", "content": [{"type": "text", "text": "Meta text one"}]}}
+{"type": "user", "timestamp": "2026-01-01T00:00:10.000Z", "sessionId": "session-a", "message": {"role": "user", "content": [{"type": "text", "text": "Request two"}]}}
+{"type": "assistant", "timestamp": "2026-01-01T00:00:11.000Z", "sessionId": "session-a", "message": {"role": "assistant", "content": [{"type": "text", "text": "Answer two"}]}}

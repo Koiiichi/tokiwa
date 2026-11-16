@@ -59,13 +59,13 @@ The launcher picks the path from its command. `tokiwa --help` lists the commands
 
 | Path | AWS calls | Document | Launcher commands | Result |
 | --- | --- | --- | --- | --- |
-| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `sessions --json`, `--snapshot`, `capture`, `health`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `state`, `agent state`, `agent wait`, `claim`, `release`, `end`, `--end-confirmed`, `secrets`, `secret --remove`, `commands`, `run`, `run-status` | The helper's stdout, after the status leaves `Pending` |
+| Run Command | `ssm send-command`, then `ssm get-command-invocation` | `AWS-RunShellScript`, `executionTimeout` 30 s | `status`, `sessions`, `sessions --json`, `--snapshot`, `capture`, `health`, `project`, `create`, `move-project`, `forget-project`, `name`, `rename`, `state`, `agent state`, `agent wait`, `agent send`, `agent read`, `claim`, `release`, `end`, `--end-confirmed`, `secrets`, `secret --remove`, `commands`, `run`, `run-status` | The helper's stdout, after the status leaves `Pending` |
 | Interactive session | `ssm start-session` | `AWS-StartInteractiveCommand` | `attach`, `new`, `view`, `shell`, `admin`, `secret` | A byte stream through the Session Manager plugin |
 | EC2 API | `ec2 describe-instances`, `describe-volumes`, `describe-addresses` | — | `spend`, and the host state check before every host command | JSON for the spend estimate; the instance state |
 
 `commands`, `run` and `run-status` run the root command runner, [`tokiwa-run.py`](../host/tokiwa-run.py), and not the helper; see [the command list](host.md#the-command-list).
 
-The launcher polls `get-command-invocation` one second apart, up to 15 times, and up to 40 times for the encrypted calls (`capture`, `search`, `run` and `run-status`), which Run Command stops after 30 seconds, and for `agent wait`, which holds the host for up to 20 seconds. When the host refused the call, the launcher fails with the host's last line, which ends `Nothing was run.` Otherwise a status other than `Success` fails the call with `The workbench check returned <status>. No service was started.`, except for two commands:
+The launcher polls `get-command-invocation` one second apart, up to 15 times, and up to 40 times for the encrypted calls (`capture`, `search`, `agent read`, `run` and `run-status`), which Run Command stops after 30 seconds, and for `agent wait`, which holds the host for up to 20 seconds. When the host refused the call, the launcher fails with the host's last line, which ends `Nothing was run.` Otherwise a status other than `Success` fails the call with `The workbench check returned <status>. No service was started.`, except for two commands:
 
 | Command | Status | Message |
 | --- | --- | --- |

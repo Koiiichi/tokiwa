@@ -20,7 +20,7 @@ cleanup() { [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf
 trap cleanup EXIT
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|agent send NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|agent send NAME IDENTITY|agent read NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -50,6 +50,10 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 The text is at most 16384 bytes of UTF-8, with no control character except newline and tab, and does not
                 start with /, ! or #. It reaches the host encrypted. The agent sees a first line that names the sender.
                 The result is JSON with turn_before, the turn count to give to agent wait --after
+  agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
+                Read the transcript of the agent in pages, as JSON events, encrypted on the way. Without --tools a tool call and
+                its result carry no text. --after CURSOR continues from the cursor of an earlier read. --pending reads the
+                waiting question or permission request instead
   claim NAME IDENTITY [--replace]
                 Become the driver of a session, the one actor that may send to it; the actor is TOKIWA_ACTOR.
                 Refused while a client that can type is attached, and while another actor drives, unless --replace
@@ -104,17 +108,19 @@ agent_usage() {
 Usage: tokiwa agent state NAME IDENTITY
        tokiwa agent wait NAME IDENTITY --after TURN [--timeout SECONDS]
        tokiwa agent send NAME IDENTITY (--text TEXT | --file PATH | -)
+       tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
 
 Commands for the agent in a session, Claude Code or Codex. They read what its hooks report.
   state   The facts of the session, and the agent's state, turn, pending item and dialog, as JSON
   wait    Wait until a turn ends, an item is pending, a dialog shows or the agent exits
   send    Send a message to an idle agent; the text reaches the host encrypted
+  read    Read the transcript of the agent in pages, or its pending item; the result is encrypted on the way
 EOF
 }
 fail() { printf 'Tokiwa: %s\n' "$*" >&2; exit 1; }
 # `tokiwa agent SUBCOMMAND ...` is the agent layer. Its helper mode is `agent-SUBCOMMAND`.
 if [[ $mode == agent ]]; then
- case ${2:-} in state|wait|send) ;; *) agent_usage >&2; exit 2 ;; esac
+ case ${2:-} in state|wait|send|read) ;; *) agent_usage >&2; exit 2 ;; esac
  set -- "agent-$2" "${@:3}"
  mode=$1
  name=${2:-}
@@ -140,6 +146,23 @@ case "$mode" in
   extra=$3
   # The turn is the fourth argument of the helper.
   lines=$((10#$5)) ;;
+ agent-read)
+  read_usage='Use agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending], with the cursor of an earlier read.'
+  [[ $# -ge 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail "$read_usage"
+  extra=$3
+  read_cursor=- read_tools= read_pending=
+  shift 3
+  while [[ $# -gt 0 ]]; do
+   case $1 in
+    --after) [[ $# -ge 2 && $2 =~ ^[0-9a-f]{12}:[0-9]{1,12}$ && $read_cursor == - ]] || fail "$read_usage"
+             read_cursor=$2; shift 2 ;;
+    --tools) [[ -z $read_tools ]] || fail "$read_usage"; read_tools=tools; shift ;;
+    --pending) [[ -z $read_pending ]] || fail "$read_usage"; read_pending=pending; shift ;;
+    *) fail "$read_usage" ;;
+   esac
+  done
+  read_flags=${read_tools:+$read_tools${read_pending:+,}}$read_pending
+  read_flags=${read_flags:--} ;;
  agent-send)
   send_usage='Use agent send NAME IDENTITY (--text TEXT | --file PATH | -), with the identity from tokiwa sessions --json.'
   [[ ( $# -eq 4 && $4 == - ) || ( $# -eq 5 && ( $4 == --text || $4 == --file ) ) ]] && [[ $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
@@ -409,7 +432,7 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
@@ -443,6 +466,12 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   sealed=1
   sealed_key
   remote="$remote $cert64${query:+ $query}"
+ elif [[ $mode == agent-read ]]; then
+  # Like a capture, the host seals the result to a key that exists only for this call.
+  sealed=1
+  what='transcript read'
+  sealed_key
+  remote="$remote $read_cursor $read_flags $cert64"
  elif [[ $mode == commands ]]; then
   remote="$runner commands"
  elif [[ $mode == run || $mode == run-status ]]; then

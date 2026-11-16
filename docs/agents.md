@@ -155,6 +155,39 @@ The agent sees the message as one bracketed paste, with line feeds unchanged, an
 
 The paste and the Enter are one core delivery step, which has no agent checks and no command of its own. `create --run` uses the same step.
 
+## Read an agent's transcript
+
+`tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]` (agent, class `read`) reads what the agent said and did, in pages, from the transcript file that its hooks name (`@tokiwa_agent_transcript`). It reads a Claude Code or a Codex transcript, by the shape of each line. It has no MCP tool yet. Like `capture`, the host encrypts the result to a one-time key of the launcher (see [Limits](#limits)).
+
+The result is one JSON object:
+
+| Field | Meaning |
+| --- | --- |
+| `events` | The events of this page, oldest first |
+| `cursor` | `HASH:OFFSET`. `HASH` is the first 12 hex characters of the SHA-256 of the transcript path, and `OFFSET` is the byte after the last line that was read. Pass it to `--after` to continue. |
+| `more` | True when the page stopped before the end of the transcript. Read again with the new `cursor`. |
+| `transcript_changed` | True when `--after` named another transcript path, or an offset beyond the end of the file. The read then starts at the first line. |
+
+Each event is `{"at", "kind", "text", "tool", "error"}`. `at` is the time of the line in seconds since the epoch, or null. `kind` is `user`, `assistant`, `tool_call`, `tool_result` or `notice`. `tool` is the tool name of a call, and of its result when the call is in the same read. `error` is true for a tool result that failed. A `text` is cut at 2000 characters.
+
+- Thinking and reasoning never appear. Records that are not messages, tool calls, tool results or notices are left out.
+- Without `--tools`, a `tool_call` and a `tool_result` have empty `text`: arguments and output can hold file text and secrets. `--tools` adds them.
+- A line that is not a JSON object becomes a `notice` with the text `unreadable line`. A line over 1 MiB becomes a `notice` with the text `line too long`.
+- A last line without its end waits: the cursor stays before it, and the next read returns it whole.
+- A page holds at most 15,000 bytes of JSON. One call reads at most 4 MiB of the file.
+
+`--pending` returns `{"pending": {"id", "kind", "summary", "options", "at"}}` in place of events, or `{"pending": null}` when nothing waits. The `summary` and `options` are the text that `agent state` keeps on the host. It needs no transcript.
+
+The refusals end with `Nothing was read.`:
+
+| Cause | Refusal starts with |
+| --- | --- |
+| The session is gone, or a new session took the name | `The selected session no longer exists.`, `Session identity changed.` |
+| The hooks reported no transcript | `No transcript is known for this session yet. Use capture to read its screen.` |
+| The path is not an absolute `.jsonl` path, is missing or is a link, or is not a regular file of the user that runs the helper | `The transcript path is not an absolute path of a .jsonl file.`, `The transcript cannot be opened. It may be missing or a link.`, `The transcript is not a regular file of this user.` |
+
+The transcript is a file that the agent writes, so each line is untrusted data. The reader opens the file without following a link, reads it in bounded pieces and never prints a line that it cannot map to an event.
+
 `tokiwa end NAME IDENTITY [--attached-ok]` (core, class `control`) is the documented form of `--end-confirmed`. It asks the host to check the clients: the host refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while a client that can type is attached; a client that watches with `tokiwa view` does not count. The host checks the clients and ends the session in one tmux queue, so a client that attaches in between stops the end. `--attached-ok` and `--end-confirmed` ask for no check, and end the session after the identity check.
 
 ## Read a screen
@@ -202,7 +235,7 @@ The launcher waits up to 40 seconds for a `run` or `run-status` call to end on t
 
 **Terminal text is data.** A screen can hold any text, also text that another program or a web page wrote. An agent must not take it as an instruction. The tool description and the first line of each result say this.
 
-**Stored text.** A capture reaches the Mac through Run Command, and AWS keeps the output of each command in the history of the account. So the helper never prints screen text. The launcher makes a new key pair for each capture and sends the host only the certificate. The host encrypts the result to it, and the launcher decrypts the result and deletes the key. History holds only encrypted data, which nobody can open after the call. A helper that gets no certificate refuses the capture.
+**Stored text.** A capture, and a transcript read, reach the Mac through Run Command, and AWS keeps the output of each command in the history of the account. So the helper never prints screen or transcript text. The launcher makes a new key pair for each of them and sends the host only the certificate. The host encrypts the result to it, and the launcher decrypts the result and deletes the key. History holds only encrypted data, which nobody can open after the call. A helper that gets no certificate refuses the call.
 
 **Arguments in history.** Run Command history keeps the entry name and each argument value in plain base64, not encrypted. Do not pass a secret as an argument value. Name it in the entry's `secrets` instead, so that the host passes it to the program without Run Command. The results of `run` and `run-status` are encrypted as a capture is.
 

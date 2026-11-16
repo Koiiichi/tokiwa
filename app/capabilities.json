@@ -136,6 +136,12 @@
       "helper": "agent-wait"
     },
     {
+      "command": "agent read",
+      "class": "read",
+      "example": ["agent", "read", "lead", "1:$2:3", "--tools"],
+      "helper": "agent-read"
+    },
+    {
       "command": "spend",
       "class": "read",
       "example": ["spend"]

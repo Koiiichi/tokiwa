@@ -46,16 +46,16 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -121,7 +121,7 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == end ]]; then
@@ -216,6 +216,13 @@ PY_REGISTRY
 # never calls agent code. Python for each mode is one program; a program runs after the libraries
 # that it needs, as `python3 -c "$session_lib"$'\n'"$program"`.
 
+if [[ $mode == agent-read ]]; then
+ cursor=${4:-} flags=${5:-} recipient=${6:-}
+ [[ $cursor =~ ^(-|[0-9a-f]{12}:[0-9]{1,12})$ ]] || fail 'The cursor is invalid. Use the cursor of an earlier read, or none. Nothing was read.'
+ [[ $flags =~ ^(-|(tools|pending)(,(tools|pending))?)$ ]] || fail 'The flags are invalid. Use tools, pending or both. Nothing was read.'
+ # Like a capture, a read leaves the host only encrypted.
+ [[ $recipient =~ ^[A-Za-z0-9+/=]+$ && ${#recipient} -le 4000 ]] || fail 'A read needs a recipient certificate. Nothing was read.'
+fi
 # --- Core layer ---------------------------------------------------------------------------------
 # Python that every read mode shares: the tmux call, the clients of a session and its facts.
 # The Python functions for later modes live here too: `client_counts` and `writable_clients`.
@@ -228,6 +235,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 
@@ -236,6 +244,8 @@ socket = sys.argv[1]
 MAX_MESSAGE_BYTES = 16384
 AGENTS = ('claude', 'codex')
 SHELLS = ('bash', 'sh', 'zsh', 'fish')
+# The sealed output must fit the 24,000 characters that Run Command returns: base64 adds a third.
+LIMIT_BYTES = 15000
 
 def tmux(*args):
     # -u: without it, tmux replaces non-ASCII text for a client without a UTF-8 locale.
@@ -307,6 +317,30 @@ def read_message():
     except UnicodeDecodeError:
         sys.exit('The message is not UTF-8 text. Nothing was sent.')
 
+def seal(output, recipient, what):
+    """`output` as JSON, encrypted to the one-time certificate in base64 `recipient`, as base64 DER.
+
+    Run Command keeps its output in the account, so text that leaves this host leaves it only
+    sealed. The program exits with a sentence that names `what` when the sealing fails.
+    """
+    failure = f'The {what} could not be encrypted. Nothing was read.'
+    try:
+        certificate = base64.b64decode(recipient, validate=True)
+    except binascii.Error:
+        sys.exit(failure)
+    sealed = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.pem') as pem:
+            pem.write(certificate)
+            pem.flush()
+            sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
+                                    input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if sealed is None or sealed.returncode or not sealed.stdout:
+        sys.exit(failure)
+    return base64.b64encode(sealed.stdout).decode()
+
 def stage_delivery(name, identity, payload, extra=(), check=None):
     """Check session `name` and put `payload` in a tmux buffer. Return (pane, clients, buffer, values).
 
@@ -364,6 +398,72 @@ PY_CORE_STAGE
 read -r -d '' client_counts_program <<'PY_CLIENT_COUNTS' || true
 print(*client_counts(sys.argv[2], sys.argv[3]))
 PY_CLIENT_COUNTS
+
+# `capture`: the last lines of the active pane, or the lines that hold a search term, sealed.
+read -r -d '' capture_program <<'PY_CAPTURE' || true
+socket, name, identity, limit, recipient, query = sys.argv[1:7]
+# Lines of context on each side of a line that holds the search term.
+CONTEXT = 2
+
+def size(text):
+    return len(json.dumps(text, ensure_ascii=False).encode())
+
+target = '=' + name + ':'
+if tmux('has-session', '-t', '=' + name).returncode:
+    raise SystemExit('The selected session no longer exists.')
+fields = tmux('display-message', '-p', '-t', target,
+              '#{pid}:#{session_id}:#{session_created}\t#{pane_id}\t#{pane_dead}\t#{session_attached}\t#{pane_current_command}')
+if fields.returncode:
+    raise SystemExit('The selected session no longer exists.')
+current, pane, dead, clients, command = fields.stdout.rstrip('\n').split('\t', 4)
+if current != identity:
+    raise SystemExit('Session identity changed. Nothing was read.')
+if query:
+    try:
+        query = base64.b64decode(query, validate=True).decode('utf-8')
+    except (binascii.Error, UnicodeDecodeError):
+        query = ''
+    if not 1 <= len(query) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in query):
+        raise SystemExit('Use a search term of 1 to 200 printable characters.')
+# A pane ID is never reused on a server, so this reads the session that the check saw.
+screen = tmux('capture-pane', '-p', '-J', '-S', '-' if query else '-200', '-t', pane)
+if screen.returncode:
+    raise SystemExit('The selected session no longer exists.')
+rows = [row.rstrip() for row in screen.stdout.splitlines()]
+rows = [row for row in rows if row]
+found = 0
+if query:
+    # The latest matches, each with its context; blocks that touch are joined.
+    hits = [i for i, row in enumerate(rows) if query.lower() in row.lower()][-int(limit):]
+    found = len(hits)
+    blocks = []
+    for i in hits:
+        start, end = max(0, i - CONTEXT), min(len(rows), i + CONTEXT + 1)
+        if blocks and start <= blocks[-1][1]:
+            blocks[-1][1] = end
+        else:
+            blocks.append([start, end])
+    text = '\n--\n'.join('\n'.join(rows[start:end]) for start, end in blocks)
+else:
+    text = '\n'.join(rows[-int(limit):])
+truncated = size(text) > LIMIT_BYTES
+if truncated:
+    # The smallest start that fits. Text is cut between characters, never inside one.
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high) // 2
+        if size(text[middle:]) > LIMIT_BYTES:
+            low = middle + 1
+        else:
+            high = middle
+    text = text[low:]
+output = {'name': name, 'identity': identity, 'pane': pane, 'command': command[:80],
+          'clients': int(clients), 'dead': dead == '1', 'sampled_at': time.time(),
+          'lines': text.count('\n') + 1 if text else 0, 'truncated': truncated, 'text': text}
+if query:
+    output.update(query=query, matches=found)
+print(seal(output, recipient, 'capture'))
+PY_CAPTURE
 
 # --- Agent layer --------------------------------------------------------------------------------
 # Python for the modes `agent-state` and `agent-wait`: the screen check and the agent fields.
@@ -423,6 +523,215 @@ PY_AGENT_LIB
 read -r -d '' agent_state_program <<'PY_AGENT_STATE' || true
 print(json.dumps(agent_state_record(sys.argv[2], sys.argv[3])))
 PY_AGENT_STATE
+# `agent-read`: the events of the transcript that the agent's hooks name, sealed to the caller.
+# The transcript is a file that the agent writes, so every line is untrusted data: the read is
+# bounded, a link is refused, and a line that cannot be read becomes a notice, never an error.
+read -r -d '' agent_read_program <<'PY_AGENT_READ' || true
+import hashlib
+import stat
+from datetime import datetime
+
+name, identity, cursor, flags, recipient = sys.argv[2:7]
+flags = set(flags.split(','))
+# The longest line that is read as JSON, the bytes read in one call, and how far a longer line is skipped.
+MAX_LINE = 1 << 20
+READ_BUDGET = 4 << 20
+SKIP_LIMIT = 64 << 20
+# The longest text of one event, in characters.
+MAX_TEXT = 2000
+UNREADABLE = 'unreadable line'
+
+def refuse(reason):
+    sys.exit(f'{reason} Nothing was read.')
+
+def clip(value, limit=MAX_TEXT):
+    return value if len(value) <= limit else value[:limit - 1] + '…'
+
+def text_of(value):
+    return value if isinstance(value, str) else ''
+
+def dict_of(value):
+    return value if isinstance(value, dict) else {}
+
+def flat(value):
+    """The text of a tool result: a string, or the text blocks of a list."""
+    if isinstance(value, list):
+        return '\n'.join(text_of(dict_of(block).get('text')) for block in value)
+    return text_of(value)
+
+def epoch(value):
+    """Seconds since the epoch of an ISO time with a zone, or None."""
+    try:
+        moment = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith('Z') else value)
+        return int(moment.timestamp()) if moment.tzinfo else None
+    except (AttributeError, ValueError, OverflowError, OSError):
+        return None
+
+def event(at, kind, text, tool=None, error=False):
+    return {'at': at, 'kind': kind, 'text': clip(text), 'tool': clip(tool, 80) if tool else None, 'error': error}
+
+def message_events(at, kind, text):
+    return [event(at, kind, text)] if text.strip() else []
+
+def claude_events(record, tools, calls):
+    """The events of a Claude Code line. `calls` maps a tool call id to its tool, for the result."""
+    kind, at = record.get('type'), epoch(record.get('timestamp'))
+    if kind == 'system':
+        return message_events(at, 'notice', text_of(record.get('content')))
+    if kind not in ('user', 'assistant') or record.get('isMeta'):
+        return []
+    content = dict_of(record.get('message')).get('content')
+    if isinstance(content, str):
+        return message_events(at, kind, content)
+    events = []
+    for block in content if isinstance(content, list) else []:
+        block = dict_of(block)
+        shape = block.get('type')
+        if shape == 'text':
+            events += message_events(at, kind, text_of(block.get('text')))
+        elif shape == 'tool_use':
+            tool = text_of(block.get('name')) or None
+            calls[text_of(block.get('id'))] = tool
+            events.append(event(at, 'tool_call', json.dumps(block.get('input'), ensure_ascii=False) if tools else '', tool))
+        elif shape == 'tool_result':
+            events.append(event(at, 'tool_result', flat(block.get('content')) if tools else '',
+                                calls.get(text_of(block.get('tool_use_id'))), block.get('is_error') is True))
+        # Thinking and every other block stay out.
+    return events
+
+def codex_events(record, tools, calls):
+    """The events of a Codex line, in the same shape as the events of a Claude Code line."""
+    kind, at, payload = record.get('type'), epoch(record.get('timestamp')), dict_of(record.get('payload'))
+    shape = payload.get('type')
+    if kind == 'event_msg':
+        return message_events(at, 'notice', text_of(payload.get('message'))) if shape == 'error' else []
+    if shape == 'message' and payload.get('role') in ('user', 'assistant'):
+        blocks = payload.get('content')
+        text = '\n'.join(text_of(dict_of(block).get('text')) for block in blocks) if isinstance(blocks, list) else ''
+        return message_events(at, payload['role'], text)
+    if shape in ('function_call', 'custom_tool_call'):
+        tool = text_of(payload.get('name')) or None
+        calls[text_of(payload.get('call_id'))] = tool
+        return [event(at, 'tool_call', text_of(payload.get('arguments') or payload.get('input')) if tools else '', tool)]
+    if shape in ('function_call_output', 'custom_tool_call_output'):
+        return [event(at, 'tool_result', flat(payload.get('output')) if tools else '',
+                      calls.get(text_of(payload.get('call_id'))), payload.get('success') is False)]
+    # Reasoning, token counts and every other record stay out.
+    return []
+
+def line_events(line, tools, calls):
+    """The events of one transcript line. A line that is not a JSON object becomes a notice."""
+    if not line.strip():
+        return []
+    try:
+        record = json.loads(line.decode('utf-8', errors='replace'))
+    except (ValueError, RecursionError):
+        return [event(None, 'notice', UNREADABLE)]
+    if not isinstance(record, dict):
+        return [event(None, 'notice', UNREADABLE)]
+    reader = codex_events if record.get('type') in ('response_item', 'event_msg') else claude_events
+    return reader(record, tools, calls)
+
+def skip_line(file):
+    """Skip to the end of the line that is under way. Return (bytes skipped, whether the line ended)."""
+    skipped = 0
+    while skipped < SKIP_LIMIT:
+        chunk = file.readline(65536)
+        if not chunk:
+            return skipped, False
+        skipped += len(chunk)
+        if chunk.endswith(b'\n'):
+            return skipped, True
+    # A line this long is cut here, so that the cursor moves on.
+    return skipped, True
+
+def pending_summary(value):
+    """The item of an @tokiwa_agent_pending value, with its text."""
+    try:
+        item = dict_of(json.loads(base64.b64decode(value, validate=True)))
+    except (binascii.Error, ValueError, RecursionError):
+        item = {}
+    options = item.get('options')
+    return {'id': clip(text_of(item.get('id')), 200) or None, 'kind': clip(text_of(item.get('kind')), 80) or None,
+            'summary': clip(text_of(item.get('summary'))),
+            'options': [clip(text_of(o), 200) for o in options[:20]] if isinstance(options, list) else [],
+            'at': item.get('at') if isinstance(item.get('at'), int) else None}
+
+def open_transcript(path):
+    """Open the transcript read only. Return (file, size). Only a regular file of this user is read."""
+    if not (path.startswith('/') and path.endswith('.jsonl')):
+        refuse('The transcript path is not an absolute path of a .jsonl file.')
+    try:
+        # O_NOFOLLOW refuses a link; O_NONBLOCK keeps a pipe from holding the open.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        refuse('The transcript cannot be opened. It may be missing or a link.')
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        os.close(descriptor)
+        refuse('The transcript is not a regular file of this user.')
+    return os.fdopen(descriptor, 'rb'), info.st_size
+
+facts, pane, dead, values = read_session(name, identity, ('#{@tokiwa_agent_pending}', '#{@tokiwa_agent_transcript}'))
+if facts['session'] == 'gone':
+    refuse('The selected session no longer exists.')
+if facts['session'] == 'replaced':
+    refuse('Session identity changed.')
+pending, path = values
+if 'pending' in flags:
+    print(seal({'pending': pending_summary(pending) if pending else None}, recipient, 'read'))
+    sys.exit()
+if not path:
+    refuse('No transcript is known for this session yet. Use capture to read its screen.')
+file, size = open_transcript(path)
+digest = hashlib.sha256(path.encode()).hexdigest()[:12]
+offset, changed = 0, False
+if cursor != '-':
+    seen, _, seen_offset = cursor.partition(':')
+    # Another file, or a file that is now shorter, starts again at its first line.
+    if seen == digest and int(seen_offset) <= size:
+        offset = int(seen_offset)
+    else:
+        changed = True
+tools = 'tools' in flags
+# The JSON of an empty page, with the longest cursor, is the room that every page needs.
+used = len(json.dumps({'events': [], 'cursor': digest + ':' + '9' * 12, 'more': False, 'transcript_changed': False}).encode())
+events, calls, consumed, more = [], {}, 0, False
+file.seek(offset)
+while True:
+    if consumed >= READ_BUDGET:
+        more = True
+        break
+    line = file.readline(MAX_LINE + 1)
+    if not line:
+        break
+    length = len(line)
+    if line.endswith(b'\n'):
+        found = line_events(line, tools, calls)
+    elif length <= MAX_LINE:
+        # The last line has no end yet: the agent is still writing it. It waits for the next read.
+        break
+    else:
+        skipped, ended = skip_line(file)
+        if not ended:
+            break
+        length += skipped
+        found = [event(None, 'notice', 'line too long')]
+    sizes = [len(json.dumps(e, ensure_ascii=False).encode()) + 2 for e in found]
+    if events and used + sum(sizes) > LIMIT_BYTES:
+        more = True
+        break
+    # The first line of a page is always consumed, so that a page makes progress: it keeps the events that fit.
+    for e, room in zip(found, sizes):
+        if used + room > LIMIT_BYTES:
+            break
+        events.append(e)
+        used += room
+    consumed += length
+file.close()
+print(seal({'events': events, 'cursor': f'{digest}:{offset + consumed}', 'more': more, 'transcript_changed': changed},
+           recipient, 'read'))
+PY_AGENT_READ
 # Poll until the agent needs the caller: a turn ended, an item is pending, a dialog shows, or the
 # agent is gone. Else return `timeout` after TOKIWA_WAIT_SECONDS (default 20); the launcher repeats.
 read -r -d '' agent_wait_program <<'PY_AGENT_WAIT' || true
@@ -589,103 +898,13 @@ case "$mode" in
  agent-wait)
   python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$agent_wait_program" "$socket" "$name" "$extra" "$after"
   exit ;;
+ agent-read)
+  python3 -c "$session_lib"$'\n'"$agent_read_program" "$socket" "$name" "$extra" "$cursor" "$flags" "$recipient"
+  exit ;;
  capture)
   # Read only. The text is the last lines of the active pane, with its scrollback, without colour.
   # The output is encrypted to the one-time certificate of the caller. There is no plain output.
-  python3 - "$socket" "$name" "$extra" "$lines" "$recipient" "$query" <<'PY_CAPTURE'
-import base64
-import binascii
-import json
-import subprocess
-import sys
-import tempfile
-import time
-
-socket, name, identity, limit, recipient, query = sys.argv[1:7]
-# Lines of context on each side of a line that holds the search term.
-CONTEXT = 2
-# The sealed output must fit the 24,000 characters that Run Command returns: base64 adds a third.
-LIMIT_BYTES = 15000
-
-def tmux(*args):
-    # -u: without it, tmux replaces non-ASCII text for a client without a UTF-8 locale.
-    return subprocess.run(['tmux', '-N', '-u', '-S', socket, *args], capture_output=True,
-                          encoding='utf-8', errors='replace', timeout=10)
-
-def size(text):
-    return len(json.dumps(text, ensure_ascii=False).encode())
-
-target = '=' + name + ':'
-if tmux('has-session', '-t', '=' + name).returncode:
-    raise SystemExit('The selected session no longer exists.')
-fields = tmux('display-message', '-p', '-t', target,
-              '#{pid}:#{session_id}:#{session_created}\t#{pane_id}\t#{pane_dead}\t#{session_attached}\t#{pane_current_command}')
-if fields.returncode:
-    raise SystemExit('The selected session no longer exists.')
-current, pane, dead, clients, command = fields.stdout.rstrip('\n').split('\t', 4)
-if current != identity:
-    raise SystemExit('Session identity changed. Nothing was read.')
-if query:
-    try:
-        query = base64.b64decode(query, validate=True).decode('utf-8')
-    except (binascii.Error, UnicodeDecodeError):
-        query = ''
-    if not 1 <= len(query) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in query):
-        raise SystemExit('Use a search term of 1 to 200 printable characters.')
-# A pane ID is never reused on a server, so this reads the session that the check saw.
-screen = tmux('capture-pane', '-p', '-J', '-S', '-' if query else '-200', '-t', pane)
-if screen.returncode:
-    raise SystemExit('The selected session no longer exists.')
-rows = [row.rstrip() for row in screen.stdout.splitlines()]
-rows = [row for row in rows if row]
-found = 0
-if query:
-    # The latest matches, each with its context; blocks that touch are joined.
-    hits = [i for i, row in enumerate(rows) if query.lower() in row.lower()][-int(limit):]
-    found = len(hits)
-    blocks = []
-    for i in hits:
-        start, end = max(0, i - CONTEXT), min(len(rows), i + CONTEXT + 1)
-        if blocks and start <= blocks[-1][1]:
-            blocks[-1][1] = end
-        else:
-            blocks.append([start, end])
-    text = '\n--\n'.join('\n'.join(rows[start:end]) for start, end in blocks)
-else:
-    text = '\n'.join(rows[-int(limit):])
-truncated = size(text) > LIMIT_BYTES
-if truncated:
-    # The smallest start that fits. Text is cut between characters, never inside one.
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high) // 2
-        if size(text[middle:]) > LIMIT_BYTES:
-            low = middle + 1
-        else:
-            high = middle
-    text = text[low:]
-output = {'name': name, 'identity': identity, 'pane': pane, 'command': command[:80],
-          'clients': int(clients), 'dead': dead == '1', 'sampled_at': time.time(),
-          'lines': text.count('\n') + 1 if text else 0, 'truncated': truncated, 'text': text}
-if query:
-    output.update(query=query, matches=found)
-try:
-    certificate = base64.b64decode(recipient, validate=True)
-except binascii.Error:
-    raise SystemExit('The capture could not be encrypted. Nothing was read.')
-sealed = None
-try:
-    with tempfile.NamedTemporaryFile(suffix='.pem') as pem:
-        pem.write(certificate)
-        pem.flush()
-        sealed = subprocess.run(['openssl', 'smime', '-encrypt', '-aes256', '-binary', '-outform', 'DER', pem.name],
-                                input=json.dumps(output, ensure_ascii=False).encode(), capture_output=True, timeout=10)
-except (OSError, subprocess.TimeoutExpired):
-    pass
-if sealed is None or sealed.returncode or not sealed.stdout:
-    raise SystemExit('The capture could not be encrypted. Nothing was read.')
-print(base64.b64encode(sealed.stdout).decode())
-PY_CAPTURE
+  python3 -c "$session_lib"$'\n'"$capture_program" "$socket" "$name" "$extra" "$lines" "$recipient" "$query"
   exit ;;
  digest)
   # One line of facts for each session: the state that its agent reported, when its screen last
