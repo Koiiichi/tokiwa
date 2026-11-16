@@ -122,25 +122,133 @@
       "command": "state",
       "class": "read",
       "example": ["state", "lead", "1:$2:3"],
-      "helper": "state"
+      "helper": "state",
+      "tool": {
+        "name": "tokiwa_state",
+        "description": "Read the facts of one Tokiwa session as JSON, without screen text: its program, clients, writable clients and driver. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": [
+          "state",
+          "{name}",
+          "{identity}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
     },
     {
       "command": "agent state",
       "class": "read",
       "example": ["agent", "state", "lead", "1:$2:3"],
-      "helper": "agent-state"
+      "helper": "agent-state",
+      "tool": {
+        "name": "tokiwa_agent_state",
+        "description": "Read the facts of one Tokiwa session and what the agent in it reports, as JSON: state, turn, pending item and dialog. Call it before tokiwa_agent_wait or tokiwa_agent_send. Take name and identity from tokiwa_sessions. The call refuses a session whose identity changed.",
+        "argv": [
+          "agent",
+          "state",
+          "{name}",
+          "{identity}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
     },
     {
       "command": "agent wait",
       "class": "read",
       "example": ["agent", "wait", "lead", "1:$2:3", "--after", "3"],
-      "helper": "agent-wait"
+      "helper": "agent-wait",
+      "tool": {
+        "name": "tokiwa_agent_wait",
+        "description": "Wait until the agent of one Tokiwa session ends a turn after the turn count in after, asks for a person, shows a dialog or exits, then return its state with a reason (turn-ended, pending, dialog, ended or timeout). A timeout is an error result, not a failure. Take after from the turn of tokiwa_agent_state, or from turn_before of tokiwa_agent_send.",
+        "argv": [
+          "agent",
+          "wait",
+          "{name}",
+          "{identity}",
+          "--after",
+          "{after}",
+          "--timeout",
+          "{timeout}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "default": 60
+          }
+        },
+        "example": ["agent", "wait", "lead", "1:$2:3", "--after", "3", "--timeout", "60"]
+      }
     },
     {
       "command": "agent read",
       "class": "read",
       "example": ["agent", "read", "lead", "1:$2:3", "--tools"],
-      "helper": "agent-read"
+      "helper": "agent-read",
+      "tool": {
+        "name": "tokiwa_agent_read",
+        "description": "Read the transcript of the agent of one Tokiwa session in pages, as JSON events. Without tools, a tool call and its result carry no text. Pass the cursor of the last page in after to continue. With pending, read the waiting question or permission request instead. Take name and identity from tokiwa_sessions.",
+        "argv": [
+          "agent",
+          "read",
+          "{name}",
+          "{identity}",
+          "{after?--after}",
+          "{tools?--tools}",
+          "{pending?--pending}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "after": {
+            "type": "option"
+          },
+          "tools": {
+            "type": "flag"
+          },
+          "pending": {
+            "type": "flag"
+          }
+        },
+        "untrusted_output": true
+      }
     },
     {
       "command": "spend",
@@ -360,31 +468,146 @@
       "command": "agent send",
       "class": "control",
       "example": ["agent", "send", "lead", "1:$2:3", "--text", "Read LEAD.md."],
-      "helper": "agent-send"
+      "helper": "agent-send",
+      "tool": {
+        "name": "tokiwa_agent_send",
+        "description": "Send one message to the idle agent of one Tokiwa session, as one paste and Enter. The caller must drive the session (tokiwa_claim) and the MCP server must run with --actor. The agent sees a first line that says the message comes from an agent, not from the owner. The text is at most 16384 characters, with no control character except newline and tab, and does not start with /, ! or #. The result has turn_before: pass it to tokiwa_agent_wait as after.",
+        "argv": [
+          "agent",
+          "send",
+          "{name}",
+          "{identity}",
+          "--text",
+          "{text}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        }
+      }
     },
     {
       "command": "agent answer",
       "class": "answer",
       "example": ["agent", "answer", "lead", "1:$2:3", "--pending", "toolu_q1", "--choice", "1"],
-      "helper": "agent-answer"
+      "helper": "agent-answer",
+      "tool": {
+        "name": "tokiwa_agent_answer",
+        "description": "Answer the pending single-select question of the agent of one Tokiwa session by choosing option choice (1 to 9). Take pending from tokiwa_agent_read with pending. A permission request has no answer: use tokiwa_interrupt to refuse it. The agent is told that an agent chose the answer, not the owner. The caller must drive the session and the MCP server must run with --actor.",
+        "argv": [
+          "agent",
+          "answer",
+          "{name}",
+          "{identity}",
+          "--pending",
+          "{pending}",
+          "--choice",
+          "{choice}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          },
+          "pending": {
+            "type": "string"
+          },
+          "choice": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9
+          }
+        }
+      }
     },
     {
       "command": "claim",
       "class": "control",
       "example": ["claim", "lead", "1:$2:3"],
-      "helper": "claim"
+      "helper": "claim",
+      "tool": {
+        "name": "tokiwa_claim",
+        "description": "Become the driver of one Tokiwa session, the one actor that may send to it. The actor is the --actor of the MCP server. The call is refused while a client that can type is attached, and while another actor drives.",
+        "argv": [
+          "claim",
+          "{name}",
+          "{identity}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
     },
     {
       "command": "release",
       "class": "control",
       "example": ["release", "lead", "1:$2:3"],
-      "helper": "release"
+      "helper": "release",
+      "tool": {
+        "name": "tokiwa_release",
+        "description": "Give up the driver of one Tokiwa session. Only the driver can.",
+        "argv": [
+          "release",
+          "{name}",
+          "{identity}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
     },
     {
       "command": "end",
       "class": "control",
       "example": ["end", "lead", "1:$2:3"],
-      "helper": "end"
+      "helper": "end",
+      "tool": {
+        "name": "tokiwa_end",
+        "description": "End one Tokiwa session and the programs in its panes. The call is refused while a client is attached. Take name and identity from tokiwa_sessions.",
+        "argv": [
+          "end",
+          "{name}",
+          "{identity}"
+        ],
+        "args": {
+          "name": {
+            "type": "string",
+            "pattern": "name"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "identity"
+          }
+        }
+      }
     },
     {
       "command": "--end-confirmed",

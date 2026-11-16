@@ -1255,7 +1255,7 @@ esac
         self.assertEqual(self.run_payload(), {'entry': 'review-pr', 'args': {'pr': '$(id);x'}})
 
     def test_help_names_each_class_of_mcp(self):
-        self.assertIn('mcp [--allow control,run,commands]', self.run_cli('--help').stdout)
+        self.assertIn('mcp [--allow control,run,commands,answer] [--actor NAME]', self.run_cli('--help').stdout)
 
     def test_commands_is_plain(self):
         result = self.run_cli('commands')
