@@ -294,7 +294,7 @@ The call waits up to 8 seconds for the run to end. A longer run returns `state` 
 | `id` | The run, for example `20261112T183000-7f3a`. Use it with `tokiwa_run_status`. |
 | `entry` | The entry that ran |
 | `state` | `done`, `running`, `failed` or `timed-out` |
-| `exit` | The exit status. Null while the run is `running`. A run whose unit vanished with no end record, for example after a host restart, reports `failed` with `exit` null. |
+| `exit` | The exit status. Null while the run is `running`, and null when a signal ended the program, for example a stop of its unit: such a run is `failed`. A run whose unit vanished with no end record, for example after a host restart, reports `failed` with `exit` null. |
 | `offset`, `next_offset` | The byte offset of this page, and the offset of the next page. `next_offset` is a byte offset into the output, null at its end. |
 | `size` | The bytes of output that the run has written so far |
 | `truncated` | True when the output passed the entry's `output_bytes`. The host keeps the first part. |

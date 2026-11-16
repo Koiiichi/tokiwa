@@ -449,7 +449,7 @@ The runner writes `/var/log/tokiwa/run.jsonl` (root, mode 0644), one JSON object
 | Line | Fields |
 | --- | --- |
 | A call | `at`, `entry`, `args`, `via`, `id` and `state` (`running`); `actor` when the caller set one. A refused call has `refused`, with the reason, in place of `id` and `state`. |
-| An end | `at`, `id`, `state` (`done`, `failed` or `timed-out`) and `exit` (null when the program did not exit, for example after a signal or the timeout). A hook of the unit writes it as root, with the result and the exit status that `systemctl show` gives, so the exit status is there also for a run that ended after the call returned. |
+| An end | `at`, `id`, `state` (`done`, `failed` or `timed-out`) and `exit` (null when the program did not exit, for example after a signal or the timeout). A run is `done` only when its program exited with status 0. A run that a signal ended is `failed`, also after `systemctl stop`, which systemd counts as a clean stop. A hook of the unit writes the line as root, with the result, the way the program ended and the exit status that `systemctl show` gives, so the exit status is there also for a run that ended after the call returned. |
 
 `via` and `actor` are what the caller says, as in the [audit log](#audit-log). The owner reads the log on the host, from `tokiwa admin`. `tokiwa audit` does not show it.
 

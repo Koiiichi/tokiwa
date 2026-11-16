@@ -90,9 +90,12 @@ ENTRY_KEYS = {
 }
 ARG_KINDS = ("pattern", "choice", "path_below")
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
-ENDS = {"success": "done", "timeout": "timed-out"}
-# Only after these results is ExecMainStatus an exit status; after a signal it is the signal.
+# The results after which a run records the exit status of its program. After a timeout systemd
+# stopped the program, so its status does not tell how the command ended.
 EXITED = ("success", "exit-code")
+# The ExecMainCode of a program that exited (CLD_EXITED). After any other code, ExecMainStatus is
+# the number of the signal that ended the program.
+CLD_EXITED = "1"
 # The limits of cloud-workbench.service, for each run unit and each git unit. ProtectHome also
 # hides /run/user, so a run has no Docker engine.
 SANDBOX = (
@@ -842,40 +845,53 @@ def status(run_id, offset, just_started=False):
 
 
 def unit_end(run_id):
-    """Return the Result and the ExecMainStatus of a run's unit, or two empty strings.
+    """Return the Result of a run's unit and the exit status of its program.
 
-    The finish hook reads them from systemd, because a variable of its environment could come
-    from the unit's EnvironmentFile.
+    The exit status is an empty string when the program did not exit, for example after a
+    signal. Both are empty strings when systemd does not give them. The finish hook reads them
+    from systemd, because a variable of its environment could come from the unit's
+    EnvironmentFile.
     """
     shown = command(
         [
-            "systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "--value",
+            "systemctl", "show", "-p", "Result", "-p", "ExecMainCode", "-p", "ExecMainStatus",
             f"tokiwa-run-{run_id}.service",
         ],
         5,
     )
-    # --value prints the values without their names, in systemd's order; only ExecMainStatus
-    # is a number.
-    values = shown.stdout.split()
-    numbers = [value for value in values if re.fullmatch(r"[0-9]+", value)]
-    words = [value for value in values if value not in numbers]
-    if shown.returncode or len(numbers) != 1 or len(words) != 1:
+    # systemctl show prints the properties in its own order, not in the order of the -p options.
+    values = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
+    result = values.get("Result", "")
+    code = values.get("ExecMainCode", "")
+    status = values.get("ExecMainStatus", "")
+    if shown.returncode or not (
+        re.fullmatch(r"[a-z-]+", result)
+        and re.fullmatch(r"[0-9]+", code)
+        and re.fullmatch(r"[0-9]+", status)
+    ):
         return "", ""
-    return words[0], numbers[0]
+    return result, status if code == CLD_EXITED else ""
 
 
 def finish(run_id, service_result, exit_status):
     """Record the end of a run, as its unit's ExecStopPost hook.
 
-    service_result and exit_status are the Result and ExecMainStatus of the unit (unit_end).
-    The exit is None unless the result is success or exit-code. Removes the run's secret file
-    and worktree and cuts its output to the entry's output_bytes.
+    service_result and exit_status are the Result of the unit and the exit status of its
+    program (unit_end). The exit is None unless the result is success or exit-code and the
+    program exited. Removes the run's secret file and worktree and cuts its output to the
+    entry's output_bytes.
     """
     folder, call = run_folder(run_id)
-    state = ENDS.get(service_result, "failed")
     code = None
     if service_result in EXITED and re.fullmatch(r"[0-9]+", exit_status):
         code = int(exit_status)
+    # systemd counts a stop by SIGTERM as a success, so a success alone does not make a run done.
+    if service_result == "success" and code == 0:
+        state = "done"
+    elif service_result == "timeout":
+        state = "timed-out"
+    else:
+        state = "failed"
     output = folder / "output"
     # Recorded here, because the cut below makes the file no larger than output_bytes.
     truncated = output.exists() and output.stat().st_size > call["output_bytes"]

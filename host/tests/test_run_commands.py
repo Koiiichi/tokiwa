@@ -361,7 +361,7 @@ class Runs(unittest.TestCase):
         self.owners = []
         self.units = ""
         self.active = "active"
-        self.shown = "success\n0\n"
+        self.shown = "Result=success\nExecMainCode=1\nExecMainStatus=0\n"
         self.commit_known = True
         self.start_code = 0
         self.timeouts = []
@@ -919,14 +919,24 @@ class Runs(unittest.TestCase):
             (run.status(result["id"], 0)["state"], run.status(result["id"], 0)["exit"]),
             ("failed", None),
         )
+        # systemd counts a stop by SIGTERM as a success, and unit_end gives no exit status.
+        run.finish(result["id"], "success", "")
+        self.assertEqual(
+            (run.status(result["id"], 0)["state"], run.status(result["id"], 0)["exit"]),
+            ("failed", None),
+        )
 
     def test_unit_end_reads_the_result_from_systemd(self):
         cases = {
-            "success\n0\n": ("success", "0"),
-            "exit-code\n3\n": ("exit-code", "3"),
-            "3\nexit-code\n": ("exit-code", "3"),
+            "Result=success\nExecMainCode=1\nExecMainStatus=0\n": ("success", "0"),
+            "Result=exit-code\nExecMainCode=1\nExecMainStatus=3\n": ("exit-code", "3"),
+            "ExecMainStatus=3\nExecMainCode=1\nResult=exit-code\n": ("exit-code", "3"),
+            # systemctl stop sends SIGTERM, which systemd counts as a clean stop.
+            "Result=success\nExecMainCode=2\nExecMainStatus=15\n": ("success", ""),
+            "Result=signal\nExecMainCode=2\nExecMainStatus=9\n": ("signal", ""),
             "": ("", ""),
-            "success\n": ("", ""),
+            "Result=success\n": ("", ""),
+            "Result=success\nExecMainCode=1\nExecMainStatus=x\n": ("", ""),
         }
         for shown, expected in cases.items():
             with self.subTest(shown=shown):
@@ -935,11 +945,29 @@ class Runs(unittest.TestCase):
         self.assertEqual(
             self.calls[-1],
             [
-                "systemctl", "show", "-p", "Result", "-p", "ExecMainStatus", "--value",
-                "tokiwa-run-20261112T183000-7f3a.service",
+                "systemctl", "show", "-p", "Result", "-p", "ExecMainCode", "-p",
+                "ExecMainStatus", "tokiwa-run-20261112T183000-7f3a.service",
             ],
         )
         self.assertEqual(self.timeouts[-1], 5)
+
+    def test_the_finish_hook_records_the_end_that_systemd_gives(self):
+        cases = {
+            "Result=success\nExecMainCode=2\nExecMainStatus=15\n": ("failed", None),
+            "Result=success\nExecMainCode=1\nExecMainStatus=0\n": ("done", 0),
+            "Result=exit-code\nExecMainCode=1\nExecMainStatus=3\n": ("failed", 3),
+            "Result=timeout\nExecMainCode=2\nExecMainStatus=15\n": ("timed-out", None),
+        }
+        for shown, expected in cases.items():
+            with self.subTest(shown=shown):
+                self.shown = shown
+                result = self.start()
+                run.finish(result["id"], *run.unit_end(result["id"]))
+                end = json.loads((run.RUNS / result["id"] / "end.json").read_text())
+                self.assertEqual((end["state"], end["exit"]), expected)
+                self.assertEqual(
+                    (self.log_lines()[-1]["state"], self.log_lines()[-1]["exit"]), expected
+                )
 
     def test_finish_removes_the_secret_file(self):
         run.SECRETS.parent.mkdir(parents=True)
