@@ -78,7 +78,10 @@ def text(value):
 
 
 def encode(item):
-    return base64.b64encode(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+    # A lone surrogate (an escape such as "\ud83d" in the event) cannot be UTF-8 encoded: it becomes "?".
+    # Without this, the option would not be written and the old value would stay.
+    dumped = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+    return base64.b64encode(dumped.encode("utf-8", "replace")).decode()
 
 
 def fitted(item, limit):

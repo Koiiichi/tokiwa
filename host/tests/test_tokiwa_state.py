@@ -165,6 +165,21 @@ class TokiwaState(unittest.TestCase):
         self.record("note", stdin=fixture("claude-pre-tool-use-bash"))
         self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["id"], "toolu_bash_a")
 
+    def test_note_records_a_command_with_a_lone_surrogate(self):
+        # The event holds the JSON escape of a lone surrogate. The recorder must still write the option.
+        event = ('{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_bash_s",'
+                 '"tool_input":{"command":"echo \\ud83d done"}}')
+        self.record("note", stdin=event)
+        last = self.decoded("@tokiwa_agent_last_tool")
+        self.assertEqual(last["id"], "toolu_bash_s")
+        self.assertIn("done", last["summary"])
+
+    def test_a_question_with_a_lone_surrogate_records_its_pending_item(self):
+        data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
+        text = json.dumps(data).replace(data["tool_input"]["questions"][0]["question"], "Which \\ud83d parser?")
+        self.record("waiting", "--kind", "question", stdin=text)
+        self.assertEqual(self.decoded("@tokiwa_agent_pending")["id"], "toolu_question_a")
+
     def test_codex_permission_request_names_the_tool(self):
         self.record("waiting", "--kind", "permission", stdin=fixture("codex-permission-request"))
         pending = self.decoded("@tokiwa_agent_pending")
