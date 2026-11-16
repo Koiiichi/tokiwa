@@ -3,7 +3,7 @@
 The Health view shows the state of the cloud host as plain text: the instance, an estimate of its spend, the limits of the workbench service, storage and network.
 It does not change the host, its workloads or its service limits. The spend figures are an estimate at list prices, not billing data.
 
-`h` opens the view and `w` returns to the sessions. For the drawing of sections, rows and bars, see [DESIGN.md](../DESIGN.md).
+`h` opens the view and `w` returns to the sessions. When a terminal had the keyboard before Health opened, `w` returns to that terminal. For the drawing of sections, rows and bars, see [DESIGN.md](../DESIGN.md).
 
 ## Sections
 

@@ -851,7 +851,7 @@ export class App {
   createActions(): Action[] {
     const active = () => this.shells[this.active];
     const runs: Record<string, Omit<Action, "id" | "label">> = {
-      sessions: { run: () => this.focusSessions() },
+      sessions: { run: () => this.leaveHealth() },
       health: { run: () => this.show("health") },
       focus: { run: () => this.toggleFocus() },
       refresh: {
@@ -3354,7 +3354,7 @@ export class App {
             ? [hint("retry", "u", "retry", 8, () => this.runAction("refresh"))]
             : []),
         ...(this.healthOverflow ? [hint("scroll", "↑↓", "scroll", 1)] : []),
-        hint("sessions", "w", "sessions", 5, () => this.focusSessions()),
+        hint("sessions", "w", "sessions", 5, () => this.leaveHealth()),
         shortcuts,
       ]);
     const active = this.shells[this.active];
@@ -3709,6 +3709,25 @@ export class App {
       return;
     if (this.palette || this.sheetOpen) return;
     if (!this.listFocused) this.focusSessions();
+  }
+  /**
+   * The `w` action. From Health it returns to the terminal that had the keyboard when Health
+   * opened, if that view still runs. Anywhere else it gives the keyboard to the session list.
+   */
+  leaveHealth() {
+    const from = this.healthFrom;
+    this.healthFrom = undefined;
+    if (
+      this.view === "health" &&
+      from &&
+      this.shells.includes(from) &&
+      !from.exited
+    ) {
+      this.active = this.shells.indexOf(from);
+      this.returnToTerminal();
+      return;
+    }
+    this.focusSessions();
   }
   /** Open the workspace with the keyboard in the session list, on the row of the active view. */
   focusSessions() {
@@ -4509,7 +4528,11 @@ export class App {
     }
   }
 
+  /** The terminal that had the keyboard when Health opened from the workspace, if any. */
+  healthFrom?: Shell;
   show(view: "health" | "shell") {
+    if (view === "health" && this.view === "shell")
+      this.healthFrom = this.listHasFocus() ? undefined : this.shells[this.active];
     this.view = view;
     // Session reads pause while Health is in view and resume with the workspace.
     if (

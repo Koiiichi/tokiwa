@@ -194,7 +194,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 
 | Key | Action |
 | --- | --- |
-| `w` | **Sessions**: show the Workspace with the keyboard in the session list. |
+| `w` | **Sessions**: show the Workspace with the keyboard in the session list. From Health, `w` returns to the terminal that had the keyboard when Health opened, if that view still runs; a second `w` then reaches the list. |
 | `h` | **Health**: show the Health view. |
 | `z` | **Focus**: hide the session list beside the terminal, or show it again. |
 | `u` | **Refresh and retry**: read the sessions now; read Health and spend again when they are not live. |
