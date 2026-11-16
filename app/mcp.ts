@@ -152,6 +152,15 @@ export function createServer(
     try {
       return text(format(await backend.call(args)));
     } catch (e) {
+      // `agent wait` exits 3 on a timeout and prints the state object: that is a result, not a failure.
+      const failure = e as { exitCode?: number; stdout?: string };
+      if (
+        args[0] === "agent" &&
+        args[1] === "wait" &&
+        failure.exitCode === 3 &&
+        failure.stdout
+      )
+        return text(format(failure.stdout));
       const message = String((e as Error)?.message ?? e);
       return text(
         SIGN_IN_EXPIRED.test(message)

@@ -172,8 +172,11 @@ export class BackendClient {
         throw new Error("The response exceeds the size limit.");
       if (timedOut) throw new Error("The launcher exceeded 90 seconds.");
       if (code !== 0)
-        throw new Error(
-          `Launcher ${args[0]} exited ${code}: ${err.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
+        throw Object.assign(
+          new Error(
+            `Launcher ${args[0]} exited ${code}: ${err.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
+          ),
+          { exitCode: code as number, stdout: out.trim() },
         );
       return out.trim();
     } finally {

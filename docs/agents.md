@@ -65,7 +65,7 @@ These are the read tools. The tables after it list the tools of the other classe
 | `tokiwa_run_status` | `id`, optional `offset` | The output of `tokiwa run-status ID [OFFSET]`: the state of a run and one page of its output. See [Run a listed command](#run-a-listed-command). Encrypted on the way, and marked as data. |
 | `tokiwa_state` | `name`, `identity` | The output of `tokiwa state`: the facts of a session, without screen text. See [Read a session and its agent](#read-a-session-and-its-agent). |
 | `tokiwa_agent_state` | `name`, `identity` | The output of `tokiwa agent state`: the same, with what the agent reports. It holds ids and kinds, no session text, so it is not marked as data. |
-| `tokiwa_agent_wait` | `name`, `identity`, `after`, optional `timeout` (1 to 300 seconds, default 60) | The output of `tokiwa agent wait NAME IDENTITY --after AFTER --timeout TIMEOUT`. A timeout is an error result. |
+| `tokiwa_agent_wait` | `name`, `identity`, `after`, optional `timeout` (1 to 300 seconds, default 60) | The output of `tokiwa agent wait NAME IDENTITY --after AFTER --timeout TIMEOUT`. A timeout is a normal result with `reason` `timeout`, not an error. Other failures are errors. |
 | `tokiwa_agent_read` | `name`, `identity`, optional `after` (a cursor), `tools`, `pending` | The output of `tokiwa agent read`: the transcript in pages, or with `pending` the waiting item. Encrypted on the way, and marked as data. |
 
 With `--allow control`:
@@ -75,7 +75,7 @@ With `--allow control`:
 | `tokiwa_interrupt` | `name`, `identity` | The output of `tokiwa interrupt`: Esc to the session. |
 | `tokiwa_freeze` | `name`, `identity` | The output of `tokiwa freeze`. |
 | `tokiwa_resume` | `name`, `identity` | The output of `tokiwa resume`. |
-| `tokiwa_agent_send` | `name`, `identity`, `text` (1 to 16384 characters) | The output of `tokiwa agent send NAME IDENTITY --text TEXT`: `turn_before` and `sent_at`. The server offers no `--file` or stdin form. |
+| `tokiwa_agent_send` | `name`, `identity`, `text` (1 to 16384 characters) | The output of `tokiwa agent send NAME IDENTITY --text TEXT`: `turn_before` and `sent_at`. The server offers no `--file` or stdin form. The tool passes the message with `--text`, so the text is in the process arguments of the launcher on the Mac, and never on the host. |
 | `tokiwa_claim` | `name`, `identity` | The output of `tokiwa claim`. The tool has no `--replace`: a driver is replaced by a person. |
 | `tokiwa_release` | `name`, `identity` | The output of `tokiwa release`. |
 | `tokiwa_end` | `name`, `identity` | The output of `tokiwa end`, which refuses while a client that can type is attached. The tool has no `--attached-ok`. |
@@ -241,10 +241,10 @@ The transcript is a file that the agent writes, so each line is untrusted data. 
 
 ## Drive a session
 
-These are the primitives that let one agent, the orchestrator, run a task in another session, the worker. Tokiwa does not decide how an orchestrator runs a task. It offers the steps, and each step is checked on the host. Every command needs `TOKIWA_ACTOR`; the MCP server takes it from `--actor`.
+These are the primitives that let one agent, the orchestrator, run a task in another session, the worker. Tokiwa does not decide how an orchestrator runs a task. It offers the steps, and each step is checked on the host. Only `agent send`, `agent answer`, `claim` and `release` need `TOKIWA_ACTOR`, and the actor of `agent send` and `agent answer` must be the driver. The MCP server takes the actor from `--actor`.
 
 1. Create the session with an agent in it: `tokiwa create NAME --dir DIR --subfolder NAME --project PROJECT --run claude`, with `TOKIWA_ACTOR` set to the name of the orchestrator. Then `tokiwa claim NAME IDENTITY`, so that the actor is the driver. The claim is refused while a person is attached.
-2. `tokiwa agent wait NAME IDENTITY --after 0` until the `agent` state is `idle`.
+2. `tokiwa agent state NAME IDENTITY` until `agent` is `idle`. Do not use `agent wait --after 0` here: a new session has no turn to end, so the wait would not return.
 3. `tokiwa agent send NAME IDENTITY --text TEXT`. Keep `turn_before` of the result.
 4. `tokiwa agent wait NAME IDENTITY --after TURN_BEFORE`. The `reason` says whether the turn ended (`turn-ended`), the agent asks for a person (`pending`), a dialog shows (`dialog`), the agent exited (`ended`) or the time ran out (`timeout`).
 5. `tokiwa agent read NAME IDENTITY` for what the agent said and did. Add `--pending` for the waiting item.

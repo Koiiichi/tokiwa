@@ -542,6 +542,50 @@ test("wait takes a timeout of 1 to 300, default 60, and read marks session text 
   void client;
 });
 
+test("a wait timeout is a normal result, and another exit code is an error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "tokiwa-mcp-"));
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  const launcher = join(home, ".local/bin/tokiwa");
+  writeFileSync(
+    launcher,
+    `#!/bin/sh
+case "$*" in
+ *"--after 9"*) echo '{"reason":"timeout","turn":3}'; echo 'Timed out.' >&2; exit 3 ;;
+ *"--after 8"*) echo 'Boom.' >&2; exit 1 ;;
+ *) echo '{"reason":"turn-ended"}' ;;
+esac
+`,
+  );
+  chmodSync(launcher, 0o755);
+  const client = new Client({ name: "test", version: "1" });
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: [join(import.meta.dir, "mcp.ts")],
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      cwd: import.meta.dir,
+      stderr: "ignore",
+    }),
+  );
+  try {
+    const wait = (after: number) =>
+      client.callTool({
+        name: "tokiwa_agent_wait",
+        arguments: { ...screen, after },
+      }) as Promise<any>;
+    const timeout = await wait(9);
+    expect(timeout.isError).toBeFalsy();
+    expect(timeout.content[0].text).toBe('{"reason":"timeout","turn":3}');
+    const failed = await wait(8);
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toContain("exited 1");
+    expect((await wait(1)).content[0].text).toBe('{"reason":"turn-ended"}');
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("--actor is read with --allow, and a bad actor is refused", () => {
   expect(parseOptions(["--actor", "worker-a"])).toEqual({ allow: [], actor: "worker-a" });
   expect(parseOptions(["--allow", "answer", "--actor", "a.b:c_d-1"])).toEqual({

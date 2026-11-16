@@ -176,7 +176,7 @@
       "helper": "agent-wait",
       "tool": {
         "name": "tokiwa_agent_wait",
-        "description": "Wait until the agent of one Tokiwa session ends a turn after the turn count in after, asks for a person, shows a dialog or exits, then return its state with a reason (turn-ended, pending, dialog, ended or timeout). A timeout is an error result, not a failure. Take after from the turn of tokiwa_agent_state, or from turn_before of tokiwa_agent_send.",
+        "description": "Wait until the agent of one Tokiwa session ends a turn after the turn count in after, asks for a person, shows a dialog or exits, then return its state with a reason (turn-ended, pending, dialog, ended or timeout). A timeout is a normal result with reason timeout, not an error. Take after from the turn of tokiwa_agent_state, or from turn_before of tokiwa_agent_send.",
         "argv": [
           "agent",
           "wait",
@@ -471,7 +471,7 @@
       "helper": "agent-send",
       "tool": {
         "name": "tokiwa_agent_send",
-        "description": "Send one message to the idle agent of one Tokiwa session, as one paste and Enter. The caller must drive the session (tokiwa_claim) and the MCP server must run with --actor. The agent sees a first line that says the message comes from an agent, not from the owner. The text is at most 16384 characters, with no control character except newline and tab, and does not start with /, ! or #. The result has turn_before: pass it to tokiwa_agent_wait as after.",
+        "description": "Send one message to the idle agent of one Tokiwa session, as one paste and Enter. The MCP tool passes the message with --text, so the text is in the process arguments of the launcher on the Mac, never on the host. The caller must drive the session (tokiwa_claim) and the MCP server must run with --actor. The agent sees a first line that says the message comes from an agent, not from the owner. The text is at most 16384 characters, with no control character except newline and tab, and does not start with /, ! or #. The result has turn_before: pass it to tokiwa_agent_wait as after.",
         "argv": [
           "agent",
           "send",
