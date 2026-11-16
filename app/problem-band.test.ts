@@ -405,14 +405,92 @@ test("a component failure leaves the header connected and shows no band", async 
 });
 
 test("a stopped workstation is a workstation state, not a link state", async () => {
-  const { t, app } = await open(
-    "The host is stopped. No restart was requested.",
-  );
+  const { t, app, state } = await open(undefined);
   try {
-    const frame = t.captureCharFrame();
+    // Sessions and Health fail with the stopped host; a spend read still works.
+    state.error = (args) =>
+      args[0] === "spend"
+        ? undefined
+        : new Error("The host is stopped. No restart was requested.");
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    // The Health sample already read spend; make sure that it did after the failures.
+    await pause(5);
+    app.sources.spend.succeed(app.now());
+    app.drawHeader();
+    await t.renderOnce();
+    let frame = t.captureCharFrame();
+    expect(app.sources.spend.okAt).toBeGreaterThan(app.sources.health.failAt);
     expect(headerLine(frame)).toContain("○ EC2 · stopped");
     expect(frame.split("\n")[2]).toContain("▲ The workstation is stopped");
     expect(frame.split("\n")[3]).toContain("Start it in AWS, then press u.");
+    // A later Health read clears it.
+    await pause(5);
+    state.error = undefined;
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await t.renderOnce();
+    frame = t.captureCharFrame();
+    expect(headerLine(frame)).toContain("● EC2");
+    expect(frame).not.toContain("▲");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a spend read clears a signed-out band but not a stopped one", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await pause(5);
+    state.error = (args) =>
+      args[0] === "spend"
+        ? undefined
+        : launcherFailure(AUTH_TEXT, "auth")(args);
+    await app.refreshSessions();
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await pause(5);
+    app.sources.spend.succeed(app.now());
+    app.drawHeader();
+    await t.renderOnce();
+    expect(app.currentError()).toBeUndefined();
+    expect(headerLine(t.captureCharFrame())).toContain("● EC2");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a component line in the list gives way to a global band and returns when it clears", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    await pause(5);
+    state.error = (args) =>
+      args[0] === "--snapshot" ? new Error("ssh: unexpected reply") : undefined;
+    await app.refreshSessions();
+    await t.renderOnce();
+    expect(t.captureCharFrame()).toContain("▲ Sessions read failed");
+    // A Health failure of the whole link follows; no list redraw is asked for.
+    state.error = (args) =>
+      args[0] === "--snapshot"
+        ? new Error("ssh: unexpected reply")
+        : launcherFailure(AUTH_TEXT, "auth")(args);
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await t.renderOnce();
+    let frame = t.captureCharFrame();
+    expect(frame).toContain("▲ AWS sign-in expired");
+    expect(frame).not.toContain("▲ Sessions read failed");
+    // The link works again through Health; the sessions read still fails for its own reason.
+    await pause(5);
+    state.error = (args) =>
+      args[0] === "--snapshot" ? new Error("ssh: unexpected reply") : undefined;
+    await app.sampleHealth();
+    clearTimeout(app.sampleTimer);
+    await t.renderOnce();
+    frame = t.captureCharFrame();
+    expect(frame).not.toContain("▲ AWS sign-in expired");
+    expect(frame).toContain("▲ Sessions read failed");
   } finally {
     await close(t, app);
   }

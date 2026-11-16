@@ -224,7 +224,8 @@ export interface ErrorState {
 
 /**
  * The failure to show, or undefined. A global failure is active while it is later than the newest
- * success of any source: one good read shows that the link works. Of those, `worst` explains the
+ * success of any source: one good read shows that the link works. `stopped` and `not-ready` are
+ * workstation states, which a spend read does not disprove; only a session or Health read clears them. Of those, `worst` explains the
  * others. Without one, the newest failure of a source that failed for its own reason is active
  * until that source succeeds. A failed spend read stays in the Spend rows and is never chosen.
  * `now` is part of the call for a later rule; no rule reads it yet.
@@ -234,12 +235,18 @@ export function errorState(
   now: number,
 ): ErrorState | undefined {
   const newestOk = Math.max(...SOURCES.map((s) => sources[s].okAt));
+  // A spend read succeeds on a stopped host, so only a session or Health read clears `stopped` and
+  // `not-ready`. Any source clears the other global kinds.
+  const newestRead = Math.max(sources.sessions.okAt, sources.health.okAt);
+  const active = (f: Failure) =>
+    f.at >
+    (f.kind === "stopped" || f.kind === "not-ready" ? newestRead : newestOk);
   const failures = SOURCES.flatMap((s) => sources[s].failure ?? []);
   const global = failures.filter(
-    (f) => GLOBAL_KINDS.includes(f.kind) && f.at > newestOk,
+    (f) => GLOBAL_KINDS.includes(f.kind) && active(f),
   );
   const diagnostics = failures.filter(
-    (f) => !GLOBAL_KINDS.includes(f.kind) || f.at > newestOk,
+    (f) => !GLOBAL_KINDS.includes(f.kind) || active(f),
   );
   const top = worst(global);
   if (top)

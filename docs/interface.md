@@ -63,7 +63,7 @@ The status at the right shows the link to the host as a dot, for example `● EC
 | `○ EC2 · stopped` | The launcher found the workstation in a state other than running. Amber. |
 | `○ EC2 · not ready` | The workstation runs, and its workbench check returned Failed. Amber. |
 
-A failure of the whole link is active while it is later than the newest good read of any source: one good read clears it. A failure of one source stays with that source until that source reads well.
+A failure of the whole link is active while it is later than the newest good read of any source: one good read clears it. The exception is a stopped or not-ready workstation, which only a good session read or Health read clears, because a spend read works on a stopped host. A failure of one source stays with that source until that source reads well.
 
 A click on the status opens a card about the connection. A second click on the status, a click elsewhere or `esc` closes it. Its first line names this Mac and the link, for example `<mac> → EC2 · connected`.
 

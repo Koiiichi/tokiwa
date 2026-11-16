@@ -312,3 +312,20 @@ test("a setup failure offers no recovery key, and a spend failure is not a compo
     recovery: "none",
   });
 });
+
+test("a spend success clears signed-out and offline, but not stopped or not-ready", () => {
+  const kinds: [string, boolean][] = [
+    ["Tokiwa: AWS authentication failed.", true],
+    ["Tokiwa: The host state could not be read.", true],
+    ["Tokiwa: The host is stopped. No restart was requested.", false],
+    ["Tokiwa: The workbench check returned Failed.", false],
+  ];
+  for (const [text, clears] of kinds) {
+    const sources = statuses();
+    sources.health.fail(classify("health", exit(text), 10));
+    sources.spend.succeed(20);
+    expect(errorState(sources, 25) === undefined).toBe(clears);
+    sources.sessions.succeed(30);
+    expect(errorState(sources, 35)).toBeUndefined();
+  }
+});

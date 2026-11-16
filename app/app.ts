@@ -3007,6 +3007,9 @@ export class App {
       this.drawHeader();
       this.drawFooter();
       this.drawHealth();
+      // The list line follows the failure of the whole link, which a Health read can change.
+      if (this.view === "shell" && this.listSignature !== this.rowSignature())
+        this.drawSessions();
       this.record("health-sample", {
         status: this.history.status(),
         count: this.history.samples.length,
@@ -3804,6 +3807,9 @@ export class App {
       this.focusMode,
       this.sessionsLoading,
       this.sources.sessions.failure?.at,
+      // The line at the top of the list shows only while no failure of the whole link does.
+      this.viewFailure("sessions")?.at,
+      this.currentError()?.scope,
       this.sessionRows().map((r) => [r.name, this.rowStatus(r)]),
     ]);
   }
