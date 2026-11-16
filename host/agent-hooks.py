@@ -9,6 +9,9 @@ COMMAND = "/usr/local/bin/tokiwa-state"
 # (event, matcher or None, arguments of tokiwa-state, and optionally the handler of this row). A row without
 # a handler uses the handler of its agent. Claude Code reports no event when Esc stops a turn:
 # tokiwa interrupt sets idle itself, and idle_prompt covers an Esc that a person typed.
+# The sources of SessionStart that start a new turn loop. `compact` is left out: both agents also fire SessionStart
+# after a compaction, which can come in the middle of a turn, and the agent is not idle then.
+SESSION_STARTS = "startup|resume|clear|fork"
 CLAUDE = [
     ("UserPromptSubmit", None, "working --turn"),
     ("PreToolUse", None, "note"),
@@ -23,7 +26,7 @@ CLAUDE = [
     ("Notification", "quota_auto_resume_stale", "limited"),
     ("Elicitation", None, "waiting --kind question"),
     ("ElicitationResult", None, "working"),
-    ("SessionStart", None, "idle"),
+    ("SessionStart", SESSION_STARTS, "idle"),
     ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("StopFailure", "rate_limit", "limited"),
@@ -40,7 +43,7 @@ CODEX = [
     ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
     ("PermissionRequest", None, "waiting --kind permission"),
-    ("SessionStart", None, "idle"),
+    ("SessionStart", SESSION_STARTS, "idle"),
     ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("Interrupt", None, "idle"),

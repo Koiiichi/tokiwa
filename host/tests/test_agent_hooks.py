@@ -70,7 +70,8 @@ class AgentHooks(unittest.TestCase):
         self.assertEqual(states(claude, "Stop"), [(None, "idle")])
         self.assertEqual(states(claude, "PreToolUse"), [(None, "note"), ("AskUserQuestion", "waiting --kind question")])
         self.assertEqual(states(claude, "UserPromptSubmit"), [(None, "working --turn")])
-        self.assertEqual(states(claude, "SessionStart"), [(None, "idle")])
+        # Compaction also starts a session, often mid-turn: it must not mark the agent idle.
+        self.assertEqual(states(claude, "SessionStart"), [("startup|resume|clear|fork", "idle")])
         self.assertEqual(states(claude, "SessionEnd"), [(None, "ended")])
         self.assertEqual(states(claude, "Elicitation"), [(None, "waiting --kind question")])
         self.assertIn(("rate_limit", "limited"), states(claude, "StopFailure"))
@@ -80,7 +81,7 @@ class AgentHooks(unittest.TestCase):
         self.assertEqual(states(codex, "PermissionRequest"), [(None, "waiting --kind permission")])
         self.assertEqual(states(codex, "UserPromptSubmit"), [(None, "working --turn")])
         self.assertEqual(states(codex, "PreToolUse"), [(None, "note")])
-        self.assertEqual(states(codex, "SessionStart"), [(None, "idle")])
+        self.assertEqual(states(codex, "SessionStart"), [("startup|resume|clear|fork", "idle")])
         self.assertEqual(states(codex, "SessionEnd"), [(None, "ended")])
         self.assertEqual(states(codex, "Interrupt"), [(None, "idle")])
         claude_handler = claude["hooks"]["Stop"][-1]["hooks"][0]
