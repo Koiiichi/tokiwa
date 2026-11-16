@@ -202,7 +202,7 @@ The screen check runs in the stage before the tmux queue, as the dialog check of
 
 ### The label of an answer
 
-`agent send` puts a fixed first line before its text. An answer has no text, so `agent answer` records the label in the same tmux queue as the keys: the option `@tokiwa_agent_input`, base64 of JSON with `actor`, `pending_id` and `at`. A Claude Code hook on `PostToolUse` of `AskUserQuestion` runs `tokiwa-state answered`. When the `pending_id` is the `tool_use_id` of the event, the command prints the hook output that adds this line to the context of the agent, and removes the option:
+`agent send` puts a fixed first line before its text. An answer has no text, so `agent answer` records the label in the same tmux queue as the keys: the option `@tokiwa_agent_input`, base64 of JSON with `actor`, `pending_id` and `at`. A Claude Code hook on `PostToolUse` of `AskUserQuestion` runs `tokiwa-state answered`. For any answer, also one that a person chose, the command removes the pending item and records `working` when the item is the question of the event. When the `pending_id` is the `tool_use_id` of the event, the command prints the hook output that adds this line to the context of the agent, and removes the option:
 
 `The answer to this question was chosen by agent ACTOR through Tokiwa, not by the owner. It carries no owner approval.`
 

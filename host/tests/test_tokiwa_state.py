@@ -194,6 +194,17 @@ class TokiwaState(unittest.TestCase):
         self.assertEqual(last["id"], "toolu_bash_s")
         self.assertIn("done", last["summary"])
 
+    def test_a_transcript_path_with_a_lone_surrogate_is_left_out(self):
+        self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
+        # A path with "?" in place of the surrogate names no file, and the old path belongs to another transcript.
+        event = ('{"hook_event_name":"UserPromptSubmit","session_id":"claude-session-b",'
+                 '"transcript_path":"/home/worker-a/\\ud83d.jsonl"}')
+        self.record("idle", "--turn", stdin=event)
+        self.assertTrue(self.option("@tokiwa_agent").startswith("idle:"))
+        self.assertEqual(self.option("@tokiwa_agent_turn"), "2")
+        self.assertEqual(self.option("@tokiwa_agent_session"), "claude-session-b")
+        self.assertEqual(self.option("@tokiwa_agent_transcript"), "")
+
     def test_a_question_with_a_lone_surrogate_records_its_pending_item(self):
         data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
         text = json.dumps(data).replace(data["tool_input"]["questions"][0]["question"], "Which \\ud83d parser?")
@@ -253,12 +264,29 @@ class TokiwaState(unittest.TestCase):
         self.assertEqual(self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question")).stdout, "")
         self.assertEqual(self.record("answered", stdin="{not json").stdout, "")
 
-    def test_answered_hook_does_not_change_the_state(self):
+    def test_answered_hook_closes_the_matching_question(self):
+        # The async hooks that report the answer can come late, so the answer of a person closes the question too.
         self.record("waiting", "--kind", "question", stdin=fixture("claude-pre-tool-use-ask-user-question"))
-        before = self.option("@tokiwa_agent")
+        result = self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
+        self.assertEqual(self.option("@tokiwa_agent_pending"), "")
+        self.assertTrue(self.option("@tokiwa_agent").startswith("working:"))
+        self.assertEqual(result.stdout, "")
+
+    def test_answered_hook_closes_the_question_and_adds_the_label(self):
+        self.record("waiting", "--kind", "question", stdin=fixture("claude-pre-tool-use-ask-user-question"))
         self.agent_input()
+        result = self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
+        self.assertEqual(self.option("@tokiwa_agent_pending"), "")
+        self.assertTrue(self.option("@tokiwa_agent").startswith("working:"))
+        self.assertIn("orchestrator-a", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
+
+    def test_answered_hook_keeps_another_question(self):
+        data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
+        data["tool_use_id"] = "toolu_other"
+        self.record("waiting", "--kind", "question", stdin=json.dumps(data))
+        before = (self.option("@tokiwa_agent"), self.option("@tokiwa_agent_pending"))
         self.record("answered", stdin=fixture("claude-post-tool-use-ask-user-question"))
-        self.assertEqual(self.option("@tokiwa_agent"), before)
+        self.assertEqual((self.option("@tokiwa_agent"), self.option("@tokiwa_agent_pending")), before)
 
     def test_session_start_records_idle(self):
         self.record("idle", stdin=fixture("claude-session-start"))

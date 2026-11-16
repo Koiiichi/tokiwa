@@ -267,7 +267,7 @@
 - Modify: `host/terminal-session.sh` (mode `answer`), `bin/tokiwa`, `app/capabilities.json`, `host/tests/test_terminal_sessions.py`, `host/tests/test_terminal_cli.py`, `docs/agents.md`
 
 **Interfaces:**
-- Consumes: `writable_clients`, `screen_dialog` is not checked (a question is itself a dialog), the remote pattern for `--text`.
+- Consumes: `writable_clients`, `screen_dialog` (the answer requires a dialog on the screen, because a question is itself a dialog), the remote pattern for `--text`.
 - Produces helper mode `answer NAME IDENTITY PENDING_ID CHOICE`, where `CHOICE` is `1`-`9` or `text` (text on stdin). Launcher command `answer NAME IDENTITY --pending ID (--choice N | --text TEXT)`. Audit action `answer` with the pending id.
 
 - [ ] **Step 1: Find the free-text path.** From Claude Code's documentation of its question tool, record the key sequence that selects the free-text option and submits text. If it cannot be found, `--text` refuses with `Free-text answers are not supported for this agent. Nothing was sent.` and Task 9 records the live behaviour.

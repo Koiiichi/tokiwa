@@ -19,9 +19,10 @@ Options that it sets on the session:
   @tokiwa_agent_input       Base64 JSON {actor, pending_id, at}, set by `tokiwa agent answer`. `answered` clears it.
 
 `answered` is the one command that a synchronous Claude Code hook runs (the Codex hooks also have a timeout and no
-`async`, but their output adds nothing to the context). A PostToolUse hook of the question tool runs it. When an agent
-chose the answer of the question that the event reports, it prints the hook output that adds a context
-line to the agent, and clears the option. Otherwise it prints nothing.
+`async`, but their output adds nothing to the context). A PostToolUse hook of the question tool runs it. When the
+pending item is the question that the event reports, it clears the item and records `working`, whoever answered.
+When an agent chose the answer of that question, it also prints the hook output that adds a context line to the
+agent, and clears the label. Otherwise it prints nothing.
 """
 
 import base64
@@ -170,12 +171,34 @@ def option(pane, name):
     return tmux("show-options", "-qv", "-t", pane, name).stdout.strip()
 
 
+def stored(pane, name):
+    """The base64 JSON object in an option, or None when the option holds no such object."""
+    try:
+        value = json.loads(base64.b64decode(option(pane, name)))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def begin(pane, state):
+    # The time is when the state began: a report of the state that is already there keeps it.
+    if option(pane, "@tokiwa_agent").partition(":")[0] != state:
+        tmux("set-option", "-q", "-t", pane, "@tokiwa_agent", f"{state}:{int(time.time())}")
+
+
 def answered():
-    """Print the hook output that labels an answer that an agent chose, then clear the label."""
+    """Close the question that the event answers, and print the label of an answer that an agent chose."""
     event = parse(read_input())
     pane = os.environ.get("TMUX_PANE", "")
     if not pane or not os.environ.get("TMUX"):
         return
+    tool_use_id = text(event.get("tool_use_id"))
+    pending = stored(pane, "@tokiwa_agent_pending")
+    # The async hooks that record `working` can run after `agent state` reads the session, which would show the
+    # answered question as still waiting. This hook runs before the agent goes on, so it closes the question first.
+    if tool_use_id and pending and pending.get("id") == tool_use_id:
+        tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_pending")
+        begin(pane, "working")
     try:
         label = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_input"), validate=True))
     except ValueError:
@@ -206,15 +229,23 @@ def record(argv):
 
     if state == "ended":
         tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent")
-    elif state != "note" and option(pane, "@tokiwa_agent").partition(":")[0] != state:
-        # The time is when the state began: a report of the state that is already there keeps it.
-        put("@tokiwa_agent", f"{state}:{int(time.time())}")
+    elif state != "note":
+        begin(pane, state)
     if "--turn" in flags:
         turn = option(pane, "@tokiwa_agent_turn")
         put("@tokiwa_agent_turn", str(int(turn) + 1 if digits(turn) else 1))
     for name, key in (("@tokiwa_agent_transcript", "transcript_path"), ("@tokiwa_agent_session", "session_id")):
-        if text(event.get(key)):
-            put(name, event[key])
+        value = text(event.get(key))
+        if not value:
+            continue
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            # A lone surrogate (an escape such as "\ud83d" in the event) cannot reach tmux, and a "?" in its place,
+            # as `encode` writes, gives a path or an id that names nothing. The old value names another one, so it goes.
+            tmux("set-option", "-qu", "-t", pane, name)
+        else:
+            put(name, value)
     if state == "note" and event.get("tool_name"):
         # `agent answer` requires this id to be the pending id, so a tool call after a question stops the answer.
         # An id that an answer cannot name is left out, which matches no pending item.
@@ -225,21 +256,12 @@ def record(argv):
     if state in CLEARS_PENDING:
         tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_pending")
     elif state == "waiting" and kind in KINDS:
-        last_tool = {}
-        try:
-            last_tool = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_last_tool")))
-        except ValueError:
-            pass
-        if not isinstance(last_tool, dict):
-            last_tool = {}
+        last_tool = stored(pane, "@tokiwa_agent_last_tool") or {}
         if kind == "permission" and not event.get("tool_name") and last_tool.get("id"):
             # Claude Code sends a permission_prompt notification for the dialog of an AskUserQuestion call too.
             # It names no tool call, so it belongs to the question that the last tool call opened.
-            try:
-                current = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_pending")))
-            except ValueError:
-                current = None
-            if isinstance(current, dict) and current.get("kind") == "question" and current.get("id") == last_tool["id"]:
+            current = stored(pane, "@tokiwa_agent_pending")
+            if current and current.get("kind") == "question" and current.get("id") == last_tool["id"]:
                 return
         put("@tokiwa_agent_pending", fitted(pending_item(event, raw, kind, last_tool), MAX_PENDING_BYTES))
 
