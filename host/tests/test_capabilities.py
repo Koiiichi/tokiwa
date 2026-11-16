@@ -19,11 +19,14 @@ class Capabilities(unittest.TestCase):
     setUp = cli.TerminalCLI.setUp
     tearDown = cli.TerminalCLI.tearDown
     run_cli = cli.TerminalCLI.run_cli
+    stub_app = cli.TerminalCLI.stub_app
 
     def test_the_table_and_the_help_list_the_same_commands(self):
         # A command line of the help is indented two spaces; a wrapped line is indented further.
-        listed = {line.split()[0] for line in self.run_cli('--help').stdout.splitlines()
-                  if line.startswith('  ') and not line.startswith('   ')}
+        # `agent` is a family of commands: its subcommand is part of the name, as in `agent state`.
+        words = [line.split() for line in self.run_cli('--help').stdout.splitlines()
+                 if line.startswith('  ') and not line.startswith('   ')]
+        listed = {' '.join(w[:2]) if w[0] == 'agent' else w[0] for w in words}
         described = {c['command'] for c in CAPABILITIES if not c.get('hidden')}
         described |= {alias for c in CAPABILITIES for alias in c.get('aliases', [])}
         self.assertEqual(listed, described)
@@ -31,6 +34,8 @@ class Capabilities(unittest.TestCase):
     def test_each_example_reaches_its_helper_mode(self):
         examples = [(c, c['example']) for c in CAPABILITIES if 'example' in c]
         examples += [(c, t['example']) for c, t in TOOLS if 'example' in t]
+        # claim and release refuse without an actor.
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
         for capability, example in examples:
             with self.subTest(example=example):
                 (self.home / 'calls').unlink(missing_ok=True)
@@ -43,6 +48,13 @@ class Capabilities(unittest.TestCase):
         for capability, tool in TOOLS:
             with self.subTest(tool=tool['name']):
                 argv, example = tool['argv'], tool.get('example', capability.get('example'))
+                # An optional part `{name?--option}` is not in the example: it must name an argument.
+                for part in [a for a in argv if a.startswith('{') and '?' in a]:
+                    self.assertIn(part[1:part.index('?')], tool['args'])
+                argv = [a for a in argv if not ('{' in a and '?' in a)]
+                if len(argv) != len(tool['argv']):
+                    # The example may hold the optional options: compare the fixed part.
+                    example = example[:len(argv)]
                 if argv and argv[-1].endswith('...}'):
                     # A {name...} part matches every remaining example item, each as NAME=VALUE.
                     name, rest = argv[-1][1:-4], example[len(argv) - 1:]
@@ -79,6 +91,35 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(by_name['tokiwa_launch'][1].get('class', by_name['tokiwa_launch'][0]['class']), 'run')
         self.assertEqual(by_name['tokiwa_commands'][0]['class'], 'read')
         self.assertEqual(by_name['tokiwa_run_status'][0]['class'], 'read')
+
+    def test_agent_tools_follow_the_layer_split(self):
+        effective = {t['name']: t.get('class', c['class']) for c, t in TOOLS}
+        for name in ['tokiwa_state', 'tokiwa_agent_state', 'tokiwa_agent_wait', 'tokiwa_agent_read']:
+            self.assertEqual(effective[name], 'read')
+        for name in ['tokiwa_agent_send', 'tokiwa_claim', 'tokiwa_release', 'tokiwa_end']:
+            self.assertEqual(effective[name], 'control')
+        self.assertEqual(effective['tokiwa_agent_answer'], 'answer')
+        by_name = {t['name']: t for _, t in TOOLS}
+        # The agent fields come from the transcript or from tmux options that the workbench user can set.
+        for name in ['tokiwa_agent_read', 'tokiwa_agent_state', 'tokiwa_agent_wait']:
+            self.assertTrue(by_name[name].get('untrusted_output'), name)
+        self.assertFalse(by_name['tokiwa_state'].get('untrusted_output'))
+        self.assertNotIn('text', by_name['tokiwa_agent_answer']['args'])
+        self.assertEqual(by_name['tokiwa_agent_wait']['args']['timeout'],
+                         {'type': 'integer', 'minimum': 1, 'maximum': 60, 'default': 60})
+
+    def test_mcp_accepts_answer_and_actor(self):
+        self.stub_app()
+        for args in [('--allow', 'answer'), ('--allow', 'control,answer'), ('--actor', 'worker-a'),
+                     ('--allow', 'answer', '--actor', 'a.b:c_d-1'), ('--actor', 'w', '--allow', 'run,answer')]:
+            result = self.run_cli('mcp', *args)
+            self.assertEqual((result.returncode, result.stdout), (0, 'app mcp ' + ' '.join(args)), (args, result.stderr))
+
+    def test_mcp_refuses_a_bad_actor(self):
+        self.stub_app()
+        for args in [('--actor',), ('--actor', 'bad;rm'), ('--actor', '-x'), ('--actor', 'a' * 65),
+                     ('--actor', 'a', '--actor', 'b'), ('--allow', 'answer,answer'), ('--actor', 'a', 'x')]:
+            self.assertNotEqual(self.run_cli('mcp', *args).returncode, 0, args)
 
 
 if __name__ == '__main__':

@@ -24,6 +24,9 @@
 - New audit actions: `send`, `answer`, `claim`, `release`. Audit lines never hold message text.
 - Public repository: neutral names only (`worker-a`, `orchestrator-a`, `project-a`). No company, person, profile, domain or path from a real machine in code, tests, fixtures, docs or commit messages. Fixtures are synthetic: copy the shape of real transcripts and hook events, never their content.
 - Commits: explicit `git add` of named files, one-line messages, no `Co-Authored-By` and no "Generated with" line.
+- Layer split (owner decision 2026-11-15, spec "Layers and names"): core commands `state` (session facts only), `claim`, `release`, `end`; agent commands `tokiwa agent state|wait|send|read|answer` with helper modes `agent-state`, `agent-wait`, `agent-send`, `agent-read`, `agent-answer`. Where a task below says `send`, `wait`, `read`, `answer` or the agent fields of `state`, it means the agent form. MCP agent tools are `tokiwa_agent_*`.
+- Agent tmux options: `@tokiwa_agent`, `@tokiwa_agent_turn`, `@tokiwa_agent_transcript`, `@tokiwa_agent_session`, `@tokiwa_agent_pending`, `@tokiwa_agent_last_tool`, `@tokiwa_agent_input`. Where a task below says `@tokiwa_turn`, `@tokiwa_transcript`, `@tokiwa_pending` or `@tokiwa_last_tool`, it means the `@tokiwa_agent_` form.
+- Input label (spec "Input label"): `agent send` adds the fixed first line `[Message from agent ACTOR through Tokiwa. It is not from the owner and carries no owner approval.]` on the host; `agent answer` records `@tokiwa_agent_input` for the synchronous `PostToolUse` hook of the question tool. Tokiwa never refuses a question by its content.
 - Tests: `python3.12 -m unittest discover -s host/tests` and `cd app && ./node_modules/bun/bin/bun.exe test` (Bun is not on PATH). Both pass at the end of each task.
 
 ## Review Focus
@@ -137,6 +140,22 @@
 
 ---
 
+### Task 2a: Apply the layer split to Tasks 1 and 2
+
+**Files:**
+- Modify: `host/tokiwa-state`, `host/terminal-session.sh`, `bin/tokiwa`, `app/capabilities.json`, `host/tests/test_tokiwa_state.py`, `host/tests/test_terminal_sessions.py`, `host/tests/test_terminal_cli.py`, `host/tests/test_capabilities.py`, `docs/host.md`, `docs/agents.md`
+
+**Interfaces:**
+- Consumes: Task 1 options, Task 2 modes and helpers.
+- Produces: the option names of the Global Constraints; core `state NAME IDENTITY` with session facts only; agent helper modes `agent-state` and `agent-wait`; launcher `tokiwa agent state NAME IDENTITY` and `tokiwa agent wait NAME IDENTITY --after TURN [--timeout SECONDS]`; `tokiwa agent` with no subcommand or an unknown one prints the agent usage and exits 2. `screen_dialog` belongs to the agent layer and is not called by core `state`.
+
+- [ ] **Step 1: Change the tests first:** rename the options in the Task 1 tests; split the Task 2 state tests into core tests (`test_core_state_has_no_agent_fields`: the keys are exactly `name, identity, session, program, clients, writable_clients, driver, sampled_at`) and agent tests that call `agent-state` and `agent-wait`; launcher tests for `tokiwa agent state`, `tokiwa agent wait`, `test_agent_without_a_subcommand_prints_usage`, and `test_existing_commands_are_unchanged` (the helper modes and arguments of `sessions --json`, `capture`, `interrupt` and `--end-confirmed` are what they were at 024d13b).
+- [ ] **Step 2: Run** them. Expected: FAIL.
+- [ ] **Step 3: Implement** the renames and the split. Keep one shared Python block in the helper, and group the agent modes and agent functions in one section marked as the agent layer. Add the `agent` usage to `--help` and capability rows `agent state` and `agent wait` (class `read`; no `tool` yet) in place of the Task 2 rows for the agent forms.
+- [ ] **Step 4: Run** both suites. Expected: PASS. Update `docs/host.md` and `docs/agents.md` with the layers and names. Commit with `git commit -m "Split session commands into core and agent layers"`.
+
+---
+
 ### Task 3: The driver
 
 **Files:**
@@ -208,7 +227,7 @@
 
 - [ ] **Step 2: Run** them. Expected: FAIL.
 
-- [ ] **Step 3: Implement.** Order: text checks on the stdin text; `writable_clients` count and `screen_dialog`; `load-buffer -b tokiwa-send-<random> -` with the text; then one `if-shell -F` whose condition joins identity, program, driver, `#{session_attached}` equal to the count read, state in `idle|limited|error` and an empty `@tokiwa_pending`, and whose action is `paste-buffer -p -d -b BUFFER -t PANE ; send-keys -t PANE Enter ; set-option @tokiwa_agent working:EPOCH`. On refusal, delete the buffer.
+- [ ] **Step 3: Implement.** Order: text checks on the stdin text; `writable_clients` count and `screen_dialog`; `load-buffer -b tokiwa-send-<random> -` with the text; then one `if-shell -F` whose condition joins identity, program, driver, `#{session_attached}` equal to the count read, state in `idle|limited|error` and an empty `@tokiwa_pending`, and whose action is `paste-buffer -p -d -b BUFFER -t PANE ; send-keys -t PANE Enter ; set-option @tokiwa_agent working:EPOCH`. On refusal, delete the buffer. Split the code into a core delivery function (identity, driver and client checks, the paste, the audit line; no agent knowledge) and the agent mode `agent-send`, which adds the agent checks and puts the fixed label line before the text. Add tests `test_message_starts_with_the_agent_label` and `test_core_delivery_has_no_agent_checks` (a direct call of the core function on a shell pane pastes, which shows that the shell refusal lives in the agent layer).
 
 - [ ] **Step 4: Write the failing launcher tests:** `test_send_text_is_not_in_the_parameters`; `test_send_reads_a_file_and_stdin`; `test_send_refuses_text_checks_on_the_mac_first` (no AWS call for a leading `/`); `test_send_without_tokiwa_actor_is_refused`.
 
@@ -257,7 +276,7 @@
 
 - [ ] **Step 3: Run** them. Expected: FAIL.
 
-- [ ] **Step 4: Implement.** One `if-shell -F` condition joins identity, driver, client count, and an `@tokiwa_pending` value equal to the one read before (so the pending item cannot change in between) whose decoded `kind` is `question` and `id` is `PENDING_ID`. The action sends the keys and unsets `@tokiwa_pending`.
+- [ ] **Step 4: Implement.** One `if-shell -F` condition joins identity, driver, client count, and an `@tokiwa_pending` value equal to the one read before (so the pending item cannot change in between) whose decoded `kind` is `question` and `id` is `PENDING_ID`. The action sends the keys and unsets `@tokiwa_pending`. The same queue sets `@tokiwa_agent_input` to base64 JSON `{actor, pending_id, at}`. Add a synchronous Claude Code hook row (`PostToolUse`, matcher `AskUserQuestion`, `tokiwa-state answered`, timeout 5) to `host/agent-hooks.py`: `tokiwa-state answered` prints the hook output that adds the context line of the spec's "Input label" when `pending_id` equals the event's tool-use id, then unsets the option, and prints nothing otherwise. Tests: `test_answered_hook_adds_the_label_for_the_matching_question`, `test_answered_hook_is_silent_for_another_question`, `test_answered_hook_is_silent_without_an_agent_answer`, `test_answer_records_the_input_label`. Permission items still have no answer path.
 
 - [ ] **Step 5: Add** the help line and capability row (class `answer`, a new class in `app/capabilities.json` with the text `Answers an agent's question. The MCP server offers its tool only with --allow answer.`). Run both suites. Expected: PASS. Commit with `git commit -m "Answer an agent's pending question"`.
 

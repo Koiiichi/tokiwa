@@ -3,13 +3,16 @@ from pathlib import Path
 import os
 import json
 import base64
+import hashlib
 import pty
+import re
 import select
 import shutil
 import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 import unittest
 
@@ -659,6 +662,160 @@ class SessionModel(ModelHelpers, Server):
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
         self.assertFalse((project / 'bad').exists())
 
+    def helper_with_stdin(self, text, *args):
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), *args], env=self.env, input=text,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_create_reads_the_run_line_from_stdin(self):
+        root = Path(self.temp.name) / 'workspaces'
+        project = root / 'proj'
+        project.mkdir(parents=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        request = self.b64({'dir': str(project), 'project': 'proj', 'run_stdin': True})
+        result = self.helper_with_stdin('echo from-stdin-$((40 + 2))\n', 'create', 'lead', request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('lead', 'from-stdin-42')
+        # The line is not in the audit log. (The next test records every tmux argument.)
+        self.assertNotIn('from-stdin', json.dumps(self.audit_entries()))
+        # The same checks as for a line in the request: one line of at most 2000 printable characters.
+        for bad in ['two\nlines\n', 'bell\a\n', '', '\n', 'x' * 2001]:
+            result = self.helper_with_stdin(bad, 'create', 'bad', request)
+            self.assertNotEqual(result.returncode, 0, repr(bad))
+            self.assertIn('one line', result.stderr)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+        # A request cannot carry the line and ask for stdin too.
+        both = self.b64({'dir': str(project), 'run': 'echo a', 'run_stdin': True})
+        self.assertNotEqual(self.helper_with_stdin('echo b\n', 'create', 'bad', both).returncode, 0)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+
+    def recording_tmux(self, fail_on=None):
+        """Put a tmux in front of the real one that records every argv, one line per call.
+
+        `fail_on` names a tmux command that the wrapper refuses, to test the clean-up.
+        """
+        folder = Path(self.temp.name) / 'record-bin'
+        folder.mkdir(exist_ok=True)
+        self.argv_log = Path(self.temp.name) / 'tmux-argv.log'
+        wrapper = folder / 'tmux'
+        wrapper.write_text(f'''#!/bin/bash
+printf '%s\\n' "$*" >> "{self.argv_log}"
+if [[ -n "{fail_on or ''}" && " $* " == *" {fail_on or 'none'} "* ]]; then echo 'tmux failed' >&2; exit 1; fi
+exec {self.tmux} "$@"
+''')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+
+    def test_create_never_gives_the_run_line_to_a_process_as_an_argument(self):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir()
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.recording_tmux()
+        line = 'echo marker-line-$((6 * 7))'
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = self.helper_with_stdin(line + '\n', 'create', 'lead', request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('lead', 'marker-line-42')
+        calls = self.argv_log.read_text()
+        self.assertIn('load-buffer', calls)
+        self.assertIn('paste-buffer -d -b', calls)
+        for text in [line, 'marker-line', base64.b64encode(line.encode()).decode(), base64.b64encode(line.encode()).decode().rstrip('=')]:
+            self.assertNotIn(text, calls)
+        # The buffer is gone after the paste.
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_create_deletes_the_buffer_when_the_paste_fails(self):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir()
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.recording_tmux(fail_on='paste-buffer')
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = self.helper_with_stdin('echo hi\n', 'create', 'lead', request)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not be typed', result.stderr)
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+        self.assertIn('delete-buffer', self.argv_log.read_text())
+
+    def test_create_refuses_a_run_line_that_is_not_utf8(self):
+        request = self.b64({'folder': 'inbox', 'run_stdin': True})
+        result = subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), 'create', 'bad', request], env=dict(
+            self.env, TOKIWA_WORKSPACES=str(Path(self.temp.name) / 'workspaces')), input=b'echo \xff\xfe\n',
+            capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'one line', result.stderr)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+
+    def test_create_fails_when_the_driver_command_fails_in_real_tmux(self):
+        # No fake tmux. A second session keeps the server alive, so that the failure is not "no server
+        # running". A hook ends `lead` as soon as its first option is set, so the driver step finds no
+        # session and tmux gives the failing status. tmux resolves the target of `if-shell` before the
+        # inner command runs, so this shows the driver step failing, and the next test shows that
+        # `if-shell -F` passes on the failure of its inner command.
+        self.assertEqual(self.tm('new-session', '-d', '-s', 'holder').returncode, 0)
+        self.tm('set-hook', '-g', 'after-set-option', 'kill-session -t =lead')
+        result = self.create_as('orchestrator-a')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('driver could not be set', result.stderr)
+        self.assertNotIn('no server running', result.stderr)
+        # The server is still there and `lead` is gone: the failing step was the driver command.
+        self.assertEqual(self.tm('has-session', '-t', '=holder').returncode, 0)
+        self.assertNotEqual(self.tm('has-session', '-t', '=lead').returncode, 0)
+
+    def test_if_shell_f_passes_on_the_failure_of_its_inner_command(self):
+        # The form that `create` uses for the driver: a condition on the empty driver, then set-option.
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        condition = '#{==:#{@tokiwa_driver},}'
+        failing = self.tm('if-shell', '-F', '-t', '=lead:', condition, "set-option -t '=missing:' @tokiwa_driver 'worker-a'")
+        self.assertNotEqual(failing.returncode, 0)
+        self.assertIn('no such session', failing.stderr)
+        working = self.tm('if-shell', '-F', '-t', '=lead:', condition, "set-option -t '=lead:' @tokiwa_driver 'worker-a'")
+        self.assertEqual(working.returncode, 0, working.stderr)
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_driver').stdout.strip(), 'worker-a')
+
+    def audit_entries(self):
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+
+    def fake_tmux(self, mode):
+        """Put a tmux in front of the real one. It acts at the driver `if-shell` of `create`.
+
+        `claimed` makes another actor the driver just before the command runs, as a claim between
+        the creation of the session and that command would. `broken` fails the command.
+        """
+        folder = Path(self.temp.name) / 'fake-bin'
+        folder.mkdir(exist_ok=True)
+        wrapper = folder / 'tmux'
+        wrapper.write_text(f'''#!/bin/bash
+if [[ " $* " == *" if-shell "* && "$*" == *@tokiwa_driver* ]]; then
+ case {mode} in
+  claimed) {self.tmux} -N -S "{self.socket}" set-option -t "=lead:" @tokiwa_driver worker-b ;;
+  broken) echo 'tmux failed' >&2; exit 1 ;;
+ esac
+fi
+exec {self.tmux} "$@"
+''')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+
+    def create_as(self, actor):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir(exist_ok=True)
+        self.env.update(TOKIWA_WORKSPACES=str(root), TOKIWA_ACTOR=actor)
+        return self.helper('create', 'lead', self.b64({'folder': 'inbox'}))
+
+    def test_create_never_overwrites_a_driver_claimed_in_between(self):
+        self.fake_tmux('claimed')
+        result = self.create_as('orchestrator-a')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = self.rows()['lead']
+        state = json.loads(self.helper('state', 'lead', row['identity']).stdout)
+        self.assertEqual(state['driver'], 'worker-b')
+
+    def test_create_reports_a_driver_that_could_not_be_set(self):
+        self.fake_tmux('broken')
+        result = self.create_as('orchestrator-a')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('driver could not be set', result.stderr)
+
 
 class SecretStore(Server):
     """A secret is read with hidden input on the host, saved private, and never printed."""
@@ -947,21 +1104,25 @@ class Control(ModelHelpers, Server):
         self.assertNotIn('secret-looking-text', json.dumps(self.audit()))
 
 
-class AgentState(ModelHelpers, Server):
-    """tokiwa-state records the state that an agent's hook reports, and the snapshot shows it."""
+class AgentPanes(ModelHelpers):
+    """Stand-in agents: a pane that runs a program named `claude` or `codex`, and the hook reports."""
 
-    def agent(self, name, program):
-        """A Tokiwa session whose pane runs a program named `program`, as an agent would."""
+    def agent(self, name, program, text=''):
+        """A Tokiwa session whose pane runs a program named `program`, as an agent would.
+
+        The program prints `text`, then waits. Ctrl-C ends it, which leaves the shell as the pane command.
+        """
         tools = Path(self.temp.name) / 'tools'
         tools.mkdir(exist_ok=True)
         # tmux names a pane by its program. A small compiled program, because macOS stops a copied
         # system binary and a script shows the name of its interpreter.
         if not shutil.which('cc'):
             self.skipTest('the stand-in agent needs a C compiler')
-        (tools / 'agent.c').write_text('#include <unistd.h>\nint main(void){sleep(300);return 0;}\n')
+        (tools / 'agent.c').write_text('#include <stdio.h>\n#include <unistd.h>\n'
+                                       'int main(int argc,char**argv){if(argc>1)puts(argv[1]);fflush(stdout);sleep(300);return 0;}\n')
         subprocess.run(['cc', '-o', str(tools / program), str(tools / 'agent.c')], check=True)
         self.assertEqual(self.helper('ensure', name).returncode, 0)
-        self.tm('send-keys', '-t', f'={name}:', f'{tools / program} 300', 'Enter')
+        self.tm('send-keys', '-t', f'={name}:', f"{tools / program} '{text}'", 'Enter')
         for _ in range(100):
             if self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_current_command}').stdout.strip() == program:
                 return
@@ -974,8 +1135,12 @@ class AgentState(ModelHelpers, Server):
         if inside:
             env.update(TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
         # A hook sends its event as JSON on stdin; tokiwa-state reads and ignores it.
-        return subprocess.run(['bash', str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
+        return subprocess.run([sys.executable, str(ROOT / 'tokiwa-state'), state], env=env, input='{"hook_event_name": "Stop"}',
                               capture_output=True, text=True, timeout=10)
+
+
+class AgentState(AgentPanes, Server):
+    """tokiwa-state records the state that an agent's hook reports, and the snapshot shows it."""
 
     def test_a_reported_state_shows_while_the_agent_runs(self):
         self.agent('lead', 'claude')
@@ -1137,6 +1302,387 @@ class SavedProjects(ModelHelpers, Server):
         self.assertEqual(self.projects(), {})
 
 
+class Pty:
+    """Clients that attach through the helper in a pseudo-terminal, ended at the end of the test."""
+
+    def attach_client(self, name, identity, mode):
+        """Attach with helper mode `attach` or `view`. Return when tmux lists the new client."""
+        before = len(self.tm('list-clients', '-t', '=' + name).stdout.splitlines())
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(self.env, TERM='xterm-256color')
+            os.execl('/bin/bash', 'bash', str(ROOT / 'terminal-session.sh'), mode, name, identity)
+        self.addCleanup(self.end_client, name, pid, fd)
+        for _ in range(200):
+            if select.select([fd], [], [], 0.02)[0]:
+                os.read(fd, 65536)
+            if len(self.tm('list-clients', '-t', '=' + name).stdout.splitlines()) > before:
+                return
+        self.fail('The client did not attach.')
+
+    def end_client(self, name, pid, fd):
+        # Detach first, so that no client is left to write to a terminal that is closed.
+        self.tm('detach-client', '-s', '=' + name)
+        os.close(fd)
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+
+
+class CoreState(Pty, ModelHelpers, Server):
+    """`state` reports facts of a session, with no agent field and no screen read."""
+
+    KEYS = ['name', 'identity', 'session', 'program', 'clients', 'writable_clients', 'driver', 'sampled_at']
+
+    def identity(self, name):
+        return self.rows()[name]['identity']
+
+    def state(self, name, identity=None):
+        result = self.helper('state', name, identity or self.identity(name))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_core_state_has_no_agent_fields(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        record = self.state('plain')
+        self.assertEqual(sorted(record), sorted(self.KEYS))
+        self.assertEqual((record['session'], record['program'], record['driver']), ('live', 'shell', None))
+        self.assertEqual((record['clients'], record['writable_clients']), (0, 0))
+
+    def test_core_state_of_a_missing_or_replaced_session(self):
+        record = self.state('nothing', '1:$2:3')
+        self.assertEqual((sorted(record), record['session'], record['program']), (sorted(self.KEYS), 'gone', None))
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.assertEqual(self.state('plain', '1:$99:1')['session'], 'replaced')
+
+    def test_core_state_shows_the_driver_and_other_programs(self):
+        self.tm('new-session', '-d', '-s', 'job', 'sleep 300')
+        self.tm('set-option', '-t', '=job:', '@tokiwa_driver', 'orchestrator-a')
+        record = self.state('job')
+        self.assertEqual((record['program'], record['driver']), ('other', 'orchestrator-a'))
+
+    def test_core_state_reads_no_screen(self):
+        # A wrapper that records each tmux call shows that `state` never captures a pane.
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        log = Path(self.temp.name) / 'calls.log'
+        (tools / 'tmux').write_text(f'#!/bin/bash\necho "$*" >> {log}\nexec {self.tmux} "$@"\n')
+        (tools / 'tmux').chmod(0o755)
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        identity = self.identity('plain')
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.assertEqual(self.helper('state', 'plain', identity).returncode, 0)
+        self.assertNotIn('capture-pane', log.read_text())
+
+    def test_writable_and_read_only_clients_are_counted_by_session(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.assertEqual(self.helper('ensure', 'other').returncode, 0)
+        identity = self.identity('lead')
+        self.attach_client('lead', identity, 'view')
+        self.attach_client('lead', identity, 'attach')
+        self.attach_client('other', self.identity('other'), 'attach')
+        record = self.state('lead')
+        self.assertEqual((record['clients'], record['writable_clients']), (2, 1))
+        self.assertEqual(self.state('other')['writable_clients'], 1)
+        # The identity decides, not the name: another identity under the name counts nothing.
+        self.assertEqual(self.state('lead', '1:$99:1')['writable_clients'], 0)
+
+
+class EndGuard(Pty, ModelHelpers, Server):
+    """`end` refuses a session that a person can type into, on the host and in one tmux queue."""
+
+    SENTENCE = 'A client is attached. Nothing was changed. Use --attached-ok to end it anyway.'
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+
+    def alive(self):
+        return self.tm('has-session', '-t', '=lead').returncode == 0
+
+    def test_end_refuses_a_writable_client_on_the_host(self):
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(self.SENTENCE, result.stderr)
+        self.assertTrue(self.alive())
+
+    def test_end_with_a_read_only_viewer_succeeds(self):
+        self.attach_client('lead', self.identity, 'view')
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.alive())
+
+    def test_helper_end_without_a_flag_ends_an_attached_session(self):
+        # The behaviour of the base version: the identity is the only check.
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.helper('end', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.alive())
+
+    def test_end_takes_no_other_fourth_argument(self):
+        for flag in ['force', 'attached-ok', '']:
+            self.assertNotEqual(self.helper('end', 'lead', self.identity, flag).returncode, 0, flag)
+        self.assertTrue(self.alive())
+
+    def test_end_of_a_replaced_session_still_refuses_by_identity(self):
+        for flag in [(), ('check-clients',)]:
+            result = self.helper('end', 'lead', '1:$99:1', *flag)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('identity changed', result.stderr)
+            self.assertTrue(self.alive())
+
+    def test_end_refuses_a_client_that_attaches_between_count_and_end(self):
+        # A wrapper around tmux that, right after the client list, attaches a control client
+        # that can write. The count that the helper read is then one too low.
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        result = self.helper('end', 'lead', self.identity, 'check-clients')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(self.SENTENCE, result.stderr)
+        self.assertTrue(self.alive())
+
+
+class AgentStateRecord(Pty, AgentPanes, Server):
+    """`agent-state` reports the agent of one session as JSON; `agent-wait` returns when the agent needs a caller."""
+
+    def identity(self, name):
+        return self.rows()[name]['identity']
+
+    def state(self, name, identity=None):
+        result = self.helper('agent-state', name, identity or self.identity(name))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def option(self, name, key, value):
+        self.assertEqual(self.tm('set-option', '-t', f'={name}:', key, value).returncode, 0)
+
+    def wait(self, name, after, identity=None, seconds='20'):
+        self.env['TOKIWA_WAIT_SECONDS'] = seconds
+        result = self.helper('agent-wait', name, identity or self.identity(name), str(after))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def later(self, delay, action):
+        """Run action from a thread after delay seconds. Return the thread."""
+        thread = threading.Timer(delay, action)
+        thread.start()
+        self.addCleanup(thread.join)
+        return thread
+
+    def test_state_of_an_idle_agent(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:100')
+        self.option('lead', '@tokiwa_agent_turn', '3')
+        identity = self.identity('lead')
+        record = self.state('lead')
+        self.assertEqual(record['name'], 'lead')
+        self.assertEqual(record['identity'], identity)
+        self.assertEqual((record['session'], record['program'], record['agent'], record['agent_at']),
+                         ('live', 'claude', 'idle', 100))
+        self.assertEqual((record['turn'], record['pending'], record['dialog']), (3, None, False))
+        self.assertEqual((record['clients'], record['writable_clients'], record['driver']), (0, 0, None))
+        self.assertIsInstance(record['sampled_at'], int)
+
+    def test_state_with_a_non_ascii_digit_is_unknown(self):
+        # '²' is a digit to str.isdigit(), but int() refuses it.
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:²')
+        self.option('lead', '@tokiwa_agent_turn', '²')
+        record = self.state('lead')
+        self.assertEqual((record['agent'], record['agent_at'], record['turn']), ('unknown', None, 0))
+
+    def test_state_of_an_agent_that_has_reported_nothing(self):
+        self.agent('lead', 'codex')
+        record = self.state('lead')
+        self.assertEqual((record['program'], record['agent'], record['agent_at'], record['turn']), ('codex', 'unknown', None, 0))
+
+    def test_state_of_a_shell(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        # A state that an ended agent left behind does not show.
+        self.option('plain', '@tokiwa_agent', 'idle:100')
+        record = self.state('plain')
+        self.assertEqual((record['session'], record['program'], record['agent'], record['agent_at']), ('live', 'shell', 'none', None))
+
+    def test_state_of_another_program(self):
+        self.tm('new-session', '-d', '-s', 'job', 'sleep 300')
+        record = self.state('job', self.identity('job'))
+        self.assertEqual((record['program'], record['agent']), ('other', 'none'))
+
+    def test_state_of_a_missing_session_is_gone(self):
+        record = self.state('nothing', '1:$2:3')
+        self.assertEqual((record['session'], record['name'], record['identity']), ('gone', 'nothing', '1:$2:3'))
+        self.assertEqual((record['program'], record['agent'], record['pending'], record['clients'], record['writable_clients']),
+                         (None, 'none', None, 0, 0))
+
+    def test_state_of_a_replaced_session(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:100')
+        record = self.state('lead', '1:$99:1')
+        self.assertEqual(record['session'], 'replaced')
+        # Nothing of the other session shows.
+        self.assertEqual((record['program'], record['agent'], record['turn'], record['driver']), (None, 'none', None, None))
+
+    def test_state_after_rename(self):
+        self.agent('lead', 'claude')
+        identity = self.identity('lead')
+        self.assertEqual(self.helper('rename', 'lead', self.b64({'to': 'lead-2', 'identity': identity})).returncode, 0)
+        self.assertEqual(self.state('lead', identity)['session'], 'gone')
+        self.assertEqual(self.state('lead-2', identity)['session'], 'live')
+
+    def test_state_shows_the_pending_id_but_not_its_text(self):
+        self.agent('lead', 'claude')
+        item = {'id': 'toolu_x', 'kind': 'question', 'summary': 'Which database should it use?', 'options': ['sqlite', 'postgres'], 'at': 90}
+        self.option('lead', '@tokiwa_agent_pending', self.b64(item))
+        result = self.helper('agent-state', 'lead', self.identity('lead'))
+        self.assertEqual(json.loads(result.stdout)['pending'], {'id': 'toolu_x', 'kind': 'question', 'at': 90})
+        for text in ['Which database', 'sqlite']:
+            self.assertNotIn(text, result.stdout)
+
+    def test_state_reports_a_pending_item_that_cannot_be_read(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent_pending', 'not-base64!')
+        self.assertIsNotNone(self.state('lead')['pending'])
+
+    def test_state_reports_a_dialog(self):
+        self.agent('lead', 'claude', 'Enter to confirm · Esc to cancel')
+        self.screen('lead', 'Esc to cancel')
+        self.assertTrue(self.state('lead')['dialog'])
+
+    def test_a_dialog_marker_is_read_for_the_running_agent_only(self):
+        self.agent('coder', 'codex', 'Do you want to proceed?')
+        self.screen('coder', 'Do you want')
+        self.assertFalse(self.state('coder')['dialog'])
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.tm('send-keys', '-t', '=plain:', 'echo "Enter to confirm"', 'Enter')
+        self.screen('plain', 'Enter to confirm')
+        self.assertFalse(self.state('plain')['dialog'])
+
+    def test_screen_dialog_matches_only_the_last_15_lines(self):
+        text = 'Do you want to run it?' + '\n' * 3 + '\n'.join(f'line {i}' for i in range(20))
+        self.agent('lead', 'claude', text)
+        self.screen('lead', 'line 19')
+        self.assertFalse(self.state('lead')['dialog'])
+
+    def test_agent_state_holds_the_core_facts(self):
+        self.agent('lead', 'claude')
+        self.attach_client('lead', self.identity('lead'), 'attach')
+        record = self.state('lead')
+        self.assertTrue({'name', 'identity', 'session', 'program', 'clients', 'writable_clients', 'driver', 'sampled_at'} <= set(record))
+        self.assertEqual((record['clients'], record['writable_clients']), (1, 1))
+        self.assertTrue({'agent', 'agent_at', 'turn', 'pending', 'dialog'} <= set(record))
+
+    def test_wait_returns_turn_ended(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_agent_turn', '3')
+
+        def finish():
+            # The order of the hook: the state first, then the turn.
+            self.option('lead', '@tokiwa_agent', 'idle:200')
+            time.sleep(0.2)
+            self.option('lead', '@tokiwa_agent_turn', '4')
+        self.later(0.5, finish)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['turn'], record['agent']), ('turn-ended', 4, 'idle'))
+
+    def test_wait_does_not_return_for_a_turn_that_is_still_working(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_agent_turn', '4')
+        self.assertEqual(self.wait('lead', 3, seconds='1')['reason'], 'timeout')
+
+    def test_wait_on_limited_and_error_is_turn_ended(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent_turn', '4')
+        for state in ['limited', 'error']:
+            self.option('lead', '@tokiwa_agent', f'{state}:100')
+            self.assertEqual(self.wait('lead', 3)['reason'], 'turn-ended', state)
+
+    def test_wait_returns_pending(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_agent_turn', '3')
+        item = {'id': 'toolu_p', 'kind': 'permission', 'summary': 'Bash: ls', 'options': [], 'at': 150}
+
+        def ask():
+            self.option('lead', '@tokiwa_agent', 'waiting:150')
+            self.option('lead', '@tokiwa_agent_pending', self.b64(item))
+        self.later(0.5, ask)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['pending']['id']), ('pending', 'toolu_p'))
+
+    def test_wait_returns_dialog(self):
+        self.agent('lead', 'claude', 'Do you want to trust this folder?')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.screen('lead', 'trust this folder')
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['dialog']), ('dialog', True))
+
+    def test_wait_reports_ended_when_the_agent_exits(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.later(0.5, lambda: self.tm('send-keys', '-t', '=lead:', 'C-c'))
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['program'], record['agent']), ('ended', 'shell', 'none'))
+
+    def test_wait_reports_ended_for_a_dead_pane_and_for_agent_none(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.tm('set-option', '-w', '-t', '=lead:', 'remain-on-exit', 'on')
+        self.tm('send-keys', '-t', '=lead:', 'C-c')
+        self.tm('send-keys', '-t', '=lead:', 'exit', 'Enter')
+        for _ in range(100):
+            if self.tm('display-message', '-p', '-t', '=lead:', '#{pane_dead}').stdout.strip() == '1':
+                break
+            time.sleep(.05)
+        record = self.wait('lead', 3)
+        self.assertEqual((record['reason'], record['agent']), ('ended', 'none'))
+
+    def test_wait_reports_ended_for_a_missing_or_replaced_session(self):
+        self.assertEqual(self.wait('nothing', 3, '1:$2:3')['reason'], 'ended')
+        self.agent('lead', 'claude')
+        record = self.wait('lead', 3, '1:$99:1')
+        self.assertEqual((record['reason'], record['session']), ('ended', 'replaced'))
+
+    def test_wait_times_out(self):
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.option('lead', '@tokiwa_agent_turn', '3')
+        started = time.monotonic()
+        record = self.wait('lead', 3, seconds='1')
+        self.assertEqual((record['reason'], record['turn']), ('timeout', 3))
+        self.assertTrue(1 <= time.monotonic() - started < 5)
+
+    def test_state_and_wait_check_their_arguments(self):
+        for args in [('agent-state', 'lead'), ('agent-state', 'lead', 'x'), ('agent-state', 'bad name', '1:$2:3'),
+                     ('agent-wait', 'lead', '1:$2:3'), ('agent-wait', 'lead', '1:$2:3', 'x'), ('agent-wait', 'lead', '1:$2:3', '-1'),
+                     ('agent-wait', 'lead', '1:$2:3', '3', '4'), ('state', 'lead', '1:$2:3', 'more'), ('wait', 'lead', '1:$2:3', '3')]:
+            result = self.helper(*args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertEqual(result.stdout, '', args)
+
+    def test_state_changes_nothing_and_is_not_logged(self):
+        self.agent('lead', 'claude')
+        self.state('lead')
+        self.assertFalse((Path(self.temp.name) / 'state' / 'audit.log').exists())
+
+
 class RenameSession(ModelHelpers, Server):
     """A session is renamed only when its identity still matches; its project and children stay."""
 
@@ -1157,3 +1703,1081 @@ class RenameSession(ModelHelpers, Server):
         self.assertNotEqual(self.helper('rename', 'claude-api', self.b64({'to': 'child', 'identity': identity})).returncode, 0)
         self.assertNotEqual(self.helper('rename', 'claude-api', self.b64({'to': 'bad name', 'identity': identity})).returncode, 0)
         self.assertIn('claude-api', self.rows())
+
+
+class Driver(Pty, ModelHelpers, Server):
+    """The driver is the one actor that may send to a session. `claim` and `release` change it."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+
+    def as_actor(self, actor, *args):
+        self.env['TOKIWA_ACTOR'] = actor
+        return self.helper(*args)
+
+    def driver(self, name='lead'):
+        return json.loads(self.helper('state', name, self.identity).stdout)['driver']
+
+    def audit(self):
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+
+    def create(self, name, actor=None):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir(exist_ok=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        self.env.pop('TOKIWA_ACTOR', None)
+        if actor:
+            self.env['TOKIWA_ACTOR'] = actor
+        result = self.helper('create', name, self.b64({'folder': 'inbox'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(self.helper('state', name, self.rows()[name]['identity']).stdout)
+
+    def test_create_with_an_actor_records_the_driver(self):
+        self.assertEqual(self.create('made', 'orchestrator-a')['driver'], 'orchestrator-a')
+
+    def test_create_without_an_actor_records_none(self):
+        self.assertIsNone(self.create('made')['driver'])
+
+    def test_claim_without_a_driver(self):
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+        self.assertEqual([(e['action'], e['actor']) for e in self.audit()], [('claim', 'worker-a')])
+
+    def test_claim_by_the_driver_again_succeeds(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_of_another_drivers_session_is_refused(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Another actor is the driver. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_replace_takes_it_and_audits_both_names(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'claim', 'lead', self.identity, 'replace')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-b')
+        last = self.audit()[-1]
+        self.assertEqual((last['action'], last['actor'], last['replaced']), ('claim', 'worker-b', 'worker-a'))
+
+    def test_claim_takes_no_other_fourth_argument(self):
+        for flag in ['force', '--replace', '']:
+            self.assertNotEqual(self.as_actor('worker-a', 'claim', 'lead', self.identity, flag).returncode, 0, flag)
+        self.assertIsNone(self.driver())
+
+    def test_claim_is_refused_while_a_writable_client_is_attached(self):
+        self.attach_client('lead', self.identity, 'attach')
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('A client is attached. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_claim_with_a_read_only_viewer_succeeds(self):
+        self.attach_client('lead', self.identity, 'view')
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_claim_refuses_a_replaced_identity(self):
+        result = self.as_actor('worker-a', 'claim', 'lead', '1:$99:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_a_stale_identity_reaches_the_client_filter(self):
+        # With a writable client attached, only the session id filter of the count lets the answer
+        # be a changed identity: without it the answer would be that a client is attached.
+        self.attach_client('lead', self.identity, 'attach')
+        for args in [('claim', 'lead', '1:$99:1'), ('end', 'lead', '1:$99:1', 'check-clients')]:
+            result = self.as_actor('worker-a', *args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn('Session identity changed.', result.stderr)
+            self.assertNotIn('client is attached', result.stderr)
+
+    def test_claim_refuses_a_client_that_attaches_between_count_and_claim(self):
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        result = self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('A client is attached. Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_claim_without_an_actor_is_refused(self):
+        for actor in ['', 'bad;rm', '-x']:
+            result = self.as_actor(actor, 'claim', 'lead', self.identity)
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('Nothing was changed.', result.stderr)
+        self.assertIsNone(self.driver())
+
+    def test_release_by_the_driver(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.driver())
+        self.assertEqual([e['action'] for e in self.audit()], ['claim', 'release'])
+
+    def test_release_by_another_actor_is_refused(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-b', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Only the driver can release. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+    def test_release_without_a_driver_is_refused(self):
+        result = self.as_actor('worker-a', 'release', 'lead', self.identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([e['action'] for e in self.audit()], [])
+
+    def test_release_refuses_a_replaced_identity(self):
+        self.as_actor('worker-a', 'claim', 'lead', self.identity)
+        result = self.as_actor('worker-a', 'release', 'lead', '1:$99:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was changed.', result.stderr)
+        self.assertEqual(self.driver(), 'worker-a')
+
+
+FAKE_AGENT = r'''
+#include <fcntl.h>
+#include <stdio.h>
+#include <termios.h>
+#include <unistd.h>
+/* Turns on bracketed paste, reads raw input and appends every byte to the log in argv[1]. */
+int main(int argc, char **argv) {
+    struct termios t;
+    tcgetattr(0, &t);
+    cfmakeraw(&t);
+    tcsetattr(0, TCSANOW, &t);
+    int log = open(argv[1], O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (argc > 2) puts(argv[2]);
+    printf("\033[?2004h");
+    fflush(stdout);
+    char buffer[4096];
+    ssize_t n;
+    while ((n = read(0, buffer, sizeof buffer)) > 0) write(log, buffer, n);
+    return 0;
+}
+'''
+
+
+class AgentSession(Pty, ModelHelpers, Server):
+    """A stand-in agent in the session `lead`, claimed by the actor `worker-a`, and the log of its input."""
+
+    def setUp(self):
+        super().setUp()
+        if not shutil.which('cc'):
+            self.skipTest('the stand-in agent needs a C compiler')
+        self.tools = Path(self.temp.name) / 'tools'
+        self.tools.mkdir()
+        (self.tools / 'agent.c').write_text(FAKE_AGENT)
+        for program in ('claude', 'codex'):
+            subprocess.run(['cc', '-o', str(self.tools / program), str(self.tools / 'agent.c')], check=True)
+        self.log = Path(self.temp.name) / 'agent.log'
+        self.start_agent('lead')
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
+
+    def start_agent(self, name, program='claude', screen=''):
+        """A Tokiwa session whose pane runs the stand-in agent in the idle state, with bracketed paste on."""
+        self.assertEqual(self.helper('ensure', name).returncode, 0)
+        self.tm('send-keys', '-t', f'={name}:', f"{self.tools / program} {self.log} '{screen}'", 'Enter')
+        for _ in range(150):
+            command = self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_current_command}').stdout.strip()
+            if command == program and self.log.exists():
+                break
+            time.sleep(.02)
+        else:
+            self.fail(f'{program} did not start')
+        time.sleep(.1)
+        self.option(name, '@tokiwa_agent', 'idle:100')
+        self.option(name, '@tokiwa_agent_turn', '4')
+
+    def option(self, name, key, value):
+        self.assertEqual(self.tm('set-option', '-t', f'={name}:', key, value).returncode, 0)
+
+    def claim(self, actor, name='lead'):
+        self.env['TOKIWA_ACTOR'] = actor
+        result = self.helper('claim', name, self.rows()[name]['identity'], 'replace')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def send(self, text, name='lead', identity=None, actor='worker-a'):
+        env = dict(self.env)
+        env.pop('TOKIWA_ACTOR', None)
+        if actor is not None:
+            env['TOKIWA_ACTOR'] = actor
+        data = text if isinstance(text, bytes) else text.encode('utf-8')
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), 'agent-send', name, identity or self.identity],
+                              env=env, input=data, capture_output=True, timeout=30)
+
+    def events(self, count=None):
+        """The log of the stand-in agent as ('paste', text) and ('enter',) events. Waits for `count` of them."""
+        for _ in range(150):
+            data = self.log.read_bytes()
+            found = []
+            for part in re.split(rb'(\x1b\[200~.*?\x1b\[201~|\r)', data, flags=re.S):
+                if part == b'\r':
+                    found.append(('enter',))
+                elif part.startswith(b'\x1b[200~'):
+                    found.append(('paste', part[6:-6].decode('utf-8')))
+                elif part:
+                    found.append(('other', part))
+            if count is None or len(found) >= count:
+                return found
+            time.sleep(.02)
+        return found
+
+    def refused(self, result, sentence):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(sentence, result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+
+class AgentSend(AgentSession):
+    """`agent-send` delivers one message to an idle agent as one bracketed paste, or refuses."""
+
+    LABEL = '[Message from agent worker-a through Tokiwa. It is not from the owner and carries no owner approval.]'
+
+    def test_send_to_an_idle_agent(self):
+        result = self.send('Please read LEAD.md.')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertEqual(reply['turn_before'], 4)
+        self.assertLessEqual(abs(reply['sent_at'] - time.time()), 5)
+        self.assertEqual(self.events(2), [('paste', self.LABEL + '\nPlease read LEAD.md.'), ('enter',)])
+
+    def test_message_starts_with_the_agent_label(self):
+        self.claim('orchestrator-a')
+        self.assertEqual(self.send('hi', actor='orchestrator-a').returncode, 0)
+        expected = '[Message from agent orchestrator-a through Tokiwa. It is not from the owner and carries no owner approval.]\nhi'
+        self.assertEqual(self.events(2)[0], ('paste', expected))
+
+    def test_send_with_a_read_only_viewer(self):
+        self.attach_client('lead', self.identity, 'view')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(self.events(2)[1], ('enter',))
+
+    def test_send_when_limited(self):
+        self.option('lead', '@tokiwa_agent', 'limited:100')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(len(self.events(2)), 2)
+
+    def test_send_when_error(self):
+        self.option('lead', '@tokiwa_agent', 'error:100')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(len(self.events(2)), 2)
+
+    def test_send_to_a_codex_pane(self):
+        self.start_agent('other', 'codex')
+        self.claim('worker-a', 'other')
+        result = self.send('hello', 'other', self.rows()['other']['identity'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unicode_multiline_message_arrives_as_one_paste(self):
+        text = 'Grüße ☃ 日本語\n\n  indented line\twith tab\n' + ('Zeile mit Äpfeln und Öl.\n' * 400) + 'end'
+        self.assertLess(len(text.encode()), 16384)
+        self.assertEqual(self.send(text).returncode, 0)
+        self.assertEqual(self.events(2), [('paste', self.LABEL + '\n' + text), ('enter',)])
+
+    def test_the_paste_buffer_is_deleted(self):
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.events(2)
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_send_sets_working_in_the_same_queue(self):
+        before = int(time.time())
+        reply = json.loads(self.send('hello').stdout)
+        state = self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip()
+        self.assertEqual(state, f"working:{reply['sent_at']}")
+        self.assertGreaterEqual(reply['sent_at'], before)
+
+    def test_second_send_before_the_hook_is_refused(self):
+        self.assertEqual(self.send('first').returncode, 0)
+        self.events(2)
+        result = self.send('second')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The agent is not idle. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(len(self.events()), 2)
+
+    def test_send_writes_an_audit_line_without_the_text(self):
+        self.env['TOKIWA_VIA'] = 'mcp'
+        self.assertEqual(self.send('marker-text-77 hello').returncode, 0)
+        lines = (Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()
+        entry = json.loads(lines[-1])
+        self.assertEqual((entry['action'], entry['name'], entry['identity'], entry['via'], entry['actor']),
+                         ('send', 'lead', self.identity, 'mcp', 'worker-a'))
+        self.assertNotIn('marker-text', '\n'.join(lines))
+
+    def test_send_refuses_a_replaced_identity(self):
+        self.refused(self.send('hello', identity='1:$99:1'), 'Session identity changed. Nothing was sent.')
+
+    def test_send_refuses_a_shell_pane(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-a', 'plain')
+        self.option('plain', '@tokiwa_agent', 'idle:100')
+        result = self.send('hello', 'plain', self.rows()['plain']['identity'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The pane does not run an agent. Nothing was sent.', result.stderr.decode())
+        # The shell never saw the text.
+        self.assertNotIn('Tokiwa', self.tm('capture-pane', '-p', '-t', '=plain:').stdout)
+
+    def test_send_refuses_a_writable_client(self):
+        self.attach_client('lead', self.identity, 'attach')
+        self.refused(self.send('hello'), 'A client is attached. Nothing was sent.')
+
+    def test_send_refuses_a_client_that_attaches_between_count_and_paste(self):
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.refused(self.send('hello'), 'A client is attached. Nothing was sent.')
+
+    def test_send_refuses_without_an_actor(self):
+        for actor in [None, '', 'bad;rm', '-x']:
+            self.refused(self.send('hello', actor=actor), 'Nothing was sent.')
+
+    def test_send_refuses_another_driver(self):
+        self.claim('worker-b')
+        self.refused(self.send('hello'), 'Only the driver can send.')
+
+    def test_send_refuses_without_a_driver(self):
+        self.assertEqual(self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_driver').returncode, 0)
+        self.refused(self.send('hello'), 'Only the driver can send.')
+
+    def test_send_refuses_while_working(self):
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.refused(self.send('hello'), 'The agent is not idle. Nothing was sent.')
+
+    def test_send_refuses_an_agent_that_has_reported_nothing(self):
+        self.assertEqual(self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent').returncode, 0)
+        self.refused(self.send('hello'), 'The agent is not idle. Nothing was sent.')
+
+    def test_send_refuses_with_a_pending_item(self):
+        self.option('lead', '@tokiwa_agent_pending', self.b64({'id': 'q1', 'kind': 'question', 'at': 5}))
+        self.refused(self.send('hello'), 'An item waits for a person. Nothing was sent.')
+
+    def test_send_refuses_a_pane_in_copy_mode(self):
+        self.assertEqual(self.tm('copy-mode', '-t', '=lead:').returncode, 0)
+        self.refused(self.send('hello'), 'The pane is in copy mode. Nothing was sent.')
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_send_refuses_a_pane_that_enters_copy_mode_between_check_and_paste(self):
+        # The wrapper puts the pane in copy mode right after the buffer is loaded.
+        tools = Path(self.temp.name) / 'mode-bin'
+        tools.mkdir()
+        (tools / 'tmux').write_text(f'''#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' load-buffer '* ]]; then {self.tmux} -N -S {self.socket} copy-mode -t =lead:; fi
+exit $code
+''')
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.refused(self.send('hello'), 'The pane cannot take input now. Nothing was sent.')
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_send_refuses_a_pane_with_input_off(self):
+        self.assertEqual(self.tm('select-pane', '-d', '-t', '=lead:').returncode, 0)
+        self.refused(self.send('hello'), 'The pane does not take input. Nothing was sent.')
+
+    def test_send_refuses_a_dialog_on_screen(self):
+        self.log.unlink()
+        self.tm('kill-session', '-t', '=lead')
+        self.start_agent('lead', screen='Enter to confirm')
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
+        self.refused(self.send('hello'), 'A dialog is on the screen. Nothing was sent.')
+
+    def test_send_refuses_control_characters(self):
+        for bad in ['bell\a', 'esc\x1b[31m', 'cr\rreturn', 'nul\x00', 'del\x7f', 'c1\x85next', 'csi\x9b31m']:
+            self.refused(self.send(bad), 'control character')
+
+    def test_send_refuses_a_leading_slash_bang_or_hash(self):
+        for bad in ['/clear', '!ls', '#note', '   /clear', '\t!ls', '  \n#x']:
+            self.refused(self.send(bad), 'starts with')
+        # The same characters later in the text are fine.
+        self.assertEqual(self.send('read /etc and #3 and !x').returncode, 0)
+
+    def test_send_refuses_text_over_the_limit(self):
+        self.refused(self.send('x' * 16385), 'over 16384 bytes')
+        self.refused(self.send('ä' * 8193), 'over 16384 bytes')
+        self.assertEqual(self.send('x' * 16384).returncode, 0)
+
+    def test_send_refuses_empty_text(self):
+        for bad in ['', '\n', '  \t \n']:
+            self.refused(self.send(bad), 'The message is empty. Nothing was sent.')
+
+    def test_send_refuses_text_that_is_not_utf8(self):
+        self.refused(self.send(b'bad \xff\xfe'), 'not UTF-8 text')
+
+    def test_core_delivery_has_no_agent_checks(self):
+        # The core function pastes into a shell pane: the shell refusal lives in the agent layer.
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-a', 'plain')
+        identity = self.rows()['plain']['identity']
+        result = subprocess.run(['bash', '-c', 'identity=$1; set --; source "$0"; name=plain; core_deliver "$identity"', str(ROOT / 'terminal-session.sh'), identity],
+                                env=dict(self.env, TOKIWA_SOURCE_ONLY='1', TOKIWA_ACTOR='worker-a'),
+                                input=b'echo core-text-$((6 * 7))', capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('plain', 'core-text-42')
+
+    def test_core_delivery_still_refuses_another_driver(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-b', 'plain')
+        identity = self.rows()['plain']['identity']
+        result = subprocess.run(['bash', '-c', 'identity=$1; set --; source "$0"; name=plain; core_deliver "$identity"', str(ROOT / 'terminal-session.sh'), identity],
+                                env=dict(self.env, TOKIWA_SOURCE_ONLY='1', TOKIWA_ACTOR='worker-a'),
+                                input=b'echo core-text', capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Only the driver can send.', result.stderr.decode())
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_a_failed_paste_leaves_no_text_and_no_buffer(self):
+        folder = Path(self.temp.name) / 'fail-bin'
+        folder.mkdir()
+        (folder / 'tmux').write_text(f'''#!/bin/bash
+if [[ " $* " == *" paste-buffer "* ]]; then echo 'tmux failed' >&2; exit 1; fi
+exec {self.tmux} "$@"
+''')
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+        result = self.send('hello')
+        self.assertEqual(result.returncode, 1)
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+        # The state did not change, so the caller may try again.
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_one_paste_call_holds_the_paste_and_the_enter(self):
+        folder = Path(self.temp.name) / 'rec-bin'
+        folder.mkdir()
+        record = Path(self.temp.name) / 'argv.log'
+        (folder / 'tmux').write_text(f'''#!/bin/bash
+printf '%s\\n' "$*" >> {record}
+exec {self.tmux} "$@"
+''')
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+        self.assertEqual(self.send('marker-text-88').returncode, 0)
+        calls = record.read_text()
+        self.assertNotIn('marker-text', calls)
+        deliveries = [c for c in calls.splitlines() if 'paste-buffer' in c]
+        self.assertEqual(len(deliveries), 1)
+        self.assertIn('send-keys', deliveries[0])
+        self.assertIn('set-option', deliveries[0])
+        self.assertIn('working:', deliveries[0])
+
+
+class AgentAnswer(AgentSession):
+    """`agent-answer` presses the digit of an option for a pending question, or refuses."""
+
+    ITEM = {'id': 'toolu_q1', 'kind': 'question', 'summary': 'Which parser?', 'options': ['Text', 'Binary'],
+            'tool': 'AskUserQuestion', 'questions': 1, 'multi_select': False, 'at': 5}
+
+    def setUp(self):
+        super().setUp()
+        # A question that is live shows its dialog.
+        self.restart('Enter to confirm')
+        self.ask(self.ITEM)
+
+    def restart(self, screen):
+        """Run the stand-in agent again in `lead` with `screen` as its screen text."""
+        self.log.unlink()
+        self.tm('kill-session', '-t', '=lead')
+        self.start_agent('lead', screen=screen)
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
+
+    def ask(self, item):
+        self.option('lead', '@tokiwa_agent', 'waiting:100')
+        self.option('lead', '@tokiwa_agent_pending', self.b64(item))
+        # The `note` of the question's own tool call, which the PreToolUse hook records.
+        self.option('lead', '@tokiwa_agent_last_tool', self.b64(self.tool_call(item.get('id'), 'AskUserQuestion')))
+
+    def tool_call(self, tool_use_id, tool):
+        return {'id': tool_use_id, 'tool': tool, 'summary': '', 'at': 5}
+
+    def note(self, event):
+        """Run tokiwa-state `note` in the pane of `lead`, as the PreToolUse hook of a tool call does."""
+        pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()
+        env = dict(self.env, TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        result = subprocess.run([sys.executable, str(ROOT / 'tokiwa-state'), 'note'], env=env, input=json.dumps(event),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def change_after_checks(self, key, value):
+        """Make tmux set the option `key` of `lead` to `value` right after the checks read the session."""
+        folder = Path(tempfile.mkdtemp(dir=self.temp.name))
+        (folder / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* ]]; then {self.tmux} -N -S {self.socket} set-option -t =lead: {key} '{value}'; fi
+exit $code
+""")
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{os.environ['PATH']}"
+
+    def test_answer_refuses_when_the_agent_is_not_waiting(self):
+        for state in ['idle:100', 'working:100', 'waiting']:
+            self.option('lead', '@tokiwa_agent', state)
+            self.refused_with(self.answer('1'), 'The agent is not waiting for an answer. Nothing was sent.')
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent')
+        self.refused_with(self.answer('1'), 'The agent is not waiting for an answer. Nothing was sent.')
+
+    def test_answer_after_interrupt_is_refused(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        self.assertEqual(self.helper('interrupt', 'lead', self.identity).returncode, 0)
+        # Esc closes the question, so the interrupt clears the item with the state.
+        self.assertEqual(self.value('@tokiwa_agent_pending'), '')
+        self.assertTrue(self.value('@tokiwa_agent').startswith('idle:'))
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [('other', b'\x1b')])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_after_a_later_tool_call_is_refused(self):
+        self.note({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_use_id': 'toolu_bash_b',
+                   'tool_input': {'command': 'make check'}})
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+
+    def test_answer_refuses_without_a_record_of_the_question_tool_call(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_last_tool')
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+        self.option('lead', '@tokiwa_agent_last_tool', 'not-base64!')
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+
+    def test_answer_after_the_note_of_the_question_itself_is_accepted(self):
+        # The recorder writes the note of the question's own call: its id is the pending id.
+        self.note({'hook_event_name': 'PreToolUse', 'tool_name': 'AskUserQuestion', 'tool_use_id': 'toolu_q1',
+                   'tool_input': {'questions': []}})
+        result = self.answer('2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events(2), [('other', b'2'), ('enter',)])
+
+    def test_answer_refuses_a_state_that_changes_between_check_and_keys(self):
+        self.change_after_checks('@tokiwa_agent', 'idle:200')
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('The agent is not waiting for an answer. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_refuses_a_tool_call_that_starts_between_check_and_keys(self):
+        self.change_after_checks('@tokiwa_agent_last_tool', self.b64(self.tool_call('toolu_bash_b', 'Bash')))
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('The question is not the last tool call of the agent. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def answer(self, choice='2', pending='toolu_q1', name='lead', identity=None, actor='worker-a', text=None):
+        env = dict(self.env)
+        env.pop('TOKIWA_ACTOR', None)
+        if actor is not None:
+            env['TOKIWA_ACTOR'] = actor
+        data = b'' if text is None else text if isinstance(text, bytes) else text.encode('utf-8')
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), 'agent-answer', name, identity or self.identity, pending, choice],
+                              env=env, input=data, capture_output=True, timeout=30)
+
+    def value(self, key):
+        return self.tm('show-options', '-qv', '-t', '=lead:', key).stdout.strip()
+
+    def refused_with(self, result, sentence):
+        self.refused(result, sentence)
+        # The item still waits, and no label was recorded.
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(self.ITEM))
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def refused_item(self, item, sentence):
+        self.ask(item)
+        result = self.answer('1')
+        self.refused(result, sentence)
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(item))
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_refuses_an_item_without_options(self):
+        # An elicitation form of an MCP server: no hook of the question tool follows it, so no label would
+        # reach the worker, and a digit would be typed into a form field.
+        self.refused_item(dict(self.ITEM, tool='Elicitation', options=[], summary='Please provide a name'),
+                          'The pending item has no options to choose. Nothing was sent.')
+        self.refused_item(dict(self.ITEM, options=[]), 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_an_elicitation_item_that_has_options(self):
+        self.refused_item(dict(self.ITEM, tool='Elicitation'), 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_an_item_that_does_not_name_its_tool(self):
+        # An item that an older recorder wrote has no source, so it is not known to be a question of the tool.
+        item = {key: value for key, value in self.ITEM.items() if key not in ('tool', 'questions', 'multi_select')}
+        self.refused_item(item, 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_a_question_with_more_than_one_part(self):
+        self.refused_item(dict(self.ITEM, questions=2), 'The question has more than one part or allows several choices. Nothing was sent.')
+
+    def test_answer_refuses_a_multi_select_question(self):
+        self.refused_item(dict(self.ITEM, multi_select=True), 'The question has more than one part or allows several choices. Nothing was sent.')
+
+    def test_answer_sends_the_digit_and_enter(self):
+        result = self.answer('2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'pending_id': 'toolu_q1', 'choice': 2})
+        self.assertEqual(self.events(2), [('other', b'2'), ('enter',)])
+        # The item is answered, so it no longer waits.
+        self.assertEqual(self.value('@tokiwa_agent_pending'), '')
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_answer_with_a_read_only_viewer(self):
+        self.attach_client('lead', self.identity, 'view')
+        self.assertEqual(self.answer('1').returncode, 0)
+        self.assertEqual(self.events(2), [('other', b'1'), ('enter',)])
+
+    def test_answer_refuses_another_pending_id(self):
+        self.refused_with(self.answer(pending='toolu_other'), 'The pending item is not the one named. Nothing was sent.')
+
+    def test_answer_refuses_a_permission_item(self):
+        item = dict(self.ITEM, kind='permission', options=[])
+        self.ask(item)
+        result = self.answer('1')
+        self.refused(result, 'A permission item has no answer path. Use interrupt to refuse it. Nothing was sent.')
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(item))
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_refuses_without_a_pending_item(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_pending')
+        self.refused(self.answer('1'), 'No item waits for an answer. Nothing was sent.')
+
+    def test_answer_refuses_an_item_that_cannot_be_read(self):
+        self.option('lead', '@tokiwa_agent_pending', 'not-base64!')
+        self.refused(self.answer('1'), 'The pending item cannot be read. Nothing was sent.')
+
+    def test_answer_refuses_a_choice_that_is_not_an_option(self):
+        self.refused_with(self.answer('3'), 'The choice is not one of the options. Nothing was sent.')
+
+    def test_answer_refuses_another_driver(self):
+        self.claim('worker-b')
+        self.refused_with(self.answer('1'), 'Only the driver can send.')
+
+    def test_answer_refuses_without_an_actor(self):
+        for actor in [None, '', 'bad;rm']:
+            self.refused_with(self.answer('1', actor=actor), 'Nothing was sent.')
+
+    def test_answer_refuses_a_writable_client(self):
+        self.attach_client('lead', self.identity, 'attach')
+        self.refused_with(self.answer('1'), 'A client is attached. Nothing was sent.')
+
+    def test_answer_refuses_a_replaced_identity(self):
+        self.refused_with(self.answer('1', identity='1:$99:1'), 'Session identity changed. Nothing was sent.')
+
+    def test_answer_refuses_a_shell_pane(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-a', 'plain')
+        self.option('plain', '@tokiwa_agent_pending', self.b64(self.ITEM))
+        result = self.answer('1', name='plain', identity=self.rows()['plain']['identity'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The pane does not run an agent. Nothing was sent.', result.stderr.decode())
+        # The shell never saw the key: its prompt line is empty.
+        self.assertTrue(self.tm('capture-pane', '-p', '-t', '=plain:').stdout.strip().endswith('$'))
+
+    def test_answer_refuses_an_item_that_changes_between_check_and_keys(self):
+        # The wrapper replaces the item right after the checks read it, as a new hook event would.
+        folder = Path(self.temp.name) / 'swap-bin'
+        folder.mkdir()
+        other = self.b64(dict(self.ITEM, id='toolu_q2'))
+        (folder / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* ]]; then {self.tmux} -N -S {self.socket} set-option -t =lead: @tokiwa_agent_pending {other}; fi
+exit $code
+""")
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{os.environ['PATH']}"
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_pending'), other)
+
+    def test_answer_refuses_a_pane_in_copy_mode(self):
+        self.assertEqual(self.tm('copy-mode', '-t', '=lead:').returncode, 0)
+        self.refused_with(self.answer('1'), 'The pane is in copy mode. Nothing was sent.')
+
+    def test_answer_with_the_dialog_on_the_screen_succeeds(self):
+        self.assertEqual(self.answer('1').returncode, 0)
+        self.assertEqual(self.events(2), [('other', b'1'), ('enter',)])
+
+    def test_answer_refuses_when_no_dialog_is_on_the_screen(self):
+        # The person pressed Esc on the question: no hook event followed, so the state still says `waiting`.
+        self.restart('')
+        self.ask(self.ITEM)
+        self.refused_with(self.answer('1'), 'No question is on the screen. Nothing was sent.')
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(self.ITEM))
+
+    def test_answer_text_applies_the_text_checks(self):
+        for bad, sentence in [('bell\a', 'control character'), ('c1\x85next', 'control character'), ('/clear', 'starts with'),
+                              ('  !ls', 'starts with'), ('#x', 'starts with'), ('', 'The message is empty.'),
+                              ('x' * 16385, 'over 16384 bytes')]:
+            self.refused_with(self.answer('text', text=bad), sentence)
+        self.refused_with(self.answer('text', text=b'bad \xff'), 'not UTF-8 text')
+
+    def test_answer_text_is_refused_until_the_free_text_path_is_known(self):
+        self.refused_with(self.answer('text', text='Use the binary parser.'),
+                          'Free-text answers are not supported for this agent. Nothing was sent.')
+
+    def test_answer_checks_its_arguments(self):
+        for choice in ['0', '10', 'x', '', '-1', '1 ', 'TEXT']:
+            self.refused_with(self.answer(choice), 'Nothing was sent.')
+        self.refused_with(self.answer('1', pending=''), 'Nothing was sent.')
+        self.refused_with(self.answer('1', pending='a b'), 'Nothing was sent.')
+        self.refused_with(self.answer('1', pending='x' * 129), 'Nothing was sent.')
+
+    def test_answer_writes_an_audit_line(self):
+        self.env['TOKIWA_VIA'] = 'mcp'
+        self.assertEqual(self.answer('1').returncode, 0)
+        entry = json.loads((Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()[-1])
+        self.assertEqual((entry['action'], entry['name'], entry['identity'], entry['via'], entry['actor'], entry['pending']),
+                         ('answer', 'lead', self.identity, 'mcp', 'worker-a', 'toolu_q1'))
+
+    def test_a_refused_answer_is_not_logged(self):
+        self.refused_with(self.answer('1', pending='toolu_other'), 'Nothing was sent.')
+        lines = (Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()
+        self.assertNotIn('answer', [json.loads(line)['action'] for line in lines])
+
+    def test_answer_records_the_input_label(self):
+        before = int(time.time())
+        self.assertEqual(self.answer('1').returncode, 0)
+        label = json.loads(base64.b64decode(self.value('@tokiwa_agent_input')))
+        self.assertEqual(set(label), {'actor', 'pending_id', 'at'})
+        self.assertEqual((label['actor'], label['pending_id']), ('worker-a', 'toolu_q1'))
+        self.assertGreaterEqual(label['at'], before)
+        self.assertLessEqual(label['at'], int(time.time()))
+
+    def test_one_call_holds_the_checks_the_keys_and_the_label(self):
+        folder = Path(self.temp.name) / 'rec-bin'
+        folder.mkdir()
+        record = Path(self.temp.name) / 'argv.log'
+        (folder / 'tmux').write_text(f"""#!/bin/bash
+printf '%s\\n' "$*" >> {record}
+exec {self.tmux} "$@"
+""")
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+        self.assertEqual(self.answer('1').returncode, 0)
+        calls = [c for c in record.read_text().splitlines() if 'send-keys' in c]
+        self.assertEqual(len(calls), 1)
+        for part in ['@tokiwa_agent_input', '@tokiwa_agent_pending']:
+            self.assertIn(part, calls[0])
+
+
+class AgentRead(ModelHelpers, Server):
+    """`agent-read` reads the transcript that an agent's hooks name, in pages, sealed to the caller."""
+
+    FIXTURES = ROOT / 'tests/fixtures/transcripts'
+    KINDS = ['user', 'assistant', 'tool_call', 'tool_result', 'tool_call', 'tool_result', 'notice', 'user', 'assistant']
+    TEXTS = ['Request one', 'Answer one', '', '', '', '', 'Notice one', 'Request two', 'Answer two']
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+        self.folder = Path(self.temp.name) / 'transcripts'
+        self.folder.mkdir()
+        self.transcript = self.use('claude.jsonl', 'one.jsonl')
+        self.keys()
+
+    def use(self, fixture, name):
+        """Copy a fixture to a transcript file that the session names. Return its path."""
+        path = self.folder / name
+        shutil.copy(self.FIXTURES / fixture, path)
+        self.name(path)
+        return path
+
+    def name(self, path, session='lead'):
+        self.tm('set-option', '-t', f'={session}:', '@tokiwa_agent_transcript', str(path))
+
+    def keys(self):
+        self.key = Path(self.temp.name) / 'key.pem'
+        self.cert = Path(self.temp.name) / 'cert.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(self.key),
+                        '-out', str(self.cert), '-subj', '/CN=tokiwa-capture', '-days', '1'],
+                       check=True, capture_output=True)
+        self.recipient = base64.b64encode(self.cert.read_bytes()).decode()
+
+    def run_read(self, cursor='-', flags='-', identity=None, name='lead'):
+        return self.helper('agent-read', name, identity or self.identity, cursor, flags, self.recipient)
+
+    def open(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey', str(self.key),
+                                 '-recip', str(self.cert)], input=base64.b64decode(result.stdout), capture_output=True)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        self.opened = opened.stdout
+        return json.loads(opened.stdout)
+
+    def read(self, cursor='-', flags='-'):
+        return self.open(self.run_read(cursor, flags))
+
+    def cursor_of(self, path, offset):
+        return hashlib.sha256(str(path).encode()).hexdigest()[:12] + f':{offset}'
+
+    def test_read_from_the_start(self):
+        page = self.read()
+        self.assertEqual([e['kind'] for e in page['events']], self.KINDS)
+        self.assertEqual([e['text'] for e in page['events']], self.TEXTS)
+        self.assertEqual(page['events'][0], {'at': 1767225601, 'kind': 'user', 'text': 'Request one', 'tool': None, 'error': False})
+        self.assertEqual(page['cursor'], self.cursor_of(self.transcript, self.transcript.stat().st_size))
+        self.assertIs(page['more'], False)
+        self.assertIs(page['transcript_changed'], False)
+
+    def test_read_resumes_at_the_cursor(self):
+        first = self.read()
+        line = {'type': 'assistant', 'timestamp': '2026-01-01T00:00:12.000Z',
+                'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Answer three'}]}}
+        with self.transcript.open('a') as f:
+            f.write(json.dumps(line) + '\n')
+        page = self.read(first['cursor'])
+        self.assertEqual([e['text'] for e in page['events']], ['Answer three'])
+        self.assertIs(page['transcript_changed'], False)
+        self.assertEqual(self.read(page['cursor'])['events'], [])
+
+    def test_a_partial_last_line_waits(self):
+        complete = self.transcript.stat().st_size
+        line = json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Answer three'}]}})
+        with self.transcript.open('a') as f:
+            f.write(line[:30])
+        page = self.read()
+        self.assertEqual(len(page['events']), len(self.KINDS))
+        self.assertEqual(page['cursor'], self.cursor_of(self.transcript, complete))
+        with self.transcript.open('a') as f:
+            f.write(line[30:] + '\n')
+        self.assertEqual([e['text'] for e in self.read(page['cursor'])['events']], ['Answer three'])
+
+    def test_pages_at_the_limit_and_sets_more(self):
+        lines = [json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': f'{i:03d}' + 'x' * 997}]}})
+                 for i in range(60)]
+        self.transcript.write_text('\n'.join(lines) + '\n')
+        cursor, texts, pages = '-', [], 0
+        while True:
+            page = self.read(cursor)
+            pages += 1
+            self.assertLessEqual(len(self.opened), 15000)
+            self.assertTrue(page['events'])
+            texts += [e['text'][:3] for e in page['events']]
+            cursor = page['cursor']
+            if not page['more']:
+                break
+        self.assertGreater(pages, 3)
+        self.assertEqual(texts, [f'{i:03d}' for i in range(60)])
+
+    def test_a_line_with_more_text_than_a_page_still_moves_on(self):
+        big = json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'y' * 200000}]}})
+        self.transcript.write_text(big + '\n')
+        page = self.read()
+        self.assertLessEqual(len(self.opened), 15000)
+        self.assertEqual(len(page['events']), 1)
+        self.assertIs(page['more'], False)
+
+    def test_thinking_is_left_out(self):
+        page = self.read(flags='tools')
+        self.assertNotIn(b'Private reasoning', self.opened)
+        self.assertEqual(len(page['events']), len(self.KINDS))
+
+    def test_tool_results_carry_no_text_without_tools(self):
+        page = self.read()
+        self.assertNotIn(b'Result body one', self.opened)
+        self.assertNotIn(b'Failure body two', self.opened)
+        self.assertNotIn(b'notes-a.txt', self.opened)
+        self.assertEqual([e['text'] for e in page['events'] if e['kind'].startswith('tool')], [''] * 4)
+        self.assertEqual([e['error'] for e in page['events']], [False] * 5 + [True] + [False] * 3)
+        self.assertEqual([e['tool'] for e in page['events'] if e['kind'].startswith('tool')], ['Read', 'Read', 'Bash', 'Bash'])
+
+    def test_tool_results_carry_text_with_tools(self):
+        events = self.read(flags='tools')['events']
+        self.assertEqual([e['text'] for e in events if e['kind'] == 'tool_result'], ['Result body one', 'Failure body two'])
+        self.assertIn('notes-a.txt', events[2]['text'])
+
+    def test_new_transcript_path_restarts(self):
+        first = self.read()
+        other = self.use('claude.jsonl', 'two.jsonl')
+        page = self.read(first['cursor'])
+        self.assertIs(page['transcript_changed'], True)
+        self.assertEqual(len(page['events']), len(self.KINDS))
+        self.assertEqual(page['cursor'], self.cursor_of(other, other.stat().st_size))
+
+    def test_cursor_past_the_end_restarts(self):
+        first = self.read()
+        self.transcript.write_text((self.FIXTURES / 'claude.jsonl').read_text().splitlines()[1] + '\n')
+        page = self.read(first['cursor'])
+        self.assertIs(page['transcript_changed'], True)
+        self.assertEqual([e['text'] for e in page['events']], ['Request one'])
+
+    def test_codex_transcript_maps_to_the_same_events(self):
+        self.use('codex.jsonl', 'three.jsonl')
+        page = self.read()
+        self.assertEqual([e['kind'] for e in page['events']], self.KINDS)
+        self.assertEqual([e['text'] for e in page['events']], self.TEXTS)
+        self.assertEqual([e['error'] for e in page['events']], [False] * 5 + [True] + [False] * 3)
+        self.assertEqual([e['tool'] for e in page['events'] if e['kind'].startswith('tool')], ['shell'] * 4)
+        self.assertEqual(page['events'][0]['at'], 1767225601)
+        events = self.read(flags='tools')['events']
+        self.assertEqual([e['text'] for e in events if e['kind'] == 'tool_result'], ['Result body one', 'Failure body two'])
+        self.assertNotIn(b'encrypted_content', self.opened)
+
+    def test_read_without_a_transcript_names_capture(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_transcript')
+        result = self.run_read()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('capture', result.stderr)
+        self.assertIn('Nothing was read.', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_read_pending_returns_the_summary(self):
+        item = {'id': 'item-a', 'kind': 'question', 'summary': 'Which folder?', 'options': ['a', 'b'], 'at': 1767225601}
+        self.assertEqual(self.read(flags='pending')['pending'], None)
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent_pending', self.b64(item))
+        self.assertEqual(self.read(flags='pending'), {'pending': item})
+        self.assertEqual(self.read(flags='tools,pending'), {'pending': item})
+
+    def test_read_pending_needs_no_transcript(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_transcript')
+        self.assertEqual(self.read(flags='pending'), {'pending': None})
+
+    def test_read_output_holds_no_plain_text(self):
+        result = self.run_read(flags='tools')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'^[A-Za-z0-9+/=]+\n$')
+        raw = base64.b64decode(result.stdout)
+        for text in ['Answer one', 'Result body one', 'Request two']:
+            self.assertNotIn(text.encode(), raw)
+            self.assertNotIn(text, result.stdout)
+
+    def test_read_refuses_a_replaced_identity(self):
+        old = self.identity
+        self.tm('kill-session', '-t', '=lead')
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.name(self.transcript)
+        result = self.run_read(identity=old)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed. Nothing was read.', result.stderr)
+        self.assertEqual(result.stdout, '')
+        gone = self.helper('agent-read', 'absent', old, '-', '-', self.recipient)
+        self.assertEqual(gone.returncode, 1)
+        self.assertIn('Nothing was read.', gone.stderr)
+
+    def test_a_link_or_a_non_transcript_file_is_refused(self):
+        secret = Path(self.temp.name) / 'secret.txt'
+        secret.write_text('secret-value-a\n')
+        link = self.folder / 'link.jsonl'
+        link.symlink_to(self.transcript)
+        folder_link = self.folder / 'folder.jsonl'
+        folder_link.mkdir()
+        fifo = self.folder / 'fifo.jsonl'
+        os.mkfifo(fifo)
+        for path in [link, folder_link, fifo, secret, self.folder / 'missing.jsonl', 'relative.jsonl']:
+            with self.subTest(path=str(path)):
+                self.name(path)
+                result = self.run_read()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Nothing was read.', result.stderr)
+                self.assertNotIn('secret-value-a', result.stderr + result.stdout)
+                self.assertNotIn('Traceback', result.stderr)
+
+    def test_untrusted_lines_become_notices_and_never_leak(self):
+        lines = ['secret-value-a', '[1, 2]', '"text"', '{"type": "user", "message": 5}',
+                 '{"type": "assistant", "message": {"content": [5, null, {"type": "text", "text": 7}]}}',
+                 '[' * 100000, '{"type": "response_item", "payload": 3}', '', '{"type": "user", "message": {"content": "kept"}}']
+        self.transcript.write_text('\n'.join(lines) + '\n')
+        page = self.read(flags='tools')
+        self.assertNotIn(b'secret-value-a', self.opened)
+        self.assertEqual([e['text'] for e in page['events']][-1], 'kept')
+        notices = [e for e in page['events'] if e['kind'] == 'notice']
+        self.assertTrue(notices)
+        self.assertEqual({e['text'] for e in notices}, {'unreadable line'})
+        self.assertIs(page['more'], False)
+
+    def test_a_lone_surrogate_in_a_line_does_not_stop_the_reader(self):
+        # JavaScript can cut a string between the halves of a pair, so a real transcript can hold one.
+        bad = '{"type": "assistant", "message": {"content": [{"type": "text", "text": "a\\ud800b"}]}}\n'
+        good = '{"type": "user", "message": {"content": "kept"}}\n'
+        self.transcript.write_text(bad + good)
+        for flags in ('-', 'tools'):
+            page = self.read(flags=flags)
+            self.assertEqual(len(page['events']), 2)
+            self.assertEqual(page['events'][1]['text'], 'kept')
+            self.assertEqual(page['cursor'], self.cursor_of(self.transcript, self.transcript.stat().st_size))
+
+    def test_a_lone_surrogate_in_a_pending_item_is_read(self):
+        item = {'id': 'item\ud800', 'kind': 'question', 'summary': 'Which\udfff folder?', 'options': ['a\ud800'], 'at': 5}
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent_pending', self.b64(item))
+        pending = self.read(flags='pending')['pending']
+        self.assertEqual((pending['kind'], pending['at']), ('question', 5))
+        self.assertIn('Which', pending['summary'])
+
+    def set_big(self, value):
+        """Set the pending option from a file: a tmux command line is too short for a big value."""
+        script = Path(self.temp.name) / 'big.conf'
+        script.write_text(f"set-option -t =lead: @tokiwa_agent_pending '{value}'\n")
+        self.assertEqual(self.tm('source-file', str(script)).returncode, 0)
+
+    def test_a_pending_item_is_held_to_the_limit(self):
+        item = {'id': 'i' * 200, 'kind': 'k' * 80, 'summary': '\x01' * 5000, 'options': ['\x01' * 500] * 40, 'at': 7}
+        self.set_big(self.b64(item))
+        pending = self.read(flags='pending')['pending']
+        self.assertLessEqual(len(self.opened), 15000)
+        self.assertEqual((pending['id'], pending['at']), ('i' * 200, 7))
+        self.assertTrue(pending['summary'])
+        wide = dict(item, summary='\u20ac' * 5000, options=['\u20ac' * 500] * 40)
+        self.set_big(self.b64(wide))
+        self.read(flags='pending')
+        self.assertLessEqual(len(self.opened), 15000)
+
+    def test_bad_arguments_are_refused(self):
+        for cursor, flags in [('abc', '-'), ('0123456789ab:', '-'), ('0123456789ab:1234567890123', '-'), ('-', 'all'),
+                              ('-', 'tools,'), ('-', ''), ('0123456789AB:1', '-')]:
+            with self.subTest(cursor=cursor, flags=flags):
+                result = self.run_read(cursor, flags)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Nothing was read.', result.stderr)
+        no_recipient = self.helper('agent-read', 'lead', self.identity, '-', '-', 'not base64!')
+        self.assertEqual(no_recipient.returncode, 1)
+        self.assertIn('Nothing was read.', no_recipient.stderr)

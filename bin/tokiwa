@@ -11,10 +11,16 @@ query=
 digest_json=0
 run_payload=
 run_id=
+input_file= answer_pending= answer_choice=
 run_offset=
+wait_timeout=600
+# One cleanup for every private temporary folder: the plain text of a message, and the key of a sealed result.
+input_dir= work=
+cleanup() { [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf "$work"; }
+trap cleanup EXIT
 usage() {
  cat <<'EOF'
-Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
+Usage: tokiwa [dashboard|new NAME|attach NAME|sessions|status|--check|login|capture NAME IDENTITY|state NAME IDENTITY|agent state NAME IDENTITY|agent send NAME IDENTITY|agent answer NAME IDENTITY|agent read NAME IDENTITY|claim NAME IDENTITY|release NAME IDENTITY|end NAME IDENTITY|commands|run ENTRY|run-status ID|mcp|shell|admin]
 
 Open the dashboard. Use attach NAME to enter a terminal directly.
   dashboard     Open the Tokiwa interface (default)
@@ -32,6 +38,34 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   forget-project PROJECT  Forget a saved project without sessions; its folders stay
   name [NAME]   Show or set the name that new shells show in the prompt (default tokiwa)
   rename NAME NEW IDENTITY  Rename a session; only that exact session
+  state NAME IDENTITY
+                Read the facts of a session as JSON, without screen text: its program, clients, writable clients and driver
+  agent state NAME IDENTITY
+                The same, with what the agent in the session reports: state, turn, pending item and dialog
+  agent wait NAME IDENTITY --after TURN [--timeout SECONDS]
+                Wait until the agent ends a turn, asks for a person, shows a dialog or exits, then print its state with a reason
+                (turn-ended, pending, dialog, ended or timeout). --timeout is 1 to 3600 seconds (default 600); a timeout exits 3
+  agent send NAME IDENTITY (--text TEXT | --file PATH | -)
+                Send a message to an idle agent: one paste, then Enter. Needs TOKIWA_ACTOR, which must be the driver.
+                The text is at most 16384 bytes of UTF-8, with no control character except newline and tab, and does not
+                start with /, ! or #. It reaches the host encrypted. The agent sees a first line that names the sender.
+                The result is JSON with turn_before, the turn count to give to agent wait --after
+  agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
+                Answer the pending question of the agent: press the digit N (1 to 9) of an option, then Enter. ID is the id of the
+                pending item from agent read --pending; the question must still wait and the caller must drive. A permission item
+                has no answer; refuse it with interrupt. The agent is told that an agent chose the answer, not the owner.
+                --text is not supported yet and refuses. Needs TOKIWA_ACTOR
+  agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
+                Read the transcript of the agent in pages, as JSON events, encrypted on the way. Without --tools a tool call and
+                its result carry no text. --after CURSOR continues from the cursor of an earlier read. --pending reads the
+                waiting question or permission request instead
+  claim NAME IDENTITY [--replace]
+                Become the driver of a session, the one actor that may send to it; the actor is TOKIWA_ACTOR.
+                Refused while a client that can type is attached, and while another actor drives, unless --replace
+  release NAME IDENTITY
+                Give up the driver of a session; only the driver can
+  end NAME IDENTITY [--attached-ok]
+                End a session and the programs in its panes; refused while a client is attached, unless --attached-ok
   interrupt NAME IDENTITY
                 Send Esc to a session, which stops the current turn of an agent; only that exact session
   freeze NAME IDENTITY
@@ -61,10 +95,11 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   status        Check AWS access, host state and the workbench server
   --check       Same as status
   login         Sign in to AWS with the profile of the host settings
-  mcp [--allow control,run,commands]
+  mcp [--allow control,run,commands,answer] [--actor NAME]
                 Run the MCP server for local agents: read tools, and with --allow the tools
-                that change sessions (control), run a command line on the host (run)
-                or run an entry of the owner's command list (commands)
+                that change sessions (control), run a command line on the host (run),
+                run an entry of the owner's command list (commands) or answer an agent's
+                question (answer). --actor sets TOKIWA_ACTOR for the tools that need an actor
   shell         Open or select a terminal without the dashboard
   admin         Open the existing administrator shell
 
@@ -74,12 +109,139 @@ Run claude auth login or codex login inside the workbench for application login.
 AWS access uses the profile that ~/.config/tokiwa/host.env names. Admin access has no extra authentication.
 EOF
 }
+agent_usage() {
+ cat <<'EOF'
+Usage: tokiwa agent state NAME IDENTITY
+       tokiwa agent wait NAME IDENTITY --after TURN [--timeout SECONDS]
+       tokiwa agent send NAME IDENTITY (--text TEXT | --file PATH | -)
+       tokiwa agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
+       tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
+
+Commands for the agent in a session, Claude Code or Codex. They read what its hooks report.
+  state   The facts of the session, and the agent's state, turn, pending item and dialog, as JSON
+  wait    Wait until a turn ends, an item is pending, a dialog shows or the agent exits
+  send    Send a message to an idle agent; the text reaches the host encrypted
+  answer  Answer the pending question of the agent by the number of an option
+  read    Read the transcript of the agent in pages, or its pending item; the result is encrypted on the way
+EOF
+}
 fail() { printf 'Tokiwa: %s\n' "$*" >&2; exit 1; }
+# The same rules as the host, for the message in $input_file. They run here first, so that a refused
+# message makes no AWS call.
+check_message_text() {
+  python3 -I -c '
+import sys, unicodedata
+data = open(sys.argv[1], "rb").read()
+if len(data) > 16384:
+    sys.exit("The message is over 16384 bytes. Nothing was sent.")
+try:
+    text = data.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit("The message is not UTF-8 text. Nothing was sent.")
+if not text.strip():
+    sys.exit("The message is empty. Nothing was sent.")
+if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
+    sys.exit("The message has a control character. Nothing was sent.")
+if text.lstrip()[:1] in ("/", "!", "#"):
+    sys.exit("The message starts with /, ! or #. Nothing was sent.")
+' "$input_file" || exit 1
+}
+# `tokiwa agent SUBCOMMAND ...` is the agent layer. Its helper mode is `agent-SUBCOMMAND`.
+if [[ $mode == agent ]]; then
+ case ${2:-} in state|wait|send|answer|read) ;; *) agent_usage >&2; exit 2 ;; esac
+ set -- "agent-$2" "${@:3}"
+ mode=$1
+ name=${2:-}
+fi
 case "$mode" in
  --end-confirmed)
   [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'A confirmed session identity is required.'
+  # A confirmed end sends what it always sent: no check for a client.
   mode=end; extra=$3 ;;
  --help|-h) usage; exit 0 ;;
+ state|agent-state)
+  [[ $# -eq 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail 'Use state NAME IDENTITY, with the identity from tokiwa sessions --json.'
+  extra=$3 ;;
+ agent-wait)
+  wait_usage='Use agent wait NAME IDENTITY --after TURN [--timeout SECONDS], with a timeout of 1 to 3600 seconds.'
+  [[ $# -ge 5 && $# -le 7 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && $4 == --after && $5 =~ ^[0-9]{1,9}$ ]] \
+   || fail "$wait_usage"
+  if [[ $# -ge 6 ]]; then
+   [[ $# -eq 7 && $6 == --timeout && $7 =~ ^[0-9]{1,4}$ ]] && (( 10#$7 >= 1 && 10#$7 <= 3600 )) || fail "$wait_usage"
+   wait_timeout=$((10#$7))
+  fi
+  extra=$3
+  # The turn is the fourth argument of the helper.
+  lines=$((10#$5)) ;;
+ agent-read)
+  read_usage='Use agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending], with the cursor of an earlier read.'
+  [[ $# -ge 3 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail "$read_usage"
+  extra=$3
+  read_cursor=- read_tools= read_pending=
+  shift 3
+  while [[ $# -gt 0 ]]; do
+   case $1 in
+    --after) [[ $# -ge 2 && $2 =~ ^[0-9a-f]{12}:[0-9]{1,12}$ && $read_cursor == - ]] || fail "$read_usage"
+             read_cursor=$2; shift 2 ;;
+    --tools) [[ -z $read_tools ]] || fail "$read_usage"; read_tools=tools; shift ;;
+    --pending) [[ -z $read_pending ]] || fail "$read_usage"; read_pending=pending; shift ;;
+    *) fail "$read_usage" ;;
+   esac
+  done
+  read_flags=${read_tools:+$read_tools${read_pending:+,}}$read_pending
+  read_flags=${read_flags:--} ;;
+ agent-send)
+  send_usage='Use agent send NAME IDENTITY (--text TEXT | --file PATH | -), with the identity from tokiwa sessions --json.'
+  [[ ( $# -eq 4 && $4 == - ) || ( $# -eq 5 && ( $4 == --text || $4 == --file ) ) ]] && [[ $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail "$send_usage"
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail 'Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was sent.'
+  extra=$3
+  # A private folder, removed when this command ends, holds the text until it is encrypted. The text is
+  # written by builtins and redirections only: never as an argument of a program, never in a here-string.
+  input_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-input.XXXXXX") || fail 'A message needs a temporary folder.'
+  input_file=$input_dir/message
+  case $4 in
+   --text) printf '%s' "$5" > "$input_file" ;;
+   --file) [[ -f $5 && -r $5 ]] || fail 'The message file cannot be read. Nothing was sent.'
+           head -c 16385 < "$5" > "$input_file" ;;
+   -) head -c 16385 > "$input_file" ;;
+  esac
+  check_message_text ;;
+ agent-answer)
+  answer_usage='Use agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT), with N from 1 to 9.'
+  [[ $# -eq 7 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && $4 == --pending && $5 =~ ^[A-Za-z0-9_.:-]{1,128}$ ]] \
+   || fail "$answer_usage"
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail 'Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was sent.'
+  extra=$3
+  answer_pending=$5
+  case $6 in
+   --choice) [[ $7 =~ ^[1-9]$ ]] || fail "$answer_usage"
+             answer_choice=$7 ;;
+   --text) answer_choice=text
+           # The same private folder and the same text checks as agent send.
+           input_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-input.XXXXXX") || fail 'A message needs a temporary folder.'
+           input_file=$input_dir/message
+           printf '%s' "$7" > "$input_file"
+           check_message_text ;;
+   *) fail "$answer_usage" ;;
+  esac ;;
+ claim|release)
+  [[ ( $# -eq 3 || ( $mode == claim && $# -eq 4 && $4 == --replace ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail "Use $mode NAME IDENTITY$([[ $mode == claim ]] && echo ' [--replace]')."
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail "Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was changed."
+  extra=$3
+  # The host reads the actor from the environment that the launcher sets below.
+  [[ $# -eq 3 ]] || lines=replace ;;
+ end)
+  [[ ( $# -eq 3 || ( $# -eq 4 && $4 == --attached-ok ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
+   || fail 'Use end NAME IDENTITY [--attached-ok].'
+  extra=$3
+  # The host refuses an attached session when it gets check-clients; --attached-ok sends no flag.
+  [[ $# -eq 4 ]] || lines=check-clients ;;
  new|attach|view|project)
   [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
   if [[ $mode == new && $# -eq 4 && $3 == --from ]]; then
@@ -98,7 +260,9 @@ case "$mode" in
   fi ;;
  create)
   [[ $# -ge 2 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]] || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.'
-  extra=$(python3 - "${@:3}" <<'PY_CREATE'
+  # The command line of --run is message text for a session: it never goes into the request. The
+  # request says run_stdin, and the line travels encrypted (see seal_input below).
+  create_out=$(python3 - "${@:3}" <<'PY_CREATE'
 import base64, json, sys
 args, want = sys.argv[1:], {}
 keys = {'--dir': 'dir', '--folder': 'folder', '--project': 'project', '--subfolder': 'subfolder', '--run': 'run'}
@@ -109,9 +273,21 @@ while args:
     args = args[2:]
 if ('dir' in want) == ('folder' in want):
     raise SystemExit('Tokiwa: Use create NAME (--dir DIRECTORY | --folder FOLDER) [--subfolder NAME] [--project PROJECT] [--run COMMAND].')
+run = want.pop('run', None)
+if run is not None:
+    want['run_stdin'] = True
 print(base64.b64encode(json.dumps(want).encode()).decode())
+print(base64.b64encode(run.encode()).decode() if run is not None else '-')
 PY_CREATE
-) || exit 1 ;;
+) || exit 1
+  # A here-string would put the line in a temporary file on this Mac, so a process substitution reads it.
+  { read -r extra; read -r run_b64; } < <(printf '%s\n' "$create_out")
+  if [[ $run_b64 != - ]]; then
+   # A private folder, removed when this command ends, holds the line until it is encrypted.
+   input_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-input.XXXXXX") || fail 'A command to run needs a temporary folder.'
+   input_file=$input_dir/line
+   printf '%s' "$run_b64" | base64 --decode > "$input_file"
+  fi ;;
  move-project)
   [[ $# -eq 3 ]] || fail 'Use move-project FROM TO, for example api studio/api.'
   name=$(python3 -c 'import base64,json,sys; print(base64.b64encode(json.dumps({"from":sys.argv[1],"to":sys.argv[2]}).encode()).decode())' "$2" "$3")
@@ -144,6 +320,7 @@ PY_CREATE
   [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]{0,63}$ && ! $name =~ ^(PATH|HOME|SHELL|USER|LOGNAME|PWD|BROWSER|PS1|TOKIWA_.*|TMUX.*)$ ]] \
    || fail 'Use a secret name of letters, digits and underscores, for example OPENAI_API_KEY. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  secrets) [[ $# -le 1 ]] || fail 'Use secrets.' ;;
+ input-cert) [[ $# -eq 1 ]] || fail 'Use input-cert.' ;;
  commands) [[ $# -eq 1 ]] || fail 'Use commands.' ;;
  run)
   run_usage='Use run ENTRY NAME=VALUE…, with names from tokiwa commands.'
@@ -186,21 +363,36 @@ PY_RUN
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
  health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|audit) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
  mcp)
-  # --allow adds the tools that change a session (control), run a command line on the host (run) or
-  # run an entry of the owner's command list (commands): one to three distinct classes.
-  if [[ $# -ne 1 ]]; then
-   [[ $# -eq 3 && $2 == --allow && $3 =~ ^(control|run|commands)(,(control|run|commands)){0,2}$ ]] \
-    && IFS=, read -ra picked <<<"$3" \
-    && [[ $(printf '%s\n' "${picked[@]}" | sort -u | wc -l) -eq ${#picked[@]} ]] \
-    || fail 'Use mcp, or mcp --allow with control, run or commands, joined by commas.'
-  fi ;;
+  # --allow adds the tools that change a session (control), run a command line on the host (run),
+  # run an entry of the owner's command list (commands) or answer an agent's question (answer):
+  # one to four distinct classes. --actor names the caller for the tools that need an actor.
+  # Each option appears at most once, in either order.
+  mcp_args=("${@:2}")
+  shift
+  allow_seen= actor_seen=
+  while [[ $# -gt 0 ]]; do
+   case $1 in
+    --allow)
+     [[ -z $allow_seen && $# -ge 2 && $2 =~ ^(control|run|commands|answer)(,(control|run|commands|answer)){0,3}$ ]] \
+      && IFS=, read -ra picked <<<"$2" \
+      && [[ $(printf '%s\n' "${picked[@]}" | sort -u | wc -l) -eq ${#picked[@]} ]] \
+      || fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands or answer, joined by commas, each once.'
+     allow_seen=1; shift 2 ;;
+    --actor)
+     [[ -z $actor_seen && $# -ge 2 && $2 =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+      || fail 'Use mcp [--allow CLASSES] [--actor NAME]: NAME is 1 to 64 letters, digits, dots, colons, hyphens or underscores.'
+     actor_seen=1; shift 2 ;;
+    *) fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands or answer, joined by commas, each once.' ;;
+   esac
+  done
+  ;;
  *) usage >&2; exit 2 ;;
 esac
 # The MCP server reports a missing host setting as a tool error, so it starts without the settings.
 if [[ $mode == mcp ]]; then
  app="$HOME/.local/lib/tokiwa/opentui/run"
  [[ -x $app ]] || fail 'The Tokiwa interface is not installed. Run app/install.sh.'
- exec "$app" mcp "${@:2}"
+ exec "$app" mcp ${mcp_args[@]+"${mcp_args[@]}"}
 fi
 # The host settings: KEY=VALUE lines. The file is read, never run. See docs/configuration.md.
 config=${TOKIWA_HOST_CONFIG:-$HOME/.config/tokiwa/host.env}
@@ -308,11 +500,11 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
-  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"})
+  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"})
   remote="$remote $quoted"
  fi
  # Run Command keeps its output in the account, so the host encrypts a result to a key that
@@ -321,7 +513,6 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   command -v openssl >/dev/null || fail "A $what needs openssl."
   umask 077
   work=$(mktemp -d "${TMPDIR:-/tmp}/tokiwa-capture.XXXXXX") || fail "A $what needs a temporary folder."
-  trap 'rm -rf "$work"' EXIT
   openssl req -x509 -newkey rsa:3072 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -subj /CN=tokiwa-capture -days 1 >/dev/null 2>&1 \
    || fail "The $what key could not be made."
   cert64=$(base64 < "$work/cert.pem" | tr -d '\n')
@@ -343,6 +534,12 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   sealed=1
   sealed_key
   remote="$remote $cert64${query:+ $query}"
+ elif [[ $mode == agent-read ]]; then
+  # Like a capture, the host seals the result to a key that exists only for this call.
+  sealed=1
+  what='transcript read'
+  sealed_key
+  remote="$remote $read_cursor $read_flags $cert64"
  elif [[ $mode == commands ]]; then
   remote="$runner commands"
  elif [[ $mode == run || $mode == run-status ]]; then
@@ -353,17 +550,90 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
   if [[ $mode == run ]]; then remote="$runner start $run_payload $cert64"
   else remote="$runner status $run_id $run_offset $cert64"; fi
  fi
- parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$remote")
- id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'
- status=Pending
+ # Submit command line $1 to Run Command and wait for its end. Sets id and status.
+ submit() {
+  local parameters
+  parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$1")
+  id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'
+  status=Pending
+  local attempt
+  for (( attempt = 1; attempt <= tries; attempt++ )); do
+   status=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query Status --output text 2>/dev/null) || status=Pending
+   case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
+   sleep 1
+  done
+ }
  # A sealed call ends on the host, so wait for its end: Run Command stops it after 30 seconds.
+ # A wait call holds the host for up to 20 seconds, so it gets the same time.
  tries=15
- [[ $sealed == 0 ]] || tries=40
- for (( attempt = 1; attempt <= tries; attempt++ )); do
-  status=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query Status --output text 2>/dev/null) || status=Pending
-  case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
-  sleep 1
- done
+ [[ $sealed == 0 && $mode != agent-wait ]] || tries=40
+ # The host certificate that message text is encrypted to. Only the certificate is public; the key
+ # stays on the host (see host/tokiwa-input.py). This reads it from the host in one Run Command call.
+ # A host from before encrypted input has no certificate: the launcher stops there, and never sends the
+ # text in plain form.
+ host_cert() {
+  local cert nothing='Nothing was sent.'
+  [[ $mode != create ]] || nothing='Nothing was created.'
+  [[ $mode != input-cert ]] || nothing='Nothing was read.'
+  submit 'if [ -e /etc/tokiwa/input-cert.pem ]; then cat /etc/tokiwa/input-cert.pem; else echo tokiwa-no-input-key; fi'
+  [[ $status == Success ]] || fail 'The host input certificate could not be read.'
+  cert=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text) \
+   || fail 'The host input certificate could not be read.'
+  [[ $cert != tokiwa-no-input-key ]] || fail "The host has no input key. Update the host with host/install.sh. $nothing"
+  printf '%s\n' "$cert"
+ }
+ # Encrypt the file $1 to the pinned host certificate and print it as one line of base64 DER. The
+ # first use pins the certificate that the host shows; later calls never fetch it again, so a key
+ # that changes on the host is refused by the host and not trusted by this launcher.
+ input_pin=$HOME/.config/tokiwa/input-cert.pem
+ seal_input() {
+  command -v openssl >/dev/null || fail 'A message needs openssl.'
+  if [[ ! -s $input_pin ]]; then
+   local cert pinned
+   cert=$(host_cert) || exit 1
+   printf '%s\n' "$cert" | openssl x509 -noout >/dev/null 2>&1 || fail 'The host input certificate is not valid. Nothing was sent.'
+   mkdir -p "$(dirname "$input_pin")"
+   pinned=$(umask 022; mktemp "$input_pin.XXXXXX") || fail 'The host input certificate could not be saved.'
+   printf '%s\n' "$cert" > "$pinned" && mv "$pinned" "$input_pin" || fail 'The host input certificate could not be saved.'
+  fi
+  openssl x509 -in "$input_pin" -noout >/dev/null 2>&1 \
+   || fail 'The pinned host input certificate is not valid. Delete ~/.config/tokiwa/input-cert.pem to pin the host key again.'
+  # The marker line lets the host tell the text from the garbage that a wrong key can produce.
+  ( set -o pipefail; { printf 'tokiwa-input-v1\n'; cat "$1"; } | openssl smime -encrypt -aes256 -binary -outform DER "$input_pin" | base64 | tr -d '\n' ) \
+   || fail 'The message could not be encrypted. Nothing was sent.'
+ }
+ if [[ $mode == input-cert ]]; then host_cert; exit 0; fi
+ if [[ ( $mode == create || $mode == agent-send || $mode == agent-answer ) && -n $input_file ]]; then
+  # Run Command runs as root. Root decrypts the line and pipes it to the helper, which reads it
+  # from stdin: the text is never an argument, a file or output on the host.
+  sealed_line=$(seal_input "$input_file") || exit 1
+  inner="set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input.py $sealed_line | $helper $mode $quoted"
+  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && bash -c $(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$inner")"
+ fi
+ if [[ $mode == agent-wait ]]; then
+  # Each call waits on the host for up to 20 seconds. Repeat until a reason other than timeout, or
+  # until the time of --timeout is gone. The last object is the result.
+  deadline=$(( SECONDS + wait_timeout ))
+  while :; do
+   left=$(( deadline - SECONDS ))
+   (( left >= 1 )) || left=1
+   (( left <= 20 )) || left=20
+   submit "systemctl is-active --quiet cloud-workbench.service user@2200.service && ${helper/TOKIWA_QUIET=1/TOKIWA_QUIET=1 TOKIWA_WAIT_SECONDS=$left} $mode $quoted"
+   if [[ $status != Success ]]; then
+    errors=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text) || errors=
+    [[ -z $errors ]] || printf '%s\n' "$errors" >&2
+    fail "The wait call returned $status. Nothing was changed."
+   fi
+   result=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text) \
+    || fail 'The wait result could not be read. Nothing was changed.'
+   reason=$(printf '%s' "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])' 2>/dev/null) \
+    || fail 'The wait result could not be read. Nothing was changed.'
+   if [[ $reason != timeout ]]; then printf '%s\n' "$result"; exit 0; fi
+   if (( SECONDS >= deadline )); then printf '%s\n' "$result"; exit 3; fi
+  done
+ else
+  submit "$remote"
+ fi
  if [[ $sealed == 1 && $status == Success ]]; then
   open_sealed "$id"
   exit 0
@@ -409,10 +679,12 @@ for r in rows:
  if [[ $status != Success ]]; then
   errors=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text) || errors=
   [[ -z $errors ]] || printf '%s\n' "$errors" >&2
+  [[ $errors != *'could not be decrypted with the host input key'* ]] \
+   || fail 'The host input key changed or is missing. Check the host, then delete ~/.config/tokiwa/input-cert.pem to pin the new key.'
   # A refusal of the command runner names its cause in its last line. The SSM agent adds
   # "failed to run commands: exit status N" after it when the script exits non-zero.
   refusal=$(printf '%s\n' "$errors" | sed -E '/^[[:space:]]*$/d; /^failed to run commands: exit status [0-9]+$/d' | tail -n 1)
-  [[ $refusal != *'Nothing was run.' ]] || fail "$refusal"
+  [[ $refusal != *'Nothing was run.' && $refusal != *'Nothing was sent.' ]] || fail "$refusal"
   # A run call that the host did not refuse may have started a run: the runner can also fail
   # after systemd-run started it.
   [[ $mode != run ]] || fail "The run call returned $status. A run may have started: use tokiwa run-status with its id."

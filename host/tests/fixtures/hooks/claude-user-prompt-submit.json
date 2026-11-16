@@ -1,0 +1,8 @@
+{
+  "session_id": "claude-session-a",
+  "transcript_path": "/home/worker-a/.claude/projects/project-a/session-a.jsonl",
+  "cwd": "/workspace/project-a",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Add a unit test for the parser."
+}

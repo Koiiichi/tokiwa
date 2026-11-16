@@ -226,13 +226,17 @@ export class BackendClient {
         );
       if (code !== 0) {
         const { text, category } = splitCategory(err);
-        throw new LauncherError(
-          `Launcher ${args[0]} exited ${code}: ${text.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
-          command,
-          "exit",
-          code,
-          text,
-          category,
+        // exitCode and stdout let the MCP server return a wait timeout (exit 3) as a result.
+        throw Object.assign(
+          new LauncherError(
+            `Launcher ${args[0]} exited ${code}: ${text.trim().slice(-600) || out.trim().slice(-600) || "no diagnostic output"}`,
+            command,
+            "exit",
+            code,
+            text,
+            category,
+          ),
+          { exitCode: code as number, stdout: out.trim() },
         );
       }
       return out.trim();

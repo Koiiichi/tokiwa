@@ -1,14 +1,247 @@
-#!/bin/bash
-# Record the state of the agent in this tmux pane, for example working or waiting, for Tokiwa's
-# session list. Agents call it from their hooks, so it never fails: a hook that fails can stop an
-# agent. The hook settings decide which event means which state; this command only records it.
-[[ ${1:-} =~ ^(working|waiting|idle|limited|error)$ ]] || exit 0
-# A hook writes its event to stdin; read it so the hook never waits on a full pipe.
-cat > /dev/null 2>&1 || true
-[[ -n ${TMUX_PANE:-} && -n ${TMUX:-} ]] || exit 0
-# -N: never start a tmux server; this command only reaches the server of its own session.
-# The time is when the state began: a report of the state that is already there keeps it.
-current=$(tmux -N show-options -qv -t "$TMUX_PANE" @tokiwa_agent 2>/dev/null) || exit 0
-[[ ${current%%:*} == "$1" ]] && exit 0
-tmux -N set-option -t "$TMUX_PANE" @tokiwa_agent "$1:$(date +%s)" > /dev/null 2>&1 || true
-exit 0
+#!/usr/bin/python3 -I
+"""Record what the agent in this tmux pane reports through a hook, as options of its tmux session.
+
+Usage: tokiwa-state STATE [--turn] [--kind question|permission]
+       tokiwa-state answered
+
+Agents call this command from their hooks, so it never fails: a hook that fails can stop an agent.
+Every error ends in exit status 0. The hook settings decide which event means which state; this
+command only records it. The hook event arrives as JSON on stdin.
+
+Options that it sets on the session:
+  @tokiwa_agent             STATE:EPOCH. The time is when the state began. `note` never changes it.
+  @tokiwa_agent_turn        The number of turns, counted by --turn.
+  @tokiwa_agent_transcript  The transcript path from the event.
+  @tokiwa_agent_session     The session id of the agent from the event.
+  @tokiwa_agent_pending     Base64 JSON {id, kind, summary, options, tool, questions, multi_select, at} of the question
+                            or permission request that waits for a person.
+  @tokiwa_agent_last_tool   Base64 JSON {id, tool, summary, at} of the last tool call that a `note` event reported.
+  @tokiwa_agent_input       Base64 JSON {actor, pending_id, at}, set by `tokiwa agent answer`. `answered` clears it.
+
+`answered` is the one command that a synchronous Claude Code hook runs (the Codex hooks also have a timeout and no
+`async`, but their output adds nothing to the context). A PostToolUse hook of the question tool runs it. When an agent
+chose the answer of the question that the event reports, it prints the hook output that adds a context
+line to the agent, and clears the option. Otherwise it prints nothing.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+
+STATES = ("working", "waiting", "idle", "limited", "error", "ended", "note")
+KINDS = ("question", "permission")
+# States in which no question or permission request waits any longer.
+CLEARS_PENDING = ("working", "idle", "ended")
+MAX_INPUT = 65536
+MAX_SUMMARY = 500
+# The longest option label in characters, the most options, and the longest tool name and tool-use id.
+MAX_LABEL = 200
+MAX_OPTIONS = 20
+MAX_TOOL = 64
+MAX_ID = 128
+# The longest encoded value of @tokiwa_agent_pending and of @tokiwa_agent_last_tool, in bytes. `agent answer`
+# puts both values and its label into one tmux command, which tmux limits to about 16 KiB.
+MAX_PENDING_BYTES = 6144
+MAX_LAST_TOOL_BYTES = 3072
+TMUX_TIMEOUT = 2
+
+
+def read_input():
+    """Return up to MAX_INPUT bytes of stdin, and read the rest so the hook never waits on a full pipe."""
+    try:
+        fd = sys.stdin.fileno()
+        data = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return data
+            data += chunk[: max(0, MAX_INPUT - len(data))]
+    except (OSError, ValueError):
+        return b""
+
+
+def parse(raw):
+    """Return the event as a dict, or an empty dict when the input is not a JSON object."""
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        return {}
+    return event if isinstance(event, dict) else {}
+
+
+def text(value):
+    return value if isinstance(value, str) else ""
+
+
+def encode(item):
+    # A lone surrogate (an escape such as "\ud83d" in the event) cannot be UTF-8 encoded: it becomes "?".
+    # Without this, the option would not be written and the old value would stay.
+    dumped = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+    return base64.b64encode(dumped.encode("utf-8", "replace")).decode()
+
+
+def fitted(item, limit):
+    """`item` encoded in at most `limit` bytes: options go first from the end, then the summary is cut."""
+    value = encode(item)
+    while len(value) > limit and item.get("options"):
+        item["options"].pop()
+        value = encode(item)
+    while len(value) > limit and item.get("summary"):
+        item["summary"] = item["summary"][: len(item["summary"]) // 2]
+        value = encode(item)
+    return value
+
+
+def digits(value):
+    """True when `value` is a number that int() reads: str.isdigit() alone also accepts digits such as '²'."""
+    return value.isascii() and value.isdigit()
+
+
+def tool_detail(tool_input):
+    """The part of a tool input that a person needs to recognize the call."""
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("command", "file_path", "path", "url", "pattern", "description"):
+        if isinstance(tool_input.get(key), str) and tool_input[key]:
+            return tool_input[key]
+    return ""
+
+
+def tool_summary(event):
+    """`TOOL: DETAIL` for the tool of the event, or an empty string."""
+    tool = text(event.get("tool_name"))
+    if not tool:
+        return ""
+    detail = tool_detail(event.get("tool_input"))
+    return f"{tool}: {detail}" if detail else tool
+
+
+def questions_of(event):
+    """The first question of an AskUserQuestion call, as (text, option labels, number of questions, multi-select)."""
+    tool_input = event.get("tool_input")
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    count = len(questions) if isinstance(questions, list) else 0
+    first = questions[0] if count else None
+    if not isinstance(first, dict):
+        return "", [], count, False
+    options = first.get("options") if isinstance(first.get("options"), list) else []
+    labels = [text(o.get("label"))[:MAX_LABEL] for o in options if isinstance(o, dict)][:MAX_OPTIONS]
+    return text(first.get("question")), labels, count, first.get("multiSelect") is True
+
+
+def pending_item(event, raw, kind, last_tool):
+    """The question or permission request that the event reports."""
+    if event.get("mode") == "url" or event.get("notification_type") == "elicitation_url_dialog":
+        kind = "permission"
+    options, questions, multi_select = [], 0, False
+    if event.get("tool_name") == "AskUserQuestion":
+        summary, options, questions, multi_select = questions_of(event)
+    elif event.get("tool_name"):
+        summary = tool_summary(event)
+    elif kind == "permission" and last_tool and event.get("notification_type") == "permission_prompt":
+        summary = f"{last_tool.get('tool', '')}: {last_tool.get('summary', '')}".rstrip(": ")
+    else:
+        summary = text(event.get("message"))
+    url = text(event.get("url"))[:MAX_SUMMARY]
+    if url:
+        # The URL stays whole: the text before it is cut so that both fit the summary limit.
+        summary = f"{summary[: max(0, MAX_SUMMARY - len(url) - 1)]} {url}".strip()
+    # An id longer than an answer can name is replaced, so the item still has an id.
+    identity = text(event.get("tool_use_id"))
+    if not identity or len(identity) > MAX_ID:
+        identity = hashlib.sha256(raw).hexdigest()[:16]
+    return {"id": identity, "kind": kind, "summary": summary[:MAX_SUMMARY], "options": options,
+            # The source: `AskUserQuestion`, another tool, or the hook event (for example `Elicitation`).
+            # `questions` and `multi_select` describe an AskUserQuestion call; `agent answer` needs one single-select question.
+            "tool": (text(event.get("tool_name")) or text(event.get("hook_event_name")))[:MAX_TOOL], "questions": questions,
+            "multi_select": multi_select, "at": int(time.time())}
+
+
+def tmux(*args):
+    """Run tmux against the server of this session; -N never starts a server."""
+    return subprocess.run(["tmux", "-N", *args], capture_output=True, text=True, timeout=TMUX_TIMEOUT)
+
+
+def option(pane, name):
+    return tmux("show-options", "-qv", "-t", pane, name).stdout.strip()
+
+
+def answered():
+    """Print the hook output that labels an answer that an agent chose, then clear the label."""
+    event = parse(read_input())
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane or not os.environ.get("TMUX"):
+        return
+    try:
+        label = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_input"), validate=True))
+    except ValueError:
+        return
+    actor = text(label.get("actor")) if isinstance(label, dict) else ""
+    pending_id = text(label.get("pending_id")) if isinstance(label, dict) else ""
+    # An answer of another question keeps its label for that question.
+    if not actor or not pending_id or pending_id != text(event.get("tool_use_id")):
+        return
+    tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_input")
+    context = (f"The answer to this question was chosen by agent {actor} through Tokiwa, not by the owner. "
+               "It carries no owner approval.")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": context}}))
+
+
+def record(argv):
+    state = argv[0] if argv else ""
+    flags = argv[1:]
+    raw = read_input()
+    pane = os.environ.get("TMUX_PANE", "")
+    if state not in STATES or not pane or not os.environ.get("TMUX"):
+        return
+    kind = flags[flags.index("--kind") + 1] if "--kind" in flags and flags.index("--kind") + 1 < len(flags) else ""
+    event = parse(raw)
+
+    def put(name, value):
+        tmux("set-option", "-q", "-t", pane, name, value)
+
+    if state == "ended":
+        tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent")
+    elif state != "note" and option(pane, "@tokiwa_agent").partition(":")[0] != state:
+        # The time is when the state began: a report of the state that is already there keeps it.
+        put("@tokiwa_agent", f"{state}:{int(time.time())}")
+    if "--turn" in flags:
+        turn = option(pane, "@tokiwa_agent_turn")
+        put("@tokiwa_agent_turn", str(int(turn) + 1 if digits(turn) else 1))
+    for name, key in (("@tokiwa_agent_transcript", "transcript_path"), ("@tokiwa_agent_session", "session_id")):
+        if text(event.get(key)):
+            put(name, event[key])
+    if state == "note" and event.get("tool_name"):
+        # `agent answer` requires this id to be the pending id, so a tool call after a question stops the answer.
+        # An id that an answer cannot name is left out, which matches no pending item.
+        tool_use_id = text(event.get("tool_use_id"))
+        last = {"id": tool_use_id if len(tool_use_id) <= MAX_ID else "", "tool": text(event["tool_name"])[:MAX_TOOL],
+                "summary": tool_detail(event.get("tool_input"))[:MAX_SUMMARY], "at": int(time.time())}
+        put("@tokiwa_agent_last_tool", fitted(last, MAX_LAST_TOOL_BYTES))
+    if state in CLEARS_PENDING:
+        tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_pending")
+    elif state == "waiting" and kind in KINDS:
+        last_tool = {}
+        try:
+            last_tool = json.loads(base64.b64decode(option(pane, "@tokiwa_agent_last_tool")))
+        except ValueError:
+            pass
+        if not isinstance(last_tool, dict):
+            last_tool = {}
+        put("@tokiwa_agent_pending", fitted(pending_item(event, raw, kind, last_tool), MAX_PENDING_BYTES))
+
+
+def main(argv):
+    try:
+        answered() if argv == ["answered"] else record(argv)
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

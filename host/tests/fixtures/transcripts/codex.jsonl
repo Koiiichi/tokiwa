@@ -1,0 +1,12 @@
+{"timestamp": "2026-01-01T00:00:00.000Z", "type": "session_meta", "payload": {"id": "session-b", "cwd": "/project-a"}}
+{"timestamp": "2026-01-01T00:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Request one"}]}}
+{"timestamp": "2026-01-01T00:00:02.000Z", "type": "response_item", "payload": {"type": "reasoning", "summary": [], "encrypted_content": "blob-a"}}
+{"timestamp": "2026-01-01T00:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Answer one"}]}}
+{"timestamp": "2026-01-01T00:00:04.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\": [\"read-a\"]}", "call_id": "call-a"}}
+{"timestamp": "2026-01-01T00:00:05.000Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "call-a", "output": "Result body one"}}
+{"timestamp": "2026-01-01T00:00:06.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\": [\"run-b\"]}", "call_id": "call-b"}}
+{"timestamp": "2026-01-01T00:00:07.000Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "call-b", "output": "Failure body two", "success": false}}
+{"timestamp": "2026-01-01T00:00:08.000Z", "type": "event_msg", "payload": {"type": "error", "message": "Notice one"}}
+{"timestamp": "2026-01-01T00:00:09.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": null}}
+{"timestamp": "2026-01-01T00:00:10.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Request two"}]}}
+{"timestamp": "2026-01-01T00:00:11.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Answer two"}]}}

@@ -37,6 +37,9 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 | Rename a project | Double-click its title | `tokiwa move-project OLD NEW` | Rewrites the labels; sessions, folders and history stay |
 | Rename a session | Double-click its row (a single click attaches it), or Ctrl+K → Rename session | `tokiwa rename NAME NEW IDENTITY` | Renames only the session with that identity; its project, child shells and open view stay |
 | End a session | `x`, × on its row, or × on its view's title; the row asks, enter ends, `s` keeps its shells, esc or any other key keeps it | `tokiwa` `--end-confirmed NAME IDENTITY` | Ends the session and the programs in its panes; a process that detached from them keeps running until the service stops. In the app, it also ends the session's child sessions unless `s` keeps them; `--end-confirmed` ends one session |
+| End a session from a shell | — | `tokiwa end NAME IDENTITY [--attached-ok]` | The documented form of `--end-confirmed`. The host refuses while a client that can type is attached, unless `--attached-ok` |
+| Read a session's facts | — | `tokiwa state NAME IDENTITY` | See [Read a session and its agent](agents.md#read-a-session-and-its-agent). `tokiwa agent state` adds what the agent reports |
+| Claim or release the driver | — | `tokiwa claim NAME IDENTITY [--replace]`, `tokiwa release NAME IDENTITY` | The driver is the one actor, from `TOKIWA_ACTOR`, that may send to the session. A claim is refused while a client that can type is attached, and while another actor drives unless `--replace`. Only the driver releases. See [Claim and release the driver](host.md#claim-and-release-the-driver) |
 | Interrupt a session | — | `tokiwa interrupt NAME IDENTITY` | Sends Esc to the session, which stops the current turn of Claude Code or Codex |
 | Freeze a session | — | `tokiwa freeze NAME IDENTITY` | Pauses each process of the session's panes and the processes below them, until `tokiwa resume NAME IDENTITY`. The row says `frozen`. A model request in progress can be lost; files and the conversation stay. A process that left the session, for example a daemon, keeps running |
 | End a project | × on the project title, or Ctrl+K → End project, then Enter | `tokiwa forget-project PROJECT` (after its sessions end) | Ends its sessions and forgets the project; its folders and the tools' history stay |
@@ -44,7 +47,7 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 
 ## Start a program in a new session
 
-`--run` types one command line into the shell of a new session. The shell reads its startup file first, so the command has the owner's `PATH` and the [saved secrets](host.md#secrets), and the shell stays when the command ends. Tokiwa does not know what the command is: an agent, a server or a script.
+`--run` types one command line into the shell of a new session. The shell reads its startup file first, so the command has the owner's `PATH` and the [saved secrets](host.md#secrets), and the shell stays when the command ends. Tokiwa does not know what the command is: an agent, a server or a script. The line travels encrypted to the host key, so it is not kept in the AWS account: see [Encrypted input](host.md#encrypted-input).
 
 For example, a session with its own clone that starts an agent with its first message (`claude` and `codex` both take the first message as an argument):
 
@@ -54,7 +57,7 @@ tokiwa create review-a --dir /srv/development/state/workspaces/workbench/studio 
   --run 'git clone https://github.com/OWNER/app.git . && claude "Read REVIEW.md, then start."'
 ```
 
-A set of sessions that start together is a script of such lines. Keep it with your own setup; Tokiwa keeps no list of them. The command is one line of at most 2000 printable characters. It travels through Run Command, which keeps its parameters in the AWS account, so put keys in `tokiwa secret`, not in the command.
+A set of sessions that start together is a script of such lines. Keep it with your own setup; Tokiwa keeps no list of them. The command is one line of at most 2000 printable characters. It travels encrypted to the host key, so Run Command, which keeps its parameters in the AWS account, never holds the plain line. Still put keys in `tokiwa secret`, not in the command: the line shows on the screen of the session and in its shell history.
 
 ## What Tokiwa does not do
 

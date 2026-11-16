@@ -1,0 +1,11 @@
+{
+  "session_id": "claude-session-a",
+  "transcript_path": "/home/worker-a/.claude/projects/project-a/session-a.jsonl",
+  "cwd": "/workspace/project-a",
+  "permission_mode": "default",
+  "hook_event_name": "Elicitation",
+  "mcp_server_name": "server-a",
+  "message": "Please sign in",
+  "mode": "url",
+  "url": "https://auth.example.com/login"
+}

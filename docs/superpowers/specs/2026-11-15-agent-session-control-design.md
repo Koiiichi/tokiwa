@@ -44,6 +44,38 @@ Today an agent can create a session, type one line into it at creation, read the
 - The public repository holds neutral names only.
 - `terminal-session.sh` is pinned in at least one workstation's install checksums; a deployment needs that pin updated. This is an operational note, not a design input.
 
+## Layers and names (owner decision, 2026-11-15)
+
+Tokiwa stays a general remote workstation and session tool. This design has two layers:
+
+- **Core**: workstation access, sessions and terminals, lifecycle, output, status, the driver, encrypted input, the audit log, and later general command execution (`tokiwa exec`). Core never depends on the agent layer.
+- **Agent integration**: the Claude Code and Codex hooks, transcript reading, turn detection, agent questions, messages to agents and the input label. It builds on core primitives.
+
+Tokiwa offers primitives. It does not decide how an orchestrator runs a task.
+
+| Layer | CLI command | Helper mode | Notes |
+| --- | --- | --- | --- |
+| Core | `state NAME IDENTITY` | `state` | Session facts only: `name, identity, session, program, clients, writable_clients, driver, sampled_at` |
+| Core | `claim`, `release`, `end` | `claim`, `release`, `end` | Unchanged from sections 6 and 10 |
+| Core | (no command) | shared function | Input delivery: identity, driver and client checks, bracketed paste, audit. Used by the agent layer; no core command types into a session |
+| Agent | `agent state NAME IDENTITY` | `agent-state` | Core `state` plus `agent, agent_at, turn, pending, dialog` |
+| Agent | `agent wait …` | `agent-wait` | Section 4 |
+| Agent | `agent send …` | `agent-send` | Section 3: core delivery plus the agent checks |
+| Agent | `agent read …` | `agent-read` | Section 8 |
+| Agent | `agent answer …` | `agent-answer` | Section 9 |
+
+The agent layer's tmux options are `@tokiwa_agent` (state, as today), `@tokiwa_agent_turn`, `@tokiwa_agent_transcript`, `@tokiwa_agent_session`, `@tokiwa_agent_pending`, `@tokiwa_agent_last_tool` and `@tokiwa_agent_input`. Existing commands keep their names and behaviour. MCP agent tools are named `tokiwa_agent_*`; the opt-in classes stay grouped by risk (`read`, `control`, `answer`). Where later sections say `tokiwa send`, `wait`, `read` or `answer`, they mean the `tokiwa agent` form.
+
+## Input label (owner decision, 2026-11-15)
+
+Agent coordination stays separate from owner approval. Every input that the agent layer delivers is labelled inside the worker as coming from an agent, so an answer or a message never reads as the owner's word:
+
+- `agent send` puts one fixed first line before the text, added on the host: `[Message from agent ACTOR through Tokiwa. It is not from the owner and carries no owner approval.]`
+- `agent answer` records `@tokiwa_agent_input` = base64 JSON `{actor, pending_id, at}` in the same tmux queue as the keys. A synchronous Claude Code hook on `PostToolUse` of the question tool reads it; when its `pending_id` equals the tool-use id, the hook adds context to the agent: `The answer to this question was chosen by agent ACTOR through Tokiwa, not by the owner. It carries no owner approval.` It then clears the option. (Codex has no question tool, so its answers are messages and carry the message label.)
+- An orchestrator may answer any question. Tokiwa does not refuse a question by its content. Owner-reserved actions (pushes, host changes) stay gated by the agent's own permission prompts and the owner's hooks, which Tokiwa never answers.
+
+The label is a statement inside the worker's context, not a security boundary: an agent with the owner's AWS sign-in can reach the host by other paths.
+
 ## Approaches
 
 | | Approach | Trade-off | Decision |
@@ -163,7 +195,7 @@ For a session with no transcript (a shell, or an agent before its first event) `
 
 Allowed only when `@tokiwa_pending` has that `id` and `kind: question`, the caller is the driver and no writable client is attached (checked as for `send`), all in one tmux queue. `--choice N` sends the digit N (1 to 9) and Enter; `--text` sends the agent's free-text option path for that dialog, taken from real captures in task 1, with the text checks of `send`. The audit log gets `answer` with the id. There is no command that answers a `permission` item: its only key path stays `tokiwa interrupt` (Esc, a refusal). A person approves from the interface or by attaching.
 
-Which questions an orchestrator may answer is a rule for agents, not a host check: answer only what the owner's brief already answers, and pass every question that asks for an authorization to the owner (AGENTS.md section, below).
+An orchestrator may answer any question (see "Input label"); each answer is labelled in the worker as an agent's choice.
 
 ### 10. Lifecycle
 

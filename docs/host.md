@@ -97,6 +97,9 @@ systemctl start cloud-workbench.service
 | `agent-hooks.py` | `/opt/agent-platform/rootless/agent-hooks.py` | 0644 | Adds Tokiwa's state hooks to the Claude Code and Codex settings of the workbench user, or removes them. |
 | `tokiwa-run.py` | `/opt/agent-platform/rootless/tokiwa-run.py` | 0644 | The command runner. Run Command starts it as root with `python3 -I`. See [The command list](#the-command-list). |
 | `commands.json` | `/etc/tokiwa/commands.json` | 0644 | The owner's command list. The installer copies an empty list (`{"entries": {}}`) only when no file exists, and never replaces it. |
+| `tokiwa-input.py` | `/opt/agent-platform/rootless/tokiwa-input.py` | 0644 | Decrypts message text. Run Command starts it as root with `python3 -I`. See [Encrypted input](#encrypted-input). |
+| `input-key.pem` | `/etc/tokiwa/input-key.pem` | 0600 | The private key for message text. The installer makes it with `openssl req -x509 -newkey rsa:3072 -nodes -days 3650` only when the file is absent, so the certificate that the Mac pinned stays valid. |
+| `input-cert.pem` | `/etc/tokiwa/input-cert.pem` | 0644 | The certificate of that key. The Mac encrypts message text to it. |
 | `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
@@ -251,33 +254,93 @@ The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/developme
 
 ## Agent state
 
-The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE`. The command records the state, and the time that the state began, on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show.
+The agent in a session reports its state through its own hooks, which call `tokiwa-state STATE [--turn] [--kind question|permission]`. The command records the state, and the time that the state began, on the session, and the session list shows it as `agent` while `claude` or `codex` runs in a pane. A state that an ended agent left behind does not show. The command reads at most 64 KiB of the event from stdin, never blocks and always exits 0.
 
 | State | Claude Code events | Codex events |
 | --- | --- | --- |
-| `working` | `UserPromptSubmit`, `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit`, `PostToolUse` |
-| `waiting` | `PreToolUse` of `AskUserQuestion`, `Elicitation`, Notification `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog` | `PermissionRequest` |
-| `idle` | `Stop`, Notification `idle_prompt` | `Stop`, `Interrupt` |
+| `working` | `UserPromptSubmit` (with `--turn`), `PostToolUse`, `ElicitationResult`, Notification `quota_auto_resume_fired` | `UserPromptSubmit` (with `--turn`), `PostToolUse` |
+| `waiting` | `PreToolUse` of `AskUserQuestion` (`--kind question`), `Elicitation` (`--kind question`), Notification `elicitation_dialog` (`--kind question`), Notification `permission_prompt` and `elicitation_url_dialog` (`--kind permission`) | `PermissionRequest` (`--kind permission`) |
+| `idle` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, Notification `idle_prompt` | `SessionStart` `startup`, `resume`, `clear` and `fork`, `Stop`, `Interrupt` |
 | `limited` | `StopFailure` `rate_limit`, Notification `quota_auto_resume_stale` | none: Codex has no hook for a limit |
 | `error` | `StopFailure` with any other error | none |
+| `ended` | `SessionEnd` | `SessionEnd` |
+| `note` | `PreToolUse` | `PreToolUse` |
 
-The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and they run without holding the agent. Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
+`note` records the last tool call and changes no state. `ended` removes the state. A `SessionStart` of source `compact` records nothing: both agents send it after a compaction, which can happen in the middle of a turn.
+
+The command also records these options of the tmux session, which later commands read:
+
+| Option | Value |
+| --- | --- |
+| `@tokiwa_agent` | `STATE:EPOCH`. The time is when the state began. |
+| `@tokiwa_agent_turn` | The number of turns. Each event with `--turn` adds one. |
+| `@tokiwa_agent_transcript` | The `transcript_path` of the event. |
+| `@tokiwa_agent_session` | The `session_id` of the event. |
+| `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it, and so does `tokiwa interrupt`. |
+| `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `id` (the `tool_use_id` of the event), `tool`, `summary` and `at`. `tokiwa agent answer` requires this `id` to be the pending `id`, so a tool call that starts after a question stops the answer. |
+| `@tokiwa_agent_input` | The label of an answer that an agent chose: base64 of JSON with `actor`, `pending_id` and `at`. `tokiwa agent answer` sets it, and `tokiwa-state answered` prints the label for the agent and removes it. |
+
+For a pending item, `id` is the `tool_use_id` of the event, or the first 16 hex characters of the SHA-256 of the event when it has none. `summary` is at most 500 characters: the question text, the message of the notification, or the tool and its command. A URL of the event stays whole at the end of the summary, and the text before it is cut. `options` lists the option labels of a question: at most 20, of at most 200 characters each. An `id` over 128 characters, which `agent answer` cannot name, is replaced by the hash. The encoded value of the item is at most 6144 bytes, and of `@tokiwa_agent_last_tool` at most 3072 bytes: options are dropped from the end, then the summary is cut, until it fits. `agent answer` puts both values into one tmux command, which tmux limits to about 16 KiB. `tool` is the tool of the event, or the name of the hook event when it has no tool (for example `Elicitation`). For `AskUserQuestion`, `questions` is the number of questions and `multi_select` says whether the first allows several choices; both are 0 and false for other items. An elicitation of `url` mode is a `permission`, even when the hook says `--kind question`. A permission notification of Claude Code names the last tool that `note` recorded, because the notification itself holds only a message.
+
+The installer adds these hooks with `agent-hooks.py install` to `~/.claude/settings.json` and `~/.codex/hooks.json` of the workbench user. They come after the hooks that are there already, which stay as they are, and the Claude Code hooks run without holding the agent, except `tokiwa-state answered`, a synchronous hook on `PostToolUse` of `AskUserQuestion` with a timeout of 5 seconds. The Codex hooks have a timeout of 5 seconds and no `async` (see [The label of an answer](agents.md#the-label-of-an-answer)). Codex runs a new hook only after a person trusts it: start a Codex session and accept Tokiwa's hooks once. `agent-hooks.py remove` takes them out again.
 
 What the states cannot tell:
 
 - Claude Code reports a permission prompt about six seconds after it appears.
-- Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself; after an Esc that you type, the state changes at the next turn or after a minute of no input.
+- Claude Code reports no event when Esc stops a turn. `tokiwa interrupt` sets `idle` itself and removes the pending item; after an Esc that you type, the state changes at the next turn or after a minute of no input.
 - Whether a usage limit of a Claude plan arrives as `rate_limit` is not documented.
+
+### Layers and read modes
+
+Tokiwa has two layers. The core layer is sessions, their lifecycle, status and the driver. The agent layer is what depends on Claude Code or Codex: the hooks and their options above, and the screen check. Core never calls the agent layer. Options of the agent layer start with `@tokiwa_agent`; `@tokiwa_driver` and `@tokiwa_project` belong to core. In `terminal-session.sh`, one Python library serves the core modes, and a second library, in a section marked as the agent layer, serves the agent modes.
+
+| Mode | Layer | Prints |
+| --- | --- | --- |
+| `state NAME IDENTITY` | Core | The facts of a session: `name`, `identity`, `session`, `program`, `clients`, `writable_clients`, `driver`, `sampled_at`. It reads no screen. |
+| `agent-state NAME IDENTITY` | Agent | The same, and `agent`, `agent_at`, `turn`, `pending` and `dialog` |
+| `agent-wait NAME IDENTITY AFTER_TURN` | Agent | The `agent-state` object with a `reason`. It polls every 0.5 seconds for up to `TOKIWA_WAIT_SECONDS` seconds (default 20). |
+
+No mode of this table seals its output or writes to the audit log. The fields and reasons are in [Read a session and its agent](agents.md#read-a-session-and-its-agent). A mode reads the identity, the options and the active pane in one tmux call, so the fields agree. `writable_clients` counts the clients of the session that the identity names, whose `#{client_readonly}` is 0.
+
+The screen check of the agent layer reads the last 15 lines of the active pane with `capture-pane -p -J` and matches the regular expressions of `DIALOG_MARKERS` for the running agent, `claude` or `codex`. Other programs have no markers. The markers are the expected shapes of dialogs, not verified ones: they are checked against live screens in a later step, and `terminal-session.sh` is where to change them when a live screen shows a dialog that they miss.
+
+### End a session
+
+`end NAME IDENTITY` checks the identity and ends the session in one tmux queue, as it always did. `end NAME IDENTITY check-clients` first reads the clients of the session, and refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while any client can type; a client that watches read only does not count. The queue then also checks that `#{session_attached}` is still the number that was read, so a client that attaches in between stops the end. The launcher sends `check-clients` for `tokiwa end` and no flag for `--attached-ok` or `--end-confirmed`. So `--attached-ok` and `--end-confirmed` end a session with a helper of any version, but `tokiwa end` needs an updated helper: an older helper refuses the extra argument with `Too many arguments.` and ends nothing. The refusal sentences go through a tmux format and `display-message -p`, so they hold no comma and no single quote.
+
+### Claim and release the driver
+
+The driver of a session is the tmux option `@tokiwa_driver`: the actor that may send input to the session or answer in it. `create` sets it to `TOKIWA_ACTOR` when the caller has a valid actor and the session has no driver yet, in one tmux command, so that a claim made since the session was created is kept. It leaves it empty otherwise. If tmux refuses that command, `create` fails with `The terminal was created, but its driver could not be set. Nothing was typed into it. Refresh the session state.` `claim NAME IDENTITY [replace]` sets it to the caller; `release NAME IDENTITY` clears it. Both refuse without a valid `TOKIWA_ACTOR` (1 to 64 letters, digits, dots, colons, hyphens or underscores, starting with a letter or digit).
+
+`claim` reads the clients of the session first and refuses with `A client is attached. Nothing was changed.` while any client can type. The queue then checks, in one tmux call, that the identity matches, that `#{session_attached}` is still the number of clients that was read, and that the session has no driver or the caller is the driver. With `replace`, the last check passes. A refusal names its cause: `Session identity changed. Nothing was changed.`, `A client is attached. Nothing was changed.` or `Another actor is the driver. Nothing was changed. Use --replace to take it.` `release` refuses with `Only the driver can release. Nothing was changed.` when another actor, or no actor, is the driver. A read-only viewer does not count as a client for `claim`.
+
+## Encrypted input
+
+Message text, for example the command line of `tokiwa create --run`, reaches the host only encrypted to the host input certificate. Run Command keeps its parameters in the account, so a plain line would stay there. The launcher encrypts the text with `openssl smime -encrypt -aes256 -binary -outform DER` and sends it as base64. Run Command starts [`tokiwa-input.py`](../host/tokiwa-input.py) as root. It decrypts with `/etc/tokiwa/input-key.pem` and prints the text on stdout, into a pipe to the helper:
+
+```sh
+bash -c 'set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input.py SEALED | sudo -n runuser -u agent-workspace -- ... terminal-session.sh MODE ARGS'
+```
+
+The launcher puts the fixed line `tokiwa-input-v1` before the text, and `tokiwa-input.py` refuses text that does not start with exactly that line. Without the line, a wrong key could pass: when no recipient matches, `openssl smime -decrypt` without `-recip` tries a random key, and about 1 time in 256 it exits 0 with garbage. The program removes the line before it prints the text. It calls `/usr/bin/openssl` by absolute path.
+
+The helper reads the text from stdin, as strict UTF-8, and refuses text that is not. The text is never an argument of a process, a file, a log line or output of Run Command. `create` gives the line to tmux on stdin (`load-buffer -b NAME -`), pastes it with `paste-buffer -d -b NAME`, and deletes the buffer if a step fails, so `ps`, `/proc/*/cmdline` and an audit of `execve` do not show it. Two things can still record it. A `log_input` setting in sudoers on the host records the stdin of the helper, which holds the plain text, so the host must not set it for `agent-workspace`. The line also appears on the screen of the session, as any typed command does. A request says that its text is on stdin, for example `{"run_stdin": true}` in `create`; the helper applies its usual checks to what it reads. A message that cannot be decrypted, with a wrong or missing key or bad base64, exits 1 with `The message could not be decrypted with the host input key. Nothing was sent.`, and the helper then gets no text and refuses. Plain text over `MAX_MESSAGE_BYTES` (16384) is refused with `The message is longer than 16384 bytes. Nothing was sent.`
+
+The limit follows the size limit of a Run Command call. The documentation of `SendCommand` gives 64 KB as the size limit of a document (`MaxDocumentSizeExceeded`, https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_SendCommand.html) and states no other limit for the parameters of `AWS-RunShellScript`. A message of 16384 bytes becomes about 24 KB of base64 with the envelope, 38% of 64 KB, which leaves more than the 20% margin.
+
+The launcher pins the certificate on first use: see [the pin](configuration.md#files). `tokiwa input-cert` prints the certificate that the host shows now, for a comparison with the pin.
+
+Update the host with `host/install.sh` before you update the launcher on the Mac. A host from before encrypted input has no input key. A new launcher then refuses `create --run`, `agent send` and `agent answer --text` with `The host has no input key. Update the host with host/install.sh.` and `Nothing was created.` or `Nothing was sent.`, and creates or sends nothing. It never falls back to plain text.
 
 ## Audit log
 
-The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze` and `resume`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send` and `answer`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
 
 ```json
 {"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}
 ```
 
-`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
+`via` is the interface that asked: `cli` for the `tokiwa` command, `mcp` for the MCP server, `app` for the interface. `actor` is there when the caller set `TOKIWA_ACTOR`, for example an orchestrator that names its own session. A `create` also has `run`, which says whether a command ran in the new session; the log never holds the command. A `claim` with `--replace` has `replaced`, the name of the driver that it took the session from. An `answer` has `pending`, the id of the item that it answered. A refused action is not logged. `tokiwa audit` prints the last 50 lines. The log is a record of what happened and when, not proof of who did it. `via` is what the caller says, so a program with a shell can name any interface, and two agents that use the same interface look the same. A program on the host that runs as the workbench user can also write to the log.
 
 ## The command list
 

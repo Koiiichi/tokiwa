@@ -30,12 +30,12 @@ OTHER_CODEX = {
 
 
 def states(config, event):
-    """The (matcher, state) pairs of Tokiwa's hooks for one event."""
+    """The (matcher, arguments) pairs of Tokiwa's hooks for one event."""
     found = []
     for group in config["hooks"].get(event, []):
         for handler in group["hooks"]:
             if handler["command"].startswith(STATE + " "):
-                found.append((group.get("matcher"), handler["command"].split()[-1]))
+                found.append((group.get("matcher"), handler["command"][len(STATE) + 1:]))
     return found
 
 
@@ -68,15 +68,37 @@ class AgentHooks(unittest.TestCase):
             for event, groups in other["hooks"].items():
                 self.assertEqual(config["hooks"][event][: len(groups)], groups)
         self.assertEqual(states(claude, "Stop"), [(None, "idle")])
-        self.assertEqual(states(claude, "PreToolUse"), [("AskUserQuestion", "waiting")])
+        self.assertEqual(states(claude, "PreToolUse"), [(None, "note"), ("AskUserQuestion", "waiting --kind question")])
+        self.assertEqual(states(claude, "UserPromptSubmit"), [(None, "working --turn")])
+        # Compaction also starts a session, often mid-turn: it must not mark the agent idle.
+        self.assertEqual(states(claude, "SessionStart"), [("startup|resume|clear|fork", "idle")])
+        self.assertEqual(states(claude, "SessionEnd"), [(None, "ended")])
+        self.assertEqual(states(claude, "Elicitation"), [(None, "waiting --kind question")])
         self.assertIn(("rate_limit", "limited"), states(claude, "StopFailure"))
-        self.assertIn(("permission_prompt|elicitation_dialog|elicitation_url_dialog", "waiting"),
+        self.assertIn(("permission_prompt|elicitation_url_dialog", "waiting --kind permission"),
                       states(claude, "Notification"))
-        self.assertEqual(states(codex, "PermissionRequest"), [(None, "waiting")])
+        self.assertIn(("elicitation_dialog", "waiting --kind question"), states(claude, "Notification"))
+        self.assertEqual(states(codex, "PermissionRequest"), [(None, "waiting --kind permission")])
+        self.assertEqual(states(codex, "UserPromptSubmit"), [(None, "working --turn")])
+        self.assertEqual(states(codex, "PreToolUse"), [(None, "note")])
+        self.assertEqual(states(codex, "SessionStart"), [("startup|resume|clear|fork", "idle")])
+        self.assertEqual(states(codex, "SessionEnd"), [(None, "ended")])
         self.assertEqual(states(codex, "Interrupt"), [(None, "idle")])
         claude_handler = claude["hooks"]["Stop"][-1]["hooks"][0]
         self.assertTrue(claude_handler["async"])
+        # The answered hook adds context to the agent, so it is synchronous and has a timeout.
+        self.assertIn(("AskUserQuestion", "answered"), states(claude, "PostToolUse"))
+        answered = [h for g in claude["hooks"]["PostToolUse"] if g.get("matcher") == "AskUserQuestion" for h in g["hooks"]
+                    if h["command"].endswith(" answered")][0]
+        self.assertNotIn("async", answered)
+        self.assertEqual(answered["timeout"], 5)
         self.assertEqual(codex["hooks"]["Stop"][-1]["hooks"][0]["timeout"], 5)
+
+    def test_install_replaces_an_earlier_hook_that_has_no_arguments_after_the_state(self):
+        self.claude.write_text(json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": STATE + " working"}]}]}}))
+        self.run_script("install")
+        self.assertEqual(states(self.read(self.claude), "Stop"), [(None, "idle")])
 
     def test_a_second_install_changes_nothing(self):
         self.run_script("install")

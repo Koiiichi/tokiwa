@@ -6,18 +6,28 @@ import sys
 from pathlib import Path
 
 COMMAND = "/usr/local/bin/tokiwa-state"
-# (event, matcher or None, state). Claude Code reports no event when Esc stops a turn: tokiwa interrupt
-# sets idle itself, and idle_prompt covers an Esc that a person typed.
+# (event, matcher or None, arguments of tokiwa-state, and optionally the handler of this row). A row without
+# a handler uses the handler of its agent. Claude Code reports no event when Esc stops a turn:
+# tokiwa interrupt sets idle itself, and idle_prompt covers an Esc that a person typed.
+# The sources of SessionStart that start a new turn loop. `compact` is left out: both agents also fire SessionStart
+# after a compaction, which can come in the middle of a turn, and the agent is not idle then.
+SESSION_STARTS = "startup|resume|clear|fork"
 CLAUDE = [
-    ("UserPromptSubmit", None, "working"),
+    ("UserPromptSubmit", None, "working --turn"),
+    ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
-    ("PreToolUse", "AskUserQuestion", "waiting"),
-    ("Notification", "permission_prompt|elicitation_dialog|elicitation_url_dialog", "waiting"),
+    # The one synchronous hook: Claude Code waits for its output, which adds the input label to the context.
+    ("PostToolUse", "AskUserQuestion", "answered", {"timeout": 5}),
+    ("PreToolUse", "AskUserQuestion", "waiting --kind question"),
+    ("Notification", "permission_prompt|elicitation_url_dialog", "waiting --kind permission"),
+    ("Notification", "elicitation_dialog", "waiting --kind question"),
     ("Notification", "idle_prompt", "idle"),
     ("Notification", "quota_auto_resume_fired", "working"),
     ("Notification", "quota_auto_resume_stale", "limited"),
-    ("Elicitation", None, "waiting"),
+    ("Elicitation", None, "waiting --kind question"),
     ("ElicitationResult", None, "working"),
+    ("SessionStart", SESSION_STARTS, "idle"),
+    ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("StopFailure", "rate_limit", "limited"),
     (
@@ -29,9 +39,12 @@ CLAUDE = [
 ]
 # Codex has no hook for a rate limit, so a Codex agent never reports limited.
 CODEX = [
-    ("UserPromptSubmit", None, "working"),
+    ("UserPromptSubmit", None, "working --turn"),
+    ("PreToolUse", None, "note"),
     ("PostToolUse", None, "working"),
-    ("PermissionRequest", None, "waiting"),
+    ("PermissionRequest", None, "waiting --kind permission"),
+    ("SessionStart", SESSION_STARTS, "idle"),
+    ("SessionEnd", None, "ended"),
     ("Stop", None, "idle"),
     ("Interrupt", None, "idle"),
 ]
@@ -58,9 +71,9 @@ def merged(config, table, handler):
     places, and with them their trust.
     """
     hooks = without_ours(config.get("hooks", {}))
-    for event, matcher, state in table:
+    for event, matcher, arguments, *own in table:
         group = {"matcher": matcher} if matcher else {}
-        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {state}", **handler}]
+        group["hooks"] = [{"type": "command", "command": f"{COMMAND} {arguments}", **(own[0] if own else handler)}]
         hooks.setdefault(event, []).append(group)
     return {**config, "hooks": hooks}
 
@@ -93,7 +106,7 @@ def main(argv):
     # Both files are read before either is written, so a file that cannot be read changes nothing.
     claude, codex = read(claude_path), read(codex_path)
     if action == "install":
-        # An async hook never holds the agent; Claude Code waits for no result from it.
+        # An async hook never holds the agent; Claude Code waits for no result from it. A row with its own handler is the exception.
         claude = merged(claude, CLAUDE, {"async": True})
         codex = merged(codex, CODEX, {"timeout": 5})
     else:

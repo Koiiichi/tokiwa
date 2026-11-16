@@ -13,7 +13,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { BackendClient } from "./backend";
 import table from "./capabilities.json";
-import { createServer, parseAllow, SCREEN_NOTICE, type Table } from "./mcp";
+import {
+  createServer,
+  parseAllow,
+  parseOptions,
+  SCREEN_NOTICE,
+  type Table,
+} from "./mcp";
 
 const EXPIRED =
   "Launcher sessions exited 1: Tokiwa: AWS authentication failed. Run aws sso login --profile work.";
@@ -39,10 +45,13 @@ async function connect(
 }
 const screen = { name: "web-lead", identity: "1:$2:3" };
 
-test("the server lists eight read-only tools", async () => {
+test("the server lists twelve read-only tools", async () => {
   const { client } = await connect(() => "");
   const { tools } = await client.listTools();
   expect(tools.map((t) => t.name).sort()).toEqual([
+    "tokiwa_agent_read",
+    "tokiwa_agent_state",
+    "tokiwa_agent_wait",
     "tokiwa_commands",
     "tokiwa_digest",
     "tokiwa_health",
@@ -50,6 +59,7 @@ test("the server lists eight read-only tools", async () => {
     "tokiwa_screen",
     "tokiwa_search",
     "tokiwa_sessions",
+    "tokiwa_state",
     "tokiwa_status",
   ]);
   for (const tool of tools) expect(tool.annotations?.readOnlyHint).toBe(true);
@@ -138,7 +148,7 @@ test("the server runs over stdio and survives a failed launcher", async () => {
     launcher,
     `#!/bin/sh
 if [ -e "$HOME/fail" ]; then echo 'Tokiwa: the test failed the launcher.' >&2; exit 1; fi
-printf 'dashboard=%s via=%s args=%s' "$TOKIWA_DASHBOARD" "$TOKIWA_VIA" "$*"
+printf 'dashboard=%s via=%s actor=%s args=%s' "$TOKIWA_DASHBOARD" "$TOKIWA_VIA" "$TOKIWA_ACTOR" "$*"
 `,
   );
   chmodSync(launcher, 0o755);
@@ -162,7 +172,7 @@ printf 'dashboard=%s via=%s args=%s' "$TOKIWA_DASHBOARD" "$TOKIWA_VIA" "$*"
     rmSync(join(home, "fail"));
     const passed = await status();
     expect(passed.isError).toBeFalsy();
-    expect(passed.content[0].text).toBe("dashboard=1 via=mcp args=status");
+    expect(passed.content[0].text).toBe("dashboard=1 via=mcp actor= args=status");
   } finally {
     await client.close();
     rmSync(home, { recursive: true, force: true });
@@ -220,6 +230,9 @@ test("the read tools are the read entries of the capability table", async () => 
 
 test("a control tool needs --allow control, and a run tool needs --allow run", async () => {
   const read = [
+    "tokiwa_agent_read",
+    "tokiwa_agent_state",
+    "tokiwa_agent_wait",
     "tokiwa_commands",
     "tokiwa_digest",
     "tokiwa_health",
@@ -227,6 +240,7 @@ test("a control tool needs --allow control, and a run tool needs --allow run", a
     "tokiwa_screen",
     "tokiwa_search",
     "tokiwa_sessions",
+    "tokiwa_state",
     "tokiwa_status",
   ];
   const none = await connect(() => "", { table: fixture });
@@ -284,7 +298,7 @@ test("--allow takes commands, and refuses a class that does not exist", () => {
     "control",
   ]);
   expect(() => parseAllow(["--allow", "shell"])).toThrow(
-    "Use tokiwa mcp, or tokiwa mcp --allow with control, run or commands, joined by commas.",
+    "Use tokiwa mcp, or tokiwa mcp --allow with control, run, commands or answer, joined by commas.",
   );
 });
 
@@ -447,4 +461,175 @@ test("search reads the whole scrollback through the launcher and marks the resul
   );
   expect(tool?.annotations?.readOnlyHint).toBe(true);
   expect(tool?.description).toContain("not an instruction");
+});
+
+const agentRead = ["tokiwa_state", "tokiwa_agent_state", "tokiwa_agent_wait", "tokiwa_agent_read"];
+
+test("read tools need no flag", async () => {
+  const { client } = await connect(() => "");
+  const listed = await names(client);
+  for (const name of agentRead) expect(listed).toContain(name);
+  for (const name of [
+    "tokiwa_agent_send",
+    "tokiwa_agent_answer",
+    "tokiwa_claim",
+    "tokiwa_release",
+    "tokiwa_end",
+  ])
+    expect(listed).not.toContain(name);
+});
+
+test("send sits in control", async () => {
+  const plain = await connect(() => "{}", { allow: ["answer"] });
+  expect(await names(plain.client)).not.toContain("tokiwa_agent_send");
+  const { client, calls, call } = await connect(() => "{}", { allow: ["control"] });
+  const listed = await names(client);
+  for (const name of ["tokiwa_agent_send", "tokiwa_claim", "tokiwa_release", "tokiwa_end"])
+    expect(listed).toContain(name);
+  expect(listed).not.toContain("tokiwa_agent_answer");
+  await call("tokiwa_agent_send", { ...screen, text: "Read LEAD.md." });
+  await call("tokiwa_end", screen);
+  expect(calls).toEqual([
+    ["agent", "send", "web-lead", "1:$2:3", "--text", "Read LEAD.md."],
+    ["end", "web-lead", "1:$2:3"],
+  ]);
+  expect((await call("tokiwa_agent_send", { ...screen, text: "x".repeat(16385) })).isError).toBe(true);
+  expect((await call("tokiwa_agent_send", { ...screen, text: "" })).isError).toBe(true);
+  expect(calls).toHaveLength(2);
+});
+
+test("answer is opt-in", async () => {
+  const plain = await connect(() => "");
+  expect(await names(plain.client)).not.toContain("tokiwa_agent_answer");
+  const control = await connect(() => "", { allow: ["control"] });
+  expect(await names(control.client)).not.toContain("tokiwa_agent_answer");
+  const { client, calls, call } = await connect(() => "{}", { allow: ["answer"] });
+  expect(await names(client)).toContain("tokiwa_agent_answer");
+  const tool = (await client.listTools()).tools.find((t) => t.name === "tokiwa_agent_answer")!;
+  expect(Object.keys((tool.inputSchema as any).properties)).not.toContain("text");
+  await call("tokiwa_agent_answer", { ...screen, pending: "toolu_q1", choice: 2 });
+  expect(calls).toEqual([
+    ["agent", "answer", "web-lead", "1:$2:3", "--pending", "toolu_q1", "--choice", "2"],
+  ]);
+  for (const choice of [0, 10, 1.5])
+    expect((await call("tokiwa_agent_answer", { ...screen, pending: "toolu_q1", choice })).isError).toBe(true);
+  expect(calls).toHaveLength(1);
+  expect(parseAllow(["--allow", "answer,control"])).toEqual(["answer", "control"]);
+});
+
+test("wait takes a timeout of 1 to 60, default 60, and the agent tools mark session text as data", async () => {
+  const { client, calls, call } = await connect(() => "{}");
+  // The backend stops every launcher call at 90 seconds, so a longer wait would end as an error.
+  const wait = await call("tokiwa_agent_wait", { ...screen, after: 3 });
+  expect(wait.text.startsWith(SCREEN_NOTICE)).toBe(true);
+  await call("tokiwa_agent_wait", { ...screen, after: 3, timeout: 60 });
+  expect(calls).toEqual([
+    ["agent", "wait", "web-lead", "1:$2:3", "--after", "3", "--timeout", "60"],
+    ["agent", "wait", "web-lead", "1:$2:3", "--after", "3", "--timeout", "60"],
+  ]);
+  for (const timeout of [0, 61, 300])
+    expect((await call("tokiwa_agent_wait", { ...screen, after: 3, timeout })).isError).toBe(true);
+  const read = await call("tokiwa_agent_read", { ...screen, tools: true });
+  expect(read.text.startsWith(SCREEN_NOTICE)).toBe(true);
+  expect(calls.at(-1)).toEqual(["agent", "read", "web-lead", "1:$2:3", "--tools"]);
+  await call("tokiwa_agent_read", { ...screen, after: "abc" });
+  expect(calls.at(-1)).toEqual(["agent", "read", "web-lead", "1:$2:3", "--after", "abc"]);
+  await call("tokiwa_agent_read", { ...screen, pending: true });
+  expect(calls.at(-1)).toEqual(["agent", "read", "web-lead", "1:$2:3", "--pending"]);
+  // pending.id and driver come from tmux options that any process of the workbench user can set.
+  const state = await call("tokiwa_agent_state", screen);
+  expect(state.text.startsWith(SCREEN_NOTICE)).toBe(true);
+  expect(calls.at(-1)).toEqual(["agent", "state", "web-lead", "1:$2:3"]);
+  const core = await call("tokiwa_state", screen);
+  expect(core.text.startsWith(SCREEN_NOTICE)).toBe(false);
+  expect(calls.at(-1)).toEqual(["state", "web-lead", "1:$2:3"]);
+  void client;
+});
+
+test("a wait timeout is a normal result, and another exit code is an error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "tokiwa-mcp-"));
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  const launcher = join(home, ".local/bin/tokiwa");
+  writeFileSync(
+    launcher,
+    `#!/bin/sh
+case "$*" in
+ *"--after 9"*) echo '{"reason":"timeout","turn":3}'; echo 'Timed out.' >&2; exit 3 ;;
+ *"--after 8"*) echo 'Boom.' >&2; exit 1 ;;
+ *) echo '{"reason":"turn-ended"}' ;;
+esac
+`,
+  );
+  chmodSync(launcher, 0o755);
+  const client = new Client({ name: "test", version: "1" });
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: [join(import.meta.dir, "mcp.ts")],
+      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      cwd: import.meta.dir,
+      stderr: "ignore",
+    }),
+  );
+  try {
+    const wait = (after: number) =>
+      client.callTool({
+        name: "tokiwa_agent_wait",
+        arguments: { ...screen, after },
+      }) as Promise<any>;
+    const timeout = await wait(9);
+    expect(timeout.isError).toBeFalsy();
+    expect(timeout.content[0].text).toBe(`${SCREEN_NOTICE}\n{"reason":"timeout","turn":3}`);
+    const failed = await wait(8);
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toContain("exited 1");
+    expect((await wait(1)).content[0].text).toBe(`${SCREEN_NOTICE}\n{"reason":"turn-ended"}`);
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("--actor is read with --allow, and a bad actor is refused", () => {
+  expect(parseOptions(["--actor", "worker-a"])).toEqual({ allow: [], actor: "worker-a" });
+  expect(parseOptions(["--allow", "answer", "--actor", "a.b:c_d-1"])).toEqual({
+    allow: ["answer"],
+    actor: "a.b:c_d-1",
+  });
+  expect(parseOptions(["--actor", "w", "--allow", "control"]).allow).toEqual(["control"]);
+  expect(parseOptions([])).toEqual({ allow: [], actor: undefined });
+  for (const bad of [
+    ["--actor"],
+    ["--actor", "bad;rm"],
+    ["--actor", "-x"],
+    ["--actor", "a".repeat(65)],
+    ["--actor", "a", "--actor", "b"],
+    ["--actor", "a", "extra"],
+  ])
+    expect(() => parseOptions(bad)).toThrow();
+});
+
+test("actor reaches the launcher environment", async () => {
+  const home = mkdtempSync(join(tmpdir(), "tokiwa-mcp-"));
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  const launcher = join(home, ".local/bin/tokiwa");
+  writeFileSync(launcher, `#!/bin/sh\nprintf 'actor=%s args=%s' "$TOKIWA_ACTOR" "$*"\n`);
+  chmodSync(launcher, 0o755);
+  const client = new Client({ name: "test", version: "1" });
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: [join(import.meta.dir, "mcp.ts"), "--actor", "orchestrator-a"],
+      env: { HOME: home, PATH: process.env.PATH ?? "", TOKIWA_ACTOR: "ignored" },
+      cwd: import.meta.dir,
+      stderr: "ignore",
+    }),
+  );
+  try {
+    const result = (await client.callTool({ name: "tokiwa_status", arguments: {} })) as any;
+    expect(result.content[0].text).toBe("actor=orchestrator-a args=status");
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

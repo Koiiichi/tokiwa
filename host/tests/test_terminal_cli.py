@@ -36,13 +36,43 @@ case "$*" in
  *describe-addresses*) echo '[]' ;;
  *send-command*) echo test-command ;;
  *get-command-invocation*StandardOutputContent*)
-  if grep -q 'terminal-session.sh digest' "$HOME/calls"; then
+  # The newest Run Command call decides the result for state and wait.
+  last=$(grep 'send-command' "$HOME/calls" | tail -1)
+  core='"name": "lead", "identity": "1:$2:3", "session": "live", "program": "claude", "clients": %s, "writable_clients": %s, "driver": null, "sampled_at": 2'
+  agent='"agent": "idle", "agent_at": 1, "turn": 4, "pending": null, "dialog": false'
+  if [[ $last == *'input-cert.pem'* && -n ${TEST_NO_INPUT_KEY:-} ]]; then
+   # A host from before encrypted input: the check of the launcher finds no certificate.
+   echo tokiwa-no-input-key
+  elif [[ $last == *'input-cert.pem'* ]]; then
+   # The host input certificate; the key stays here so that a test can decrypt what was sealed.
+   [ -e "$HOME/host-input-cert.pem" ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout "$HOME/host-input-key.pem" -out "$HOME/host-input-cert.pem" -subj /CN=tokiwa-input -days 1 >/dev/null 2>&1
+   cat "$HOME/host-input-cert.pem"
+  elif [ -n "${TEST_FETCH_FAIL:-}" ] && [[ $last == *'terminal-session.sh agent-wait '* ]]; then
+   exit 1
+  elif [[ $last == *'terminal-session.sh state '* ]]; then
+   printf "{$core}\\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}"
+  elif [[ $last == *'terminal-session.sh agent-state '* ]]; then
+   printf "{$core, $agent}\\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}"
+  elif [[ $last == *'terminal-session.sh agent-wait '* ]]; then
+   # TEST_WAIT_REASONS lists the reason of each call; the last one repeats.
+   count=$(( $(cat "$HOME/wait-count" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$HOME/wait-count"
+   read -ra reasons <<< "${TEST_WAIT_REASONS:-turn-ended}"
+   index=$(( count > ${#reasons[@]} ? ${#reasons[@]} - 1 : count - 1 ))
+   printf "{$core, $agent, \\"reason\\": \\"%s\\"}\\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}" "${reasons[$index]}"
+  elif grep -q 'terminal-session.sh digest' "$HOME/calls"; then
    now=$(date +%s)
    printf '{"sampled_at": %s, "sessions": [{"name": "lead-a", "identity": "1:$2:3", "active_at": %s, "agent": {"state": "waiting", "at": %s}, "git": {"branch": "main", "unpushed": 2, "changed": 1, "commit": "abc1234", "committed_at": %s}}, {"name": "notes", "identity": "1:$3:3", "active_at": %s, "agent": null, "git": null}]}\n' "$now" "$now" "$((now - 180))" "$((now - 7200))" "$((now - 86400))"
   elif grep -q 'tokiwa-run.py \(start\|status\)' "$HOME/calls"; then
    cert=$(grep -oE 'tokiwa-run.py (start [A-Za-z0-9+/=]+|status [^ ]+ [0-9]+) [A-Za-z0-9+/=]+' "$HOME/calls" | tail -1 | awk '{print $NF}')
    printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
    printf '{"id": "20261112T183000-7f3a", "state": "done", "exit": 0, "text": "ok"}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\\n'
+   echo
+  elif [[ $last == *'terminal-session.sh agent-read '* ]]; then
+   ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
+   # Act as the host: encrypt to the certificate that the launcher sent.
+   cert=$(grep -o "agent-read [^ ]* '[^']*' [^ ]* [^ ]* [A-Za-z0-9+/=]*" "$HOME/calls" | tail -1 | awk '{print $NF}')
+   printf '%s' "$cert" | base64 --decode > "$HOME/recipient.pem"
+   printf '{"events": [], "cursor": "0123456789ab:0", "more": false, "transcript_changed": false}' | openssl smime -encrypt -aes256 -binary -outform DER "$HOME/recipient.pem" | base64 | tr -d '\n'
    echo
   elif grep -q 'terminal-session.sh capture' "$HOME/calls"; then
    ls -l "$TMPDIR"/*/ >> "$HOME/modes" 2>/dev/null || true
@@ -175,14 +205,82 @@ esac
         calls = (self.home / 'calls').read_text()
         self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'project': 'proj'})
 
-    def test_create_sends_the_command_to_run_encoded(self):
+    def test_create_sends_the_command_to_run_encrypted(self):
         command = 'git clone https://example.com/app.git . && claude "Read LEAD.md and start."'
         result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--subfolder', 'lead', '--run', command)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = (self.home / 'calls').read_text()
-        self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'run': command})
-        # The quotes and && of the command never reach the remote shell unencoded.
+        # The request names stdin; the line is in the sealed argument of the input program.
+        self.assertEqual(self.encoded_payload(calls, 'create'),
+                         {'dir': '/w/proj', 'subfolder': 'lead', 'run_stdin': True})
         self.assertNotIn('Read LEAD.md', calls)
+        # The host sees one marker line, then the line of the command.
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + command.encode())
+
+    def host_decrypt(self, calls):
+        """Decrypt the sealed argument of tokiwa-input.py in the last recorded call, as the host does."""
+        sealed = re.findall(r'tokiwa-input\.py ([A-Za-z0-9+/=]+)', calls)[-1]
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey',
+                                 str(self.home / 'host-input-key.pem')],
+                                input=base64.b64decode(sealed), capture_output=True, check=True)
+        return opened.stdout
+
+    def test_create_run_text_is_not_in_the_run_command_parameters(self):
+        command = 'echo marker-text-9f3c'
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.home / 'calls').read_text()
+        encoded = base64.b64encode(command.encode()).decode()
+        self.assertNotIn('marker-text', calls)
+        self.assertNotIn(encoded, calls)
+        self.assertNotIn(encoded.rstrip('='), calls)
+        # The host decrypts as root and pipes the text to the helper, which reads it from stdin.
+        send = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(send, r'set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace')
+
+    def test_first_use_pins_the_host_certificate(self):
+        pin = self.home / '.config/tokiwa/input-cert.pem'
+        self.assertFalse(pin.exists())
+        for _ in range(2):
+            result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(pin.read_text(), (self.home / 'host-input-cert.pem').read_text())
+        # The second call used the pin: the certificate was fetched once.
+        calls = (self.home / 'calls').read_text()
+        self.assertEqual(calls.count('cat /etc/tokiwa/input-cert.pem'), 1)
+
+    def test_a_host_without_an_input_key_fails_closed(self):
+        # A new launcher with an old host: nothing falls back to plain text, and nothing is created or sent.
+        self.env['TEST_NO_INPUT_KEY'] = '1'
+        for args, sentence in [(('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi'),
+                                'The host has no input key. Update the host with host/install.sh. Nothing was created.'),
+                               (('agent', 'send', 'lead', '1:$2:3', '--text', 'Read LEAD.md.'),
+                                'The host has no input key. Update the host with host/install.sh. Nothing was sent.')]:
+            self.env['TOKIWA_ACTOR'] = 'worker-a'
+            result = self.run_cli(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn(sentence, result.stderr)
+            calls = (self.home / 'calls').read_text()
+            self.assertNotIn('terminal-session.sh create', calls)
+            self.assertNotIn('terminal-session.sh agent-send', calls)
+            self.assertNotIn('tokiwa-input.py', calls)
+            self.assertNotIn('Read LEAD.md', calls)
+        self.assertFalse((self.home / '.config/tokiwa/input-cert.pem').exists())
+
+    def test_input_cert_prints_the_host_certificate(self):
+        result = self.run_cli('input-cert')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, (self.home / 'host-input-cert.pem').read_text())
+        self.assertFalse((self.home / '.config/tokiwa/input-cert.pem').exists())
+
+    def test_decrypt_refusal_prints_the_pin_advice(self):
+        # The key is pinned first. The host then refuses the message, as it does after a key change.
+        self.assertEqual(self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi').returncode, 0)
+        self.env.update(TEST_STATUS='Failed', TEST_STDERR='The message could not be decrypted with the host input key. Nothing was sent.')
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('The host input key changed or is missing. Check the host, then delete '
+                      '~/.config/tokiwa/input-cert.pem to pin the new key.', result.stderr)
 
     def test_secret_reads_the_value_on_the_host_in_a_terminal(self):
         self.run_cli_in_terminal('secret', 'API_KEY')
@@ -299,6 +397,303 @@ esac
         self.assertNotIn(path, calls)
         self.assertIn('terminal-session.sh project backend ', calls)
         self.assertNotIn('start-session', calls)
+
+    def calls(self):
+        return (self.home / 'calls').read_text()
+
+    def test_state_calls_the_helper_state_mode(self):
+        result = self.run_cli('state', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh state lead '1:$2:3'", self.calls())
+        self.assertEqual(sorted(json.loads(result.stdout)), sorted(
+            ['name', 'identity', 'session', 'program', 'clients', 'writable_clients', 'driver', 'sampled_at']))
+        self.assertNotIn('start-session', self.calls())
+
+    def test_state_refuses_a_bad_identity(self):
+        for args in [('state', 'lead'), ('state', 'lead', 'x;y'), ('state', 'bad name', '1:$2:3'), ('state', 'lead', '1:$2:3', 'more')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_agent_state_calls_the_helper_agent_state_mode(self):
+        result = self.run_cli('agent', 'state', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh agent-state lead '1:$2:3'", self.calls())
+        self.assertEqual(json.loads(result.stdout)['agent'], 'idle')
+        for args in [('agent', 'state', 'lead'), ('agent', 'state', 'lead', 'x;y'), ('agent', 'state', 'bad name', '1:$2:3'),
+                     ('agent', 'state', 'lead', '1:$2:3', 'more')]:
+            (self.home / 'calls').unlink(missing_ok=True)
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+            self.assertFalse((self.home / 'calls').exists(), args)
+
+    def test_agent_without_a_subcommand_prints_usage(self):
+        for args in [('agent',), ('agent', 'delete'), ('agent', 'bogus', 'lead', '1:$2:3')]:
+            result = self.run_cli(*args)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn('Usage: tokiwa agent', result.stderr)
+            self.assertIn('state NAME IDENTITY', result.stderr)
+            self.assertIn('wait NAME IDENTITY --after TURN', result.stderr)
+            self.assertIn('send NAME IDENTITY', result.stderr)
+            self.assertIn('read NAME IDENTITY', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_the_old_top_level_wait_is_not_a_command(self):
+        self.assertEqual(self.run_cli('wait', 'lead', '1:$2:3', '--after', '3').returncode, 2)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_agent_wait_calls_the_helper_agent_wait_mode(self):
+        result = self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh agent-wait lead '1:$2:3' 3", self.calls())
+        self.assertEqual(json.loads(result.stdout)['reason'], 'turn-ended')
+
+    def test_agent_wait_repeats_until_a_reason(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout timeout turn-ended'
+        result = self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls().count('terminal-session.sh agent-wait'), 3)
+        # Only the last object is printed.
+        self.assertEqual(json.loads(result.stdout)['reason'], 'turn-ended')
+        self.assertEqual(len(result.stdout.strip().splitlines()), 1)
+
+    def test_agent_wait_stops_at_its_timeout(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout'
+        result = self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3', '--timeout', '1')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['reason'], 'timeout')
+
+    def test_agent_wait_asks_the_host_for_no_more_than_the_time_left(self):
+        self.env['TEST_WAIT_REASONS'] = 'timeout'
+        self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3', '--timeout', '1')
+        self.assertIn('TOKIWA_WAIT_SECONDS=1 ', self.calls())
+        (self.home / 'calls').unlink()
+        del self.env['TEST_WAIT_REASONS']
+        self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertIn('TOKIWA_WAIT_SECONDS=20 ', self.calls())
+
+    def test_agent_wait_refuses_bad_arguments_before_aws(self):
+        base = ('agent', 'wait', 'lead', '1:$2:3')
+        for args in [base, base + ('--after',), base + ('--after', 'x'), base + ('--after', '-1'), base + ('3',),
+                     base + ('--after', '3', '--timeout'), base + ('--after', '3', '--timeout', '0'),
+                     base + ('--after', '3', '--timeout', '3601'), base + ('--after', '3', '--timeout', 'x'),
+                     base + ('--after', '3', '--timeout', '5', 'more'), ('agent', 'wait', 'lead', 'x', '--after', '3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_agent_wait_reports_a_failed_call_as_a_wait(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The wait call returned Failed. Nothing was changed.', result.stderr)
+        self.assertNotIn('workbench check', result.stderr)
+
+    def test_agent_wait_fails_when_its_output_cannot_be_read(self):
+        self.env['TEST_FETCH_FAIL'] = '1'
+        self.env['TEST_WAIT_REASONS'] = 'timeout'
+        result = self.run_cli('agent', 'wait', 'lead', '1:$2:3', '--after', '3', '--timeout', '1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The wait result could not be read. Nothing was changed.', result.stderr)
+        self.assertNotIn('timeout', result.stdout)
+
+    def test_claim_passes_the_actor_to_the_helper(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        result = self.run_cli('claim', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TOKIWA_ACTOR=worker-a ", self.calls())
+        self.assertIn("terminal-session.sh claim lead '1:$2:3'\"", self.calls())
+        (self.home / 'calls').unlink()
+        self.assertEqual(self.run_cli('claim', 'lead', '1:$2:3', '--replace').returncode, 0)
+        self.assertIn("terminal-session.sh claim lead '1:$2:3' replace", self.calls())
+        (self.home / 'calls').unlink()
+        self.assertEqual(self.run_cli('release', 'lead', '1:$2:3').returncode, 0)
+        self.assertIn("TOKIWA_ACTOR=worker-a ", self.calls())
+        self.assertIn("terminal-session.sh release lead '1:$2:3'\"", self.calls())
+
+    def test_claim_without_tokiwa_actor_is_refused_on_the_mac(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            for mode in ['claim', 'release']:
+                result = self.run_cli(mode, 'lead', '1:$2:3')
+                self.assertEqual(result.returncode, 1, (mode, actor))
+                self.assertIn('TOKIWA_ACTOR', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def send_calls(self):
+        return (self.home / 'calls').read_text()
+
+    def test_send_text_is_not_in_the_parameters(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'marker-text-9f3c and \u00e4\u00f6 more'
+        result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.send_calls()
+        encoded = base64.b64encode(text.encode()).decode()
+        for part in ['marker-text', encoded, encoded.rstrip('=')]:
+            self.assertNotIn(part, calls)
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + text.encode())
+        send = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(send, r"set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=cli TOKIWA_ACTOR=worker-a /opt/agent-platform/rootless/terminal-session\.sh agent-send lead")
+
+    def test_send_reads_a_file_and_stdin(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'line one\n\u00dcber line two\n'
+        path = self.home / 'message.txt'
+        path.write_text(text, encoding='utf-8')
+        self.assertEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--file', str(path)).returncode, 0)
+        self.assertEqual(self.host_decrypt(self.send_calls()), b'tokiwa-input-v1\n' + text.encode())
+        result = subprocess.run(['bash', str(CLI), 'agent', 'send', 'lead', '1:$2:3', '-'], env=self.env, input=text.encode(),
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.host_decrypt(self.send_calls()), b'tokiwa-input-v1\n' + text.encode())
+
+    def test_send_refuses_text_checks_on_the_mac_first(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for bad in ['/clear', '  !ls', '#x', 'bell\a', 'c1\x85next', '', '  \n', 'x' * 16385]:
+            result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', bad)
+            self.assertEqual(result.returncode, 1, repr(bad))
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+        missing = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--file', str(self.home / 'none'))
+        self.assertEqual(missing.returncode, 1)
+        for args in [('agent', 'send', 'lead'), ('agent', 'send', 'lead', '1:$2:3'), ('agent', 'send', 'lead', '1:$2:3', '--text'),
+                     ('agent', 'send', 'lead', '1:$2:3', '--bogus', 'x'), ('agent', 'send', 'bad name', '1:$2:3', '--text', 'x')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_answer_choice_must_be_1_to_9(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        base = ('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1')
+        for bad in [('--choice', '0'), ('--choice', '10'), ('--choice', 'x'), ('--choice', ''), ('--choice', '-1'), ('--choice',), (),
+                    ('--choice', '1', '--text', 'x'), ('--text',), ('--bogus', '1'), ('--choice', '1', 'more')]:
+            self.assertNotEqual(self.run_cli(*base, *bad).returncode, 0, bad)
+        for pending in ['', 'a b', 'x' * 129, 'a;b', '$(x)']:
+            self.assertNotEqual(self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', pending, '--choice', '1').returncode, 0, pending)
+        for args in [('agent', 'answer', 'lead', '1:$2:3', '--choice', '1'), ('agent', 'answer', 'lead', '--pending', 'toolu_q1', '--choice', '1'),
+                     ('agent', 'answer', 'bad name', '1:$2:3', '--pending', 'toolu_q1', '--choice', '1')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+        for choice in '19':
+            result = self.run_cli(*base, '--choice', choice)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"terminal-session.sh agent-answer lead '1:$2:3' toolu_q1 {choice}", self.send_calls())
+
+    def test_answer_without_tokiwa_actor_is_refused(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--choice', '1')
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('TOKIWA_ACTOR', result.stderr)
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_answer_text_is_not_in_the_parameters(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'marker-text-5d1e and \u00e4\u00f6 more'
+        result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--text', text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.send_calls()
+        encoded = base64.b64encode(text.encode()).decode()
+        for part in ['marker-text', encoded, encoded.rstrip('=')]:
+            self.assertNotIn(part, calls)
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + text.encode())
+        answer = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(answer, r"set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=cli TOKIWA_ACTOR=worker-a /opt/agent-platform/rootless/terminal-session\.sh agent-answer lead")
+        self.assertTrue(answer.endswith("toolu_q1 text'\"], \"executionTimeout\": [\"30\"]} --query Command.CommandId --output text"))
+
+    def test_answer_text_refuses_text_checks_on_the_mac_first(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for bad in ['/clear', '  !ls', '#x', 'bell\a', 'c1\x85next', '', '  \n', 'x' * 16385]:
+            result = self.run_cli('agent', 'answer', 'lead', '1:$2:3', '--pending', 'toolu_q1', '--text', bad)
+            self.assertEqual(result.returncode, 1, repr(bad))
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_send_without_tokiwa_actor_is_refused(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', 'hello')
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('TOKIWA_ACTOR', result.stderr)
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_the_temporary_folder_is_gone_after_a_call(self):
+        # A message and a create line leave no temporary folder, after a success and after a refusal.
+        scratch = self.home / 'scratch'
+        scratch.mkdir()
+        self.env.update(TMPDIR=str(scratch), TOKIWA_ACTOR='worker-a')
+        self.assertEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', 'hello').returncode, 0)
+        self.assertNotEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', '/x').returncode, 0)
+        self.assertEqual(self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi').returncode, 0)
+        self.assertEqual(self.run_cli('capture', 'lead', '1:$2:3').returncode, 0)
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_no_here_string_carries_message_text(self):
+        # macOS /bin/bash 3.2 writes a here-string to a temporary file.
+        for path in [CLI, CLI.parents[1] / 'host/terminal-session.sh']:
+            for line in path.read_text().splitlines():
+                if any(word in line for word in ('create_out', 'run_b64', '$request', 'input_file')):
+                    self.assertNotIn('<<<', line, line)
+
+    def test_claim_and_release_refuse_bad_arguments_before_aws(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for args in [('claim',), ('claim', 'lead'), ('claim', 'lead', 'x;y'), ('claim', 'lead', '1:$2:3', '--force'),
+                     ('claim', 'lead', '1:$2:3', '--replace', 'more'), ('release', 'lead'),
+                     ('release', 'lead', '1:$2:3', '--replace'), ('release', 'bad name', '1:$2:3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_end_is_the_documented_form_of_end_confirmed(self):
+        result = self.run_cli('end', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The host checks for a client. The launcher reads no state first.
+        self.assertIn("terminal-session.sh end lead '1:$2:3' check-clients", self.calls())
+        self.assertNotIn('attached-ok', self.calls())
+        self.assertNotIn('terminal-session.sh state', self.calls())
+
+    def test_end_attached_ok_sends_no_flag(self):
+        result = self.run_cli('end', 'lead', '1:$2:3', '--attached-ok')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh end lead '1:$2:3'\"", self.calls())
+        self.assertNotIn('check-clients', self.calls())
+
+    def test_end_confirmed_is_unchanged(self):
+        # The call that the base version sent, byte for byte: no flag after the identity.
+        result = self.run_cli('--end-confirmed', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("terminal-session.sh end lead '1:$2:3'\"", self.calls())
+        self.assertNotIn('check-clients', self.calls())
+        self.assertNotIn('terminal-session.sh state', self.calls())
+
+    def test_end_refuses_bad_arguments_before_aws(self):
+        for args in [('end',), ('end', 'lead'), ('end', 'lead', 'x;y'), ('end', 'lead', '1:$2:3', '--force'),
+                     ('end', 'lead', '1:$2:3', '--attached-ok', 'more'), ('end', 'bad name', '1:$2:3')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_the_host_refusal_of_end_is_shown(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        self.env['TEST_STDERR'] = 'A client is attached. Nothing was changed. Use --attached-ok to end it anyway.'
+        result = self.run_cli('end', 'lead', '1:$2:3')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('A client is attached. Nothing was changed.', result.stderr)
+
+    def test_existing_commands_are_unchanged(self):
+        # The helper modes and arguments that these commands sent at the base of the layer split.
+        expected = {
+            ('sessions', '--json'): 'terminal-session.sh snapshot',
+            ('capture', 'lead', '1:$2:3', '60'): "terminal-session.sh capture lead '1:$2:3' 60 ",
+            ('interrupt', 'lead', '1:$2:3'): "terminal-session.sh interrupt lead '1:$2:3'",
+        }
+        for args, call in expected.items():
+            (self.home / 'calls').unlink(missing_ok=True)
+            self.assertEqual(self.run_cli(*args).returncode, 0, args)
+            self.assertIn(call, self.calls(), args)
 
     def test_health_and_end_use_bounded_noninteractive_commands(self):
         self.assertEqual(self.run_cli('health').returncode,0)
@@ -543,6 +938,50 @@ esac
             self.assertNotEqual(result.returncode, 0, args)
         self.assertFalse((self.home / 'calls').exists())
 
+    def test_agent_read_runs_the_helper_and_opens_the_sealed_result(self):
+        self.scratch()
+        cursor = '0123456789ab:42'
+        cases = [(('agent', 'read', 'backend', '1:$2:3'), "agent-read backend '1:$2:3' - - "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--tools'), "agent-read backend '1:$2:3' - tools "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--pending'), "agent-read backend '1:$2:3' - pending "),
+                 (('agent', 'read', 'backend', '1:$2:3', '--pending', '--tools', '--after', cursor),
+                  f"agent-read backend '1:$2:3' {cursor} tools,pending ")]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                (self.home / 'calls').unlink(missing_ok=True)
+                result = self.run_cli(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, self.sent())
+                self.assertEqual(json.loads(result.stdout)['cursor'], '0123456789ab:0')
+                self.assertNotIn('PRIVATE KEY', (self.home / 'calls').read_text())
+        self.assertEqual(list((self.home / 'scratch').iterdir()), [])
+
+    def test_agent_read_files_are_private_and_the_key_is_new_each_time(self):
+        self.scratch()
+        result = subprocess.run(['bash', '-c', 'umask 022; exec bash "$@"', 'bash', str(CLI), 'agent', 'read', 'backend', '1:$2:3'],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex((self.home / 'modes').read_text(), r'(?m)^-r[w-]-r')
+        first = re.findall(r'[A-Za-z0-9+/=]{200,}', self.sent())[-1]
+        self.run_cli('agent', 'read', 'backend', '1:$2:3')
+        self.assertNotEqual(re.findall(r'[A-Za-z0-9+/=]{200,}', self.sent())[-1], first)
+
+    def test_failed_agent_read_prints_no_sealed_output(self):
+        self.env['TEST_STATUS'] = 'Failed'
+        result = self.run_cli('agent', 'read', 'backend', '1:$2:3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
+    def test_agent_read_rejects_bad_input_before_aws(self):
+        cursor = '0123456789ab:42'
+        for args in [('bad;name', '1:$2:3'), ('backend', '123;id'), ('backend',), ('backend', '1:$2:3', '--after'),
+                     ('backend', '1:$2:3', '--after', 'x'), ('backend', '1:$2:3', '--after', '0123456789AB:1'),
+                     ('backend', '1:$2:3', '--after', cursor, '--after', cursor), ('backend', '1:$2:3', '--tools', '--tools'),
+                     ('backend', '1:$2:3', '--all'), ('backend', '1:$2:3', 'extra')]:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.run_cli('agent', 'read', *args).returncode, 0)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_capture_starts_no_service(self):
         self.run_cli('capture', 'backend', '1:$2:3')
         self.assertIn('systemctl is-active', self.sent())
@@ -778,7 +1217,7 @@ esac
         self.stub_sleep()
         self.env['TEST_STATUS'] = 'InProgress'
         cases = [(('run', 'review-pr', 'pr=42'), 40), (('run-status', '20261112T183000-7f3a'), 40),
-                 (('capture', 'backend', '1:$2:3'), 40), (('status',), 15), (('commands',), 15)]
+                 (('capture', 'backend', '1:$2:3'), 40), (('agent', 'read', 'backend', '1:$2:3'), 40), (('status',), 15), (('commands',), 15)]
         for args, polls in cases:
             with self.subTest(args=args):
                 (self.home / 'calls').unlink(missing_ok=True)
@@ -837,7 +1276,7 @@ esac
         self.assertEqual(self.run_payload(), {'entry': 'review-pr', 'args': {'pr': '$(id);x'}})
 
     def test_help_names_each_class_of_mcp(self):
-        self.assertIn('mcp [--allow control,run,commands]', self.run_cli('--help').stdout)
+        self.assertIn('mcp [--allow control,run,commands,answer] [--actor NAME]', self.run_cli('--help').stdout)
 
     def test_commands_is_plain(self):
         result = self.run_cli('commands')
