@@ -1920,7 +1920,8 @@ export class App {
     clearTimeout(this.sessionTimer);
     // After a period without a live read the next read has no earlier snapshot to compare with.
     const wasLive = this.sources.sessions.freshness(this.now()) === "live";
-    const first = !this.sessionsRead || !wasLive;
+    // The next read follows soon only after a good read that follows a gap (or the first one).
+    let second = false;
     const started = this.now();
     const selected = this.sessionRows()[this.listSelection]?.name;
     this.drawHeader();
@@ -1941,6 +1942,7 @@ export class App {
         const ref = rows.find((r) => r.name === name);
         if (ref?.attention !== at) this.attentionSeen.delete(name);
       }
+      second = !this.sessionsRead || !wasLive;
       this.sessionsRead = true;
       this.readSucceeded("sessions");
       this.hostOk = this.now();
@@ -1982,7 +1984,7 @@ export class App {
           if (this.view === "shell") void this.refreshSessions();
           else this.sessionTimer = undefined;
         },
-        first ? SESSIONS_SECOND_READ_MS : SESSIONS_REFRESH_MS,
+        second ? SESSIONS_SECOND_READ_MS : SESSIONS_REFRESH_MS,
       );
   }
   /**
@@ -2843,21 +2845,19 @@ export class App {
   async sampleHealth() {
     if (this.sampling || this.disposed || this.history.stopped) return;
     this.sampling = true;
+    let readFailed = false;
     await this.history.sample(async () => {
       try {
-        const sample = await this.backend.health();
-        // The read itself worked; a sample that the history rejects is a new failure below.
-        this.readSucceeded("health");
-        return sample;
+        return await this.backend.health();
       } catch (e) {
+        readFailed = true;
         this.readFailed("health", e);
         throw e;
       }
     });
     if (this.history.gap) {
-      // A sample that the history rejects (a stale timestamp) never reached the wrapper above.
-      if (!this.lastFailure.health)
-        this.readFailed("health", this.history.error);
+      // A sample that the history rejects (a stale timestamp) never failed in the wrapper above.
+      if (!readFailed) this.readFailed("health", this.history.error);
       this.hostFail = this.now();
     } else {
       this.readSucceeded("health");

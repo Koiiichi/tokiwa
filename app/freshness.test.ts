@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "./app";
 import { BackendClient } from "./backend";
-import { fixtureSpend } from "./health-fixture";
+import { fixtureSample, fixtureSpend } from "./health-fixture";
 import { landingPrevious, landingSessions } from "./landing-fixture";
 import { SourceStatus } from "./state";
 import type { Failure } from "./problem";
@@ -177,7 +177,8 @@ test("the first live read after a stale period shows no output glyph", async () 
   }
 });
 
-test("the read after a stale period is scheduled 5 s later", async () => {
+/** Delays of the timers that the session read sets, with one read per step of the script. */
+async function timerDelays(script: Array<{ at: number; fail: boolean }>) {
   const t = await createTestRenderer({ width: 120, height: 30 });
   const clock = { at: 10_000 };
   const mode = { fail: false };
@@ -185,31 +186,74 @@ test("the read after a stale period is scheduled 5 s later", async () => {
     if (mode.fail) throw new Error(AUTH);
     return JSON.stringify({ sessions: landingSessions });
   });
+  // The app starts its own timers: wait until its start-up read is done, then take them over.
   const app = new App(t.renderer, { backend, now: () => clock.at });
-  const delays: number[] = [];
   const real = globalThis.setTimeout;
+  const delays: number[] = [];
+  const freshness: string[] = [];
   try {
-    await app.refreshSessions();
+    for (let i = 0; i < 100 && !app.sessionsRead; i++) await pause(20);
+    expect(app.sessionsRead).toBe(true);
     clearTimeout(app.sessionTimer);
-    clock.at = 20_000;
-    await app.refreshSessions();
-    clearTimeout(app.sessionTimer);
-    mode.fail = true;
-    clock.at = 30_000;
-    await app.refreshSessions();
-    clearTimeout(app.sessionTimer);
-    mode.fail = false;
     globalThis.setTimeout = ((fn: () => void, ms?: number) => {
       if (ms === 5000 || ms === 30_000) delays.push(ms);
       return real(fn, ms);
     }) as typeof setTimeout;
-    clock.at = 40_000;
-    await app.refreshSessions();
-    expect(delays).toEqual([5000]);
+    for (const step of script) {
+      mode.fail = step.fail;
+      clock.at = step.at;
+      freshness.push(app.sources.sessions.freshness(clock.at));
+      await app.refreshSessions();
+      clearTimeout(app.sessionTimer);
+    }
+    return { delays, freshness };
   } finally {
     globalThis.setTimeout = real;
     clearTimeout(app.sessionTimer);
     await t.dispose();
+  }
+}
+
+test("the read after a good read that follows a stale period is scheduled 5 s later", async () => {
+  const { delays, freshness } = await timerDelays([
+    { at: 20_000, fail: false },
+    { at: 30_000, fail: true },
+    { at: 40_000, fail: false },
+  ]);
+  // Before the recovery read the source is last known; only that read uses 5 s.
+  expect(freshness[2]).toBe("last-known");
+  expect(delays.at(-1)).toBe(5000);
+});
+
+test("failed reads during an outage are scheduled every 30 s", async () => {
+  const { delays } = await timerDelays([
+    { at: 20_000, fail: false },
+    { at: 30_000, fail: true },
+    { at: 35_000, fail: true },
+    { at: 40_000, fail: true },
+  ]);
+  expect(delays.slice(1)).toEqual([30_000, 30_000, 30_000]);
+});
+
+test("a rejected Health sample leaves the last good read time unchanged", async () => {
+  const w = await open();
+  try {
+    w.app.backend.health = async () => ({
+      ...fixtureSample,
+      sampled_at: Date.now() / 1000,
+    });
+    await w.app.sampleHealth();
+    clearTimeout(w.app.sampleTimer);
+    expect(w.app.sources.health.okAt).toBe(20_000);
+    w.clock.at = 50_000;
+    w.app.backend.health = async () => ({ ...fixtureSample, sampled_at: 1 });
+    await w.app.sampleHealth();
+    clearTimeout(w.app.sampleTimer);
+    expect(w.app.sources.health.okAt).toBe(20_000);
+    expect(w.app.sources.health.failure?.detail).toContain("stale");
+    expect(w.app.sources.health.freshness(50_000)).toBe("last-known");
+  } finally {
+    await w.close();
   }
 });
 

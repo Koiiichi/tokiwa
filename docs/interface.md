@@ -130,12 +130,12 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 
 | Glyph | Colour | Meaning |
 | --- | --- | --- |
-| `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two snapshots of the session. |
+| `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two live snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
 | `◈` | Amber | Needs you. A program in the session ran `tokiwa-attention`, or a window rang the bell while no client viewed it. Bringing the session forward clears it; an attach anywhere clears the mark of `tokiwa-attention`, and `tokiwa-attention --clear` clears it from inside. |
 | `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
-| (empty) | — | No reading yet, or the snapshot did not include the pane activity. |
+| (empty) | — | No reading yet, the snapshot did not include the pane activity, or the snapshot is not live (a read failed or is older than 90 s). A row with an attached, connected view keeps its own glyph, and `◈` stays. After a stale period, `◆` and `◇` return only after two live reads, 5 s apart. |
 | `¹` | Dim | After the name: the number of clients attached elsewhere. |
 
 `exited` takes precedence over `needs you`, and `needs you` over the other states. The output glyph throbs in four frames of 320 ms. With `TOKIWA_REDUCED_MOTION=1` it stays still in mint.

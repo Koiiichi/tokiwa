@@ -95,8 +95,7 @@ export class SourceStatus {
     this.failure = undefined;
   }
   fail(failure: Failure) {
-    // A failure after a success always orders after it, also within one millisecond.
-    this.failAt = Math.max(failure.at, this.okAt + 1);
+    this.failAt = failure.at;
     this.failure = failure;
   }
   freshness(now: number): Freshness {
