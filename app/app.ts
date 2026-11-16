@@ -307,6 +307,8 @@ export class App {
   previousSessions = new Map<string, SessionRef>();
   sessionsRead = false;
   sessionsLoading = false;
+  /** The top-level projects whose listed rows come from the session snapshot. */
+  snapshotProjects = new Set<string>();
   /** The status of each data source; `readFailed` and `readSucceeded` are the only writers. */
   sources: Record<Source, SourceStatus> = {
     sessions: new SourceStatus(FRESHNESS_LIMIT_MS.sessions),
@@ -3765,6 +3767,14 @@ export class App {
     this.listGlyphs = [];
     const throb = throbColor(theme.cpu, Date.now(), this.animate);
     let top = 0;
+    // A title is old only when its own rows come from the session snapshot.
+    this.snapshotProjects.clear();
+    let owner = "";
+    for (const entry of tree) {
+      if (entry.kind === "project") {
+        if (entry.depth === 0) owner = entry.path;
+      } else if (entry.item.freshness) this.snapshotProjects.add(owner);
+    }
     tree.forEach((entry, g) => {
       if (entry.kind === "project") {
         if (entry.depth === 0 && top++)
@@ -4028,7 +4038,7 @@ export class App {
         { text: entry.title, tone: "title" },
         // Only a top-level title: the project's rows hold values from an old snapshot.
         ...(entry.depth === 0 &&
-        this.remoteSessions.length &&
+        this.snapshotProjects.has(entry.path) &&
         this.sources.sessions.freshness(this.now()) !== "live" &&
         !this.sessionsLoading
           ? [{ text: " · last known", tone: "dim" as const }]

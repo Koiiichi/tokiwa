@@ -326,3 +326,30 @@ test("stale project titles say last known", async () => {
     await w.close();
   }
 });
+
+test("only a project with snapshot rows says last known, not a local group", async () => {
+  const w = await open();
+  try {
+    w.app.show("shell");
+    await w.t.mockInput.typeText("t");
+    await pause();
+    expect(w.app.shells.filter((s) => !s.remote)).toHaveLength(1);
+    w.mode.fail = true;
+    w.clock.at = 30_000;
+    await w.app.refreshSessions();
+    await w.t.renderOnce();
+    const frame = w.t.captureCharFrame();
+    const local = w.app
+      .sessionTree()
+      .find((e) => e.kind === "project" && e.path === "")!;
+    expect(local.kind === "project" && frame).toContain(
+      local.kind === "project" ? local.title : "",
+    );
+    expect(frame).toContain("workspaces/workbench · last known");
+    expect(frame).not.toContain(
+      `${local.kind === "project" ? local.title : ""} · last known`,
+    );
+  } finally {
+    await w.close();
+  }
+});

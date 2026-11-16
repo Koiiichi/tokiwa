@@ -122,7 +122,7 @@ When the list is empty, it says why:
 | `No sessions on EC2` | The read succeeded and the host has no sessions. |
 | `No sessions read` | The read failed. The problem band names the cause. The list adds `l signs in` or `u reads them again`. |
 
-When a read fails and the list holds an earlier read, the list keeps it. The problem band names the failure. While the list shows an old read and no read runs, each top-level project title ends with `· last known` in the dim tone.
+When a read fails and the list holds an earlier read, the list keeps it. The problem band names the failure. While the list shows an old read and no read runs, each top-level project title whose rows come from that read ends with `· last known` in the dim tone. The local group never does.
 
 ## Status glyphs
 

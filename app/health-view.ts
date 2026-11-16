@@ -475,7 +475,7 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     rows.push({
       kind: "pair",
       label: "Stuck connection:",
-      value: `PID ${process.pid} · ${formatDuration(process.age_seconds)} · ${Math.round((100 * process.cpu_seconds) / Math.max(process.age_seconds, 1))}% of a core`,
+      value: `PID ${process.pid} · ${formatDuration(process.age_seconds)} · ${Math.round((100 * process.cpu_seconds) / Math.max(process.age_seconds, 1))}% of a core${m.healthFreshness === "last-known" ? ` · ${LAST_KNOWN}` : ""}`,
       tone: "warning",
     });
   if (stuck.length)

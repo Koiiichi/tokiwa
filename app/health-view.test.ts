@@ -464,6 +464,24 @@ test("a stuck connection shows as an amber row with its PID, age and CPU share",
   }
 });
 
+test("a last-known stuck connection says so and a live one does not", () => {
+  const sample = structuredClone(fixtureSample);
+  sample.host!.stuck_connections = [
+    { pid: 4242, cpu_seconds: 86000, age_seconds: 86400 + 7200 },
+  ];
+  const old = lineText(
+    row(
+      healthLines(fixtureModel({ sample, healthFreshness: "last-known" }), 120),
+      "Stuck connection:",
+    ),
+  );
+  expect(old).toMatch(/92% of a core · last known$/);
+  const live = lineText(
+    row(healthLines(fixtureModel({ sample }), 120), "Stuck connection:"),
+  );
+  expect(live).not.toContain("last known");
+});
+
 test("an invalid configuration shows its error in the view", () => {
   const all = text(
     healthLines(
