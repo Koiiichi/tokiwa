@@ -15,7 +15,7 @@ Options that it sets on the session:
   @tokiwa_agent_session     The session id of the agent from the event.
   @tokiwa_agent_pending     Base64 JSON {id, kind, summary, options, tool, questions, multi_select, at} of the question
                             or permission request that waits for a person.
-  @tokiwa_agent_last_tool   Base64 JSON of the last tool call that a `note` event reported.
+  @tokiwa_agent_last_tool   Base64 JSON {id, tool, summary, at} of the last tool call that a `note` event reported.
   @tokiwa_agent_input       Base64 JSON {actor, pending_id, at}, set by `tokiwa agent answer`. `answered` clears it.
 
 `answered` is the one command that a synchronous Claude Code hook runs (the Codex hooks also have a timeout and no
@@ -38,6 +38,15 @@ KINDS = ("question", "permission")
 CLEARS_PENDING = ("working", "idle", "ended")
 MAX_INPUT = 65536
 MAX_SUMMARY = 500
+# The longest option label in characters, the most options, and the longest tool name and tool-use id.
+MAX_LABEL = 200
+MAX_OPTIONS = 20
+MAX_TOOL = 64
+MAX_ID = 128
+# The longest encoded value of @tokiwa_agent_pending and of @tokiwa_agent_last_tool, in bytes. `agent answer`
+# puts both values and its label into one tmux command, which tmux limits to about 16 KiB.
+MAX_PENDING_BYTES = 6144
+MAX_LAST_TOOL_BYTES = 3072
 TMUX_TIMEOUT = 2
 
 
@@ -69,7 +78,24 @@ def text(value):
 
 
 def encode(item):
-    return base64.b64encode(json.dumps(item, separators=(",", ":")).encode()).decode()
+    return base64.b64encode(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+
+
+def fitted(item, limit):
+    """`item` encoded in at most `limit` bytes: options go first from the end, then the summary is cut."""
+    value = encode(item)
+    while len(value) > limit and item.get("options"):
+        item["options"].pop()
+        value = encode(item)
+    while len(value) > limit and item.get("summary"):
+        item["summary"] = item["summary"][: len(item["summary"]) // 2]
+        value = encode(item)
+    return value
+
+
+def digits(value):
+    """True when `value` is a number that int() reads: str.isdigit() alone also accepts digits such as '²'."""
+    return value.isascii() and value.isdigit()
 
 
 def tool_detail(tool_input):
@@ -100,8 +126,8 @@ def questions_of(event):
     if not isinstance(first, dict):
         return "", [], count, False
     options = first.get("options") if isinstance(first.get("options"), list) else []
-    return (text(first.get("question")), [text(o.get("label")) for o in options if isinstance(o, dict)],
-            count, first.get("multiSelect") is True)
+    labels = [text(o.get("label"))[:MAX_LABEL] for o in options if isinstance(o, dict)][:MAX_OPTIONS]
+    return text(first.get("question")), labels, count, first.get("multiSelect") is True
 
 
 def pending_item(event, raw, kind, last_tool):
@@ -117,13 +143,18 @@ def pending_item(event, raw, kind, last_tool):
         summary = f"{last_tool.get('tool', '')}: {last_tool.get('summary', '')}".rstrip(": ")
     else:
         summary = text(event.get("message"))
-    if text(event.get("url")):
-        summary = f"{summary} {event['url']}".strip()
-    identity = text(event.get("tool_use_id")) or hashlib.sha256(raw).hexdigest()[:16]
+    url = text(event.get("url"))[:MAX_SUMMARY]
+    if url:
+        # The URL stays whole: the text before it is cut so that both fit the summary limit.
+        summary = f"{summary[: max(0, MAX_SUMMARY - len(url) - 1)]} {url}".strip()
+    # An id longer than an answer can name is replaced, so the item still has an id.
+    identity = text(event.get("tool_use_id"))
+    if not identity or len(identity) > MAX_ID:
+        identity = hashlib.sha256(raw).hexdigest()[:16]
     return {"id": identity, "kind": kind, "summary": summary[:MAX_SUMMARY], "options": options,
             # The source: `AskUserQuestion`, another tool, or the hook event (for example `Elicitation`).
             # `questions` and `multi_select` describe an AskUserQuestion call; `agent answer` needs one single-select question.
-            "tool": text(event.get("tool_name")) or text(event.get("hook_event_name")), "questions": questions,
+            "tool": (text(event.get("tool_name")) or text(event.get("hook_event_name")))[:MAX_TOOL], "questions": questions,
             "multi_select": multi_select, "at": int(time.time())}
 
 
@@ -177,14 +208,17 @@ def record(argv):
         put("@tokiwa_agent", f"{state}:{int(time.time())}")
     if "--turn" in flags:
         turn = option(pane, "@tokiwa_agent_turn")
-        put("@tokiwa_agent_turn", str(int(turn) + 1 if turn.isdigit() else 1))
+        put("@tokiwa_agent_turn", str(int(turn) + 1 if digits(turn) else 1))
     for name, key in (("@tokiwa_agent_transcript", "transcript_path"), ("@tokiwa_agent_session", "session_id")):
         if text(event.get(key)):
             put(name, event[key])
     if state == "note" and event.get("tool_name"):
-        last = {"tool": text(event["tool_name"]), "summary": tool_detail(event.get("tool_input"))[:MAX_SUMMARY],
-                "at": int(time.time())}
-        put("@tokiwa_agent_last_tool", encode(last))
+        # `agent answer` requires this id to be the pending id, so a tool call after a question stops the answer.
+        # An id that an answer cannot name is left out, which matches no pending item.
+        tool_use_id = text(event.get("tool_use_id"))
+        last = {"id": tool_use_id if len(tool_use_id) <= MAX_ID else "", "tool": text(event["tool_name"])[:MAX_TOOL],
+                "summary": tool_detail(event.get("tool_input"))[:MAX_SUMMARY], "at": int(time.time())}
+        put("@tokiwa_agent_last_tool", fitted(last, MAX_LAST_TOOL_BYTES))
     if state in CLEARS_PENDING:
         tmux("set-option", "-qu", "-t", pane, "@tokiwa_agent_pending")
     elif state == "waiting" and kind in KINDS:
@@ -195,7 +229,7 @@ def record(argv):
             pass
         if not isinstance(last_tool, dict):
             last_tool = {}
-        put("@tokiwa_agent_pending", encode(pending_item(event, raw, kind, last_tool)))
+        put("@tokiwa_agent_pending", fitted(pending_item(event, raw, kind, last_tool), MAX_PENDING_BYTES))
 
 
 def main(argv):

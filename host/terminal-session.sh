@@ -526,10 +526,12 @@ def agent_state_record(name, identity):
         return record
     agent, turn, pending = values
     state, _, at = agent.partition(':')
-    record.update(turn=int(turn) if turn.isdigit() else 0, pending=pending_item(pending) if pending else None)
+    # str.isdigit() alone also accepts digits such as '²', which int() refuses.
+    turn_ok, at_ok = turn.isascii() and turn.isdigit(), at.isascii() and at.isdigit()
+    record.update(turn=int(turn) if turn_ok else 0, pending=pending_item(pending) if pending else None)
     if record['program'] in AGENTS and dead != '1':
         # An agent that has reported nothing yet is `unknown`, which no caller treats as idle.
-        record.update(agent=state if at.isdigit() else 'unknown', agent_at=int(at) if at.isdigit() else None,
+        record.update(agent=state if at_ok else 'unknown', agent_at=int(at) if at_ok else None,
                       dialog=screen_dialog(pane, record['program']))
     return record
 PY_AGENT_LIB
@@ -809,7 +811,7 @@ def check(facts, pane, values):
         return 'The pane does not run an agent. Nothing was sent.'
     state, _, at = agent.partition(':')
     # An agent that has reported nothing yet is `unknown`: no caller treats it as idle.
-    if state not in ('idle', 'limited', 'error') or not at.isdigit():
+    if state not in ('idle', 'limited', 'error') or not (at.isascii() and at.isdigit()):
         return 'The agent is not idle. Nothing was sent.'
     if pending:
         return 'An item waits for a person. Nothing was sent.'
@@ -825,8 +827,9 @@ print(pane, clients, buffer, turn if turn.isascii() and turn.isdigit() else '-')
 PY_AGENT_SEND
 # The answer stage of a delivery: the digit of an option for the pending question PENDING_ID. A choice
 # of `text` would type free text, whose key path is unknown (docs/agents.md), so it refuses after the text
-# checks. Prints `PANE CLIENTS - PENDING LABEL`: PENDING is the base64 value that was read, and
-# LABEL is the base64 value of @tokiwa_agent_input.
+# checks. Prints `PANE CLIENTS - PENDING LAST LABEL`: PENDING and LAST are the base64 values of @tokiwa_agent_pending
+# and @tokiwa_agent_last_tool that were read, and LABEL is the base64 value of @tokiwa_agent_input.
+# The question must be live: the agent is `waiting`, and the last tool call that started is the question itself.
 read -r -d '' agent_answer_program <<'PY_AGENT_ANSWER' || true
 actor = os.environ['TOKIWA_ACTOR']
 pending_id, choice = sys.argv[4], sys.argv[5]
@@ -856,6 +859,16 @@ def check(facts, pane, values):
         return 'The pending item is not a question. Nothing was sent.'
     if found != pending_id:
         return 'The pending item is not the one named. Nothing was sent.'
+    # An interrupt or the end of the question leaves another state. The queue checks the same.
+    if not values[1].startswith('waiting:'):
+        return 'The agent is not waiting for an answer. Nothing was sent.'
+    # A tool call that started after the question means that the question is no longer on the screen.
+    try:
+        last_id = json.loads(base64.b64decode(values[2], validate=True)).get('id')
+    except (binascii.Error, ValueError, AttributeError, RecursionError):
+        last_id = None
+    if not last_id or last_id != pending_id:
+        return 'The question is not the last tool call of the agent. Nothing was sent.'
     # Only the question tool of Claude Code adds the input label to the context of the worker, and only its
     # numbered dialog takes a digit. A form of an MCP server, or any item without options, has neither.
     if tool != 'AskUserQuestion' or not isinstance(options, list) or not options:
@@ -869,9 +882,9 @@ def check(facts, pane, values):
     return None
 
 pane, clients, buffer, values = stage_delivery(
-    sys.argv[2], sys.argv[3], None, ('#{@tokiwa_agent_pending}',), check)
+    sys.argv[2], sys.argv[3], None, ('#{@tokiwa_agent_pending}', '#{@tokiwa_agent}', '#{@tokiwa_agent_last_tool}'), check)
 label = json.dumps({'actor': actor, 'pending_id': pending_id, 'at': int(time.time())}, separators=(',', ':'))
-print(pane, clients, buffer, values[0], base64.b64encode(label.encode()).decode())
+print(pane, clients, buffer, values[0], values[2], base64.b64encode(label.encode()).decode())
 PY_AGENT_ANSWER
 ensure() {
  if ! tm has-session -t "=$name" 2>/dev/null; then
@@ -939,13 +952,17 @@ agent_layer() {
  sent_at=$(date +%s)
  layer_action="set-option -t '$session_id' @tokiwa_agent 'working:$sent_at'"
 }
-# Sets the layer's condition, refusal, keys and action of an answer. $1 is `PENDING LABEL`, as the answer stage prints.
-# The condition holds the pending value that the stage read, so a new item in between stops the keys.
+# Sets the layer's condition, refusal, keys and action of an answer. $1 is `PENDING LAST LABEL`, as the answer stage prints.
+# The condition holds the pending and last-tool values that the stage read, so a new item, a tool call that
+# started, or a state other than `waiting` in between stops the keys.
 answer_layer() {
- local pending=${1%% *} label=${1#* }
+ local pending last label
+ read -r pending last label <<< "$1"
  local program="#{||:#{==:#{pane_current_command},claude},#{==:#{pane_current_command},codex}}"
- layer_condition="#{&&:$program,#{==:#{@tokiwa_agent_pending},$pending}}"
- layer_refusal="#{?$program,The session changed. Nothing was sent.,The pane does not run an agent. Nothing was sent.}"
+ local waiting='#{m:waiting:*,#{@tokiwa_agent}}'
+ local last_ok="#{==:#{@tokiwa_agent_last_tool},$last}"
+ layer_condition="#{&&:$program,#{&&:$waiting,#{&&:$last_ok,#{==:#{@tokiwa_agent_pending},$pending}}}}"
+ layer_refusal="#{?$program,#{?$waiting,#{?$last_ok,The session changed. Nothing was sent.,The question is not the last tool call of the agent. Nothing was sent.},The agent is not waiting for an answer. Nothing was sent.},The pane does not run an agent. Nothing was sent.}"
  local session_id=${extra#*:}
  session_id=${session_id%%:*}
  layer_keys="$choice Enter"
@@ -1046,7 +1063,7 @@ for line in tmux('list-sessions', '-F', '#{session_name}\t#{pid}:#{session_id}:#
     panes = [pane.split(' ', 1) for pane in tmux('list-panes', '-s', '-t', '=' + name, '-F', '#{pane_dead} #{pane_current_command}').splitlines()]
     state, _, at = tmux('show-options', '-qv', '-t', target, '@tokiwa_agent').partition(':')
     agent = None
-    if at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for dead, command in panes):
+    if at.isascii() and at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for dead, command in panes):
         agent = {'state': state, 'at': int(at)}
     rows.append({'name': name, 'identity': identity, 'active_at': int(active) if active.isdigit() else None,
                  'agent': agent, 'git': repository(folder) if folder else None})
@@ -1086,7 +1103,7 @@ for line in output.splitlines():
     bell = any(flag == '1' for _, _, flag, _ in panes)
     agent = None
     state, _, at = reported.partition(':')
-    if at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for _, dead, _, command in panes):
+    if at.isascii() and at.isdigit() and any(dead != '1' and command in ('claude', 'codex') for _, dead, _, command in panes):
         agent = {'state': state, 'at': int(at)}
     activity = []
     for pane_id, dead, _, command in panes[:16]:
@@ -1178,11 +1195,13 @@ PY_SNAPSHOT
   exit ;;
  interrupt)
   # The identity check and the key press run in the same tmux command queue, as for end. Esc stops
-  # the current turn of Claude Code and Codex.
+  # the current turn of Claude Code and Codex, and closes a question: the same queue clears the pending
+  # item, so that no answer reaches the prompt after it.
   tm has-session -t "=$name" 2>/dev/null || fail 'The selected session no longer exists.'
   session_id=${extra#*:}; session_id=${session_id%%:*}
   answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
-   "send-keys -t '$session_id' Escape" "display-message -p 'Session identity changed. Nothing was sent.'") || fail 'The key could not be sent. Refresh the session state.'
+   "send-keys -t '$session_id' Escape ; set-option -u -t '$session_id' @tokiwa_agent_pending" \
+   "display-message -p 'Session identity changed. Nothing was sent.'") || fail 'The key could not be sent. Refresh the session state.'
   [[ -z $answer ]] || fail "$answer"
   # Claude Code reports no event when Esc stops a turn, so a reported agent becomes idle here.
   if [[ -n $(tm show-options -qv -t "=$name:" @tokiwa_agent) ]]; then

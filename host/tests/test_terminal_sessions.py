@@ -1499,6 +1499,14 @@ class AgentStateRecord(Pty, AgentPanes, Server):
         self.assertEqual((record['clients'], record['writable_clients'], record['driver']), (0, 0, None))
         self.assertIsInstance(record['sampled_at'], int)
 
+    def test_state_with_a_non_ascii_digit_is_unknown(self):
+        # '²' is a digit to str.isdigit(), but int() refuses it.
+        self.agent('lead', 'claude')
+        self.option('lead', '@tokiwa_agent', 'idle:²')
+        self.option('lead', '@tokiwa_agent_turn', '²')
+        record = self.state('lead')
+        self.assertEqual((record['agent'], record['agent_at'], record['turn']), ('unknown', None, 0))
+
     def test_state_of_an_agent_that_has_reported_nothing(self):
         self.agent('lead', 'codex')
         record = self.state('lead')
@@ -2210,6 +2218,87 @@ class AgentAnswer(AgentSession):
     def ask(self, item):
         self.option('lead', '@tokiwa_agent', 'waiting:100')
         self.option('lead', '@tokiwa_agent_pending', self.b64(item))
+        # The `note` of the question's own tool call, which the PreToolUse hook records.
+        self.option('lead', '@tokiwa_agent_last_tool', self.b64(self.tool_call(item.get('id'), 'AskUserQuestion')))
+
+    def tool_call(self, tool_use_id, tool):
+        return {'id': tool_use_id, 'tool': tool, 'summary': '', 'at': 5}
+
+    def note(self, event):
+        """Run tokiwa-state `note` in the pane of `lead`, as the PreToolUse hook of a tool call does."""
+        pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()
+        env = dict(self.env, TMUX=f'{self.socket},0,0', TMUX_PANE=pane)
+        result = subprocess.run([sys.executable, str(ROOT / 'tokiwa-state'), 'note'], env=env, input=json.dumps(event),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def change_after_checks(self, key, value):
+        """Make tmux set the option `key` of `lead` to `value` right after the checks read the session."""
+        folder = Path(tempfile.mkdtemp(dir=self.temp.name))
+        (folder / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* ]]; then {self.tmux} -N -S {self.socket} set-option -t =lead: {key} '{value}'; fi
+exit $code
+""")
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{os.environ['PATH']}"
+
+    def test_answer_refuses_when_the_agent_is_not_waiting(self):
+        for state in ['idle:100', 'working:100', 'waiting']:
+            self.option('lead', '@tokiwa_agent', state)
+            self.refused_with(self.answer('1'), 'The agent is not waiting for an answer. Nothing was sent.')
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent')
+        self.refused_with(self.answer('1'), 'The agent is not waiting for an answer. Nothing was sent.')
+
+    def test_answer_after_interrupt_is_refused(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        self.assertEqual(self.helper('interrupt', 'lead', self.identity).returncode, 0)
+        # Esc closes the question, so the interrupt clears the item with the state.
+        self.assertEqual(self.value('@tokiwa_agent_pending'), '')
+        self.assertTrue(self.value('@tokiwa_agent').startswith('idle:'))
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [('other', b'\x1b')])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_after_a_later_tool_call_is_refused(self):
+        self.note({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_use_id': 'toolu_bash_b',
+                   'tool_input': {'command': 'make check'}})
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+
+    def test_answer_refuses_without_a_record_of_the_question_tool_call(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_last_tool')
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+        self.option('lead', '@tokiwa_agent_last_tool', 'not-base64!')
+        self.refused_with(self.answer('1'), 'The question is not the last tool call of the agent. Nothing was sent.')
+
+    def test_answer_after_the_note_of_the_question_itself_is_accepted(self):
+        # The recorder writes the note of the question's own call: its id is the pending id.
+        self.note({'hook_event_name': 'PreToolUse', 'tool_name': 'AskUserQuestion', 'tool_use_id': 'toolu_q1',
+                   'tool_input': {'questions': []}})
+        result = self.answer('2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.events(2), [('other', b'2'), ('enter',)])
+
+    def test_answer_refuses_a_state_that_changes_between_check_and_keys(self):
+        self.change_after_checks('@tokiwa_agent', 'idle:200')
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('The agent is not waiting for an answer. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_refuses_a_tool_call_that_starts_between_check_and_keys(self):
+        self.change_after_checks('@tokiwa_agent_last_tool', self.b64(self.tool_call('toolu_bash_b', 'Bash')))
+        result = self.answer('1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('The question is not the last tool call of the agent. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
 
     def answer(self, choice='2', pending='toolu_q1', name='lead', identity=None, actor='worker-a', text=None):
         env = dict(self.env)

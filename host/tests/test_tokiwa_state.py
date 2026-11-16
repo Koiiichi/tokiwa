@@ -108,6 +108,49 @@ class TokiwaState(unittest.TestCase):
         self.record("waiting", "--kind", "question", stdin=json.dumps(data))
         self.assertEqual(len(self.decoded("@tokiwa_agent_pending")["summary"]), 500)
 
+    def test_options_are_capped_in_count_and_length(self):
+        data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
+        data["tool_input"]["questions"][0]["options"] = [{"label": "o" * 900} for _ in range(50)]
+        self.record("waiting", "--kind", "question", stdin=json.dumps(data))
+        options = self.decoded("@tokiwa_agent_pending")["options"]
+        self.assertEqual(len(options), 20)
+        self.assertEqual({len(label) for label in options}, {200})
+
+    def test_a_url_is_kept_whole_within_the_summary_limit(self):
+        data = json.loads(fixture("claude-elicitation-url"))
+        data["message"] = "m" * 900
+        self.record("waiting", "--kind", "question", stdin=json.dumps(data))
+        summary = self.decoded("@tokiwa_agent_pending")["summary"]
+        self.assertLessEqual(len(summary), 500)
+        self.assertTrue(summary.endswith(" " + data["url"]), summary[-80:])
+
+    def test_the_pending_and_last_tool_values_fit_a_tmux_command(self):
+        # Characters that JSON escapes take the most bytes. The values of both options and the label go
+        # into one tmux command of `agent answer`, which tmux limits to about 16 KiB.
+        wide = "\U0001F600 \""
+        data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
+        question = data["tool_input"]["questions"][0]
+        question["question"] = wide * 400
+        # Labels over the length cap, more options than the count cap, and the whole input under 64 KiB.
+        question["options"] = [{"label": wide * 220} for _ in range(25)]
+        self.record("waiting", "--kind", "question", stdin=json.dumps(data, ensure_ascii=False))
+        data["tool_input"] = {"command": wide * 400}
+        data["tool_name"] = "AskUserQuestion" + wide * 300
+        self.record("note", stdin=json.dumps(data, ensure_ascii=False))
+        pending, last = self.option("@tokiwa_agent_pending"), self.option("@tokiwa_agent_last_tool")
+        self.assertLessEqual(len(pending), 6144)
+        self.assertLessEqual(len(last), 3072)
+        self.assertEqual(self.decoded("@tokiwa_agent_pending")["id"], "toolu_question_a")
+        self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["id"], "toolu_question_a")
+
+    def test_a_turn_with_a_non_ascii_digit_restarts_the_count(self):
+        # '²' is a digit to str.isdigit(), but int() refuses it.
+        self.tm("set-option", "-t", "=worker-a:", "@tokiwa_agent_turn", "²")
+        self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
+        self.assertEqual(self.option("@tokiwa_agent_turn"), "1")
+        self.assertEqual(self.option("@tokiwa_agent_transcript"),
+                         json.loads(fixture("claude-user-prompt-submit"))["transcript_path"])
+
     def test_permission_notification_uses_the_last_tool(self):
         self.record("note", stdin=fixture("claude-pre-tool-use-bash"))
         self.record("waiting", "--kind", "permission", stdin=fixture("claude-notification-permission"))
@@ -116,6 +159,11 @@ class TokiwaState(unittest.TestCase):
         self.assertIn("Bash", pending["summary"])
         self.assertIn("make check", pending["summary"])
         self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["tool"], "Bash")
+
+    def test_note_records_the_id_of_the_tool_call(self):
+        # `agent answer` compares this id with the pending id: a later tool call stops the answer.
+        self.record("note", stdin=fixture("claude-pre-tool-use-bash"))
+        self.assertEqual(self.decoded("@tokiwa_agent_last_tool")["id"], "toolu_bash_a")
 
     def test_codex_permission_request_names_the_tool(self):
         self.record("waiting", "--kind", "permission", stdin=fixture("codex-permission-request"))
