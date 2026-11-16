@@ -194,6 +194,17 @@ class TokiwaState(unittest.TestCase):
         self.assertEqual(last["id"], "toolu_bash_s")
         self.assertIn("done", last["summary"])
 
+    def test_a_transcript_path_with_a_lone_surrogate_is_left_out(self):
+        self.record("working", "--turn", stdin=fixture("claude-user-prompt-submit"))
+        # A path with "?" in place of the surrogate names no file, and the old path belongs to another transcript.
+        event = ('{"hook_event_name":"UserPromptSubmit","session_id":"claude-session-b",'
+                 '"transcript_path":"/home/worker-a/\\ud83d.jsonl"}')
+        self.record("idle", "--turn", stdin=event)
+        self.assertTrue(self.option("@tokiwa_agent").startswith("idle:"))
+        self.assertEqual(self.option("@tokiwa_agent_turn"), "2")
+        self.assertEqual(self.option("@tokiwa_agent_session"), "claude-session-b")
+        self.assertEqual(self.option("@tokiwa_agent_transcript"), "")
+
     def test_a_question_with_a_lone_surrogate_records_its_pending_item(self):
         data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
         text = json.dumps(data).replace(data["tool_input"]["questions"][0]["question"], "Which \\ud83d parser?")

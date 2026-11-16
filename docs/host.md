@@ -274,8 +274,8 @@ The command also records these options of the tmux session, which later commands
 | --- | --- |
 | `@tokiwa_agent` | `STATE:EPOCH`. The time is when the state began. |
 | `@tokiwa_agent_turn` | The number of turns. Each event with `--turn` adds one. |
-| `@tokiwa_agent_transcript` | The `transcript_path` of the event. |
-| `@tokiwa_agent_session` | The `session_id` of the event. |
+| `@tokiwa_agent_transcript` | The `transcript_path` of the event. A value with a lone UTF-16 surrogate, which has no UTF-8 form, removes the option, and the other options are still recorded. |
+| `@tokiwa_agent_session` | The `session_id` of the event. A value with a lone surrogate removes the option, as for the transcript. |
 | `@tokiwa_agent_pending` | The question or permission request that waits for a person: base64 of JSON with `id`, `kind`, `summary`, `options`, `tool`, `questions`, `multi_select` and `at`. `working`, `idle` and `ended` remove it, and so do `tokiwa interrupt` and `tokiwa-state answered` for its question. |
 | `@tokiwa_agent_last_tool` | The last tool call that a `note` reported: base64 of JSON with `id` (the `tool_use_id` of the event), `tool`, `summary` and `at`. `tokiwa agent answer` requires this `id` to be the pending `id`, so a tool call that starts after a question stops the answer. |
 | `@tokiwa_agent_input` | The label of an answer that an agent chose: base64 of JSON with `actor`, `pending_id` and `at`. `tokiwa agent answer` sets it, and `tokiwa-state answered` prints the label for the agent and removes it. |
