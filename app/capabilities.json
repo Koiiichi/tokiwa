@@ -350,6 +350,12 @@
       }
     },
     {
+      "command": "agent send",
+      "class": "control",
+      "example": ["agent", "send", "lead", "1:$2:3", "--text", "Read LEAD.md."],
+      "helper": "agent-send"
+    },
+    {
       "command": "claim",
       "class": "control",
       "example": ["claim", "lead", "1:$2:3"],

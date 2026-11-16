@@ -4,6 +4,7 @@ import os
 import json
 import base64
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -1847,3 +1848,321 @@ exit $code
         self.assertEqual(result.returncode, 1)
         self.assertIn('Session identity changed. Nothing was changed.', result.stderr)
         self.assertEqual(self.driver(), 'worker-a')
+
+
+FAKE_AGENT = r'''
+#include <fcntl.h>
+#include <stdio.h>
+#include <termios.h>
+#include <unistd.h>
+/* Turns on bracketed paste, reads raw input and appends every byte to the log in argv[1]. */
+int main(int argc, char **argv) {
+    struct termios t;
+    tcgetattr(0, &t);
+    cfmakeraw(&t);
+    tcsetattr(0, TCSANOW, &t);
+    int log = open(argv[1], O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (argc > 2) puts(argv[2]);
+    printf("\033[?2004h");
+    fflush(stdout);
+    char buffer[4096];
+    ssize_t n;
+    while ((n = read(0, buffer, sizeof buffer)) > 0) write(log, buffer, n);
+    return 0;
+}
+'''
+
+
+class AgentSend(Pty, ModelHelpers, Server):
+    """`agent-send` delivers one message to an idle agent as one bracketed paste, or refuses."""
+
+    LABEL = '[Message from agent worker-a through Tokiwa. It is not from the owner and carries no owner approval.]'
+
+    def setUp(self):
+        super().setUp()
+        if not shutil.which('cc'):
+            self.skipTest('the stand-in agent needs a C compiler')
+        self.tools = Path(self.temp.name) / 'tools'
+        self.tools.mkdir()
+        (self.tools / 'agent.c').write_text(FAKE_AGENT)
+        for program in ('claude', 'codex'):
+            subprocess.run(['cc', '-o', str(self.tools / program), str(self.tools / 'agent.c')], check=True)
+        self.log = Path(self.temp.name) / 'agent.log'
+        self.start_agent('lead')
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
+
+    def start_agent(self, name, program='claude', screen=''):
+        """A Tokiwa session whose pane runs the stand-in agent in the idle state, with bracketed paste on."""
+        self.assertEqual(self.helper('ensure', name).returncode, 0)
+        self.tm('send-keys', '-t', f'={name}:', f"{self.tools / program} {self.log} '{screen}'", 'Enter')
+        for _ in range(150):
+            command = self.tm('display-message', '-p', '-t', f'={name}:', '#{pane_current_command}').stdout.strip()
+            if command == program and self.log.exists():
+                break
+            time.sleep(.02)
+        else:
+            self.fail(f'{program} did not start')
+        time.sleep(.1)
+        self.option(name, '@tokiwa_agent', 'idle:100')
+        self.option(name, '@tokiwa_agent_turn', '4')
+
+    def option(self, name, key, value):
+        self.assertEqual(self.tm('set-option', '-t', f'={name}:', key, value).returncode, 0)
+
+    def claim(self, actor, name='lead'):
+        self.env['TOKIWA_ACTOR'] = actor
+        result = self.helper('claim', name, self.rows()[name]['identity'], 'replace')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def send(self, text, name='lead', identity=None, actor='worker-a'):
+        env = dict(self.env)
+        env.pop('TOKIWA_ACTOR', None)
+        if actor is not None:
+            env['TOKIWA_ACTOR'] = actor
+        data = text if isinstance(text, bytes) else text.encode('utf-8')
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), 'agent-send', name, identity or self.identity],
+                              env=env, input=data, capture_output=True, timeout=30)
+
+    def events(self, count=None):
+        """The log of the stand-in agent as ('paste', text) and ('enter',) events. Waits for `count` of them."""
+        for _ in range(150):
+            data = self.log.read_bytes()
+            found = []
+            for part in re.split(rb'(\x1b\[200~.*?\x1b\[201~|\r)', data, flags=re.S):
+                if part == b'\r':
+                    found.append(('enter',))
+                elif part.startswith(b'\x1b[200~'):
+                    found.append(('paste', part[6:-6].decode('utf-8')))
+                elif part:
+                    found.append(('other', part))
+            if count is None or len(found) >= count:
+                return found
+            time.sleep(.02)
+        return found
+
+    def refused(self, result, sentence):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(sentence, result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_send_to_an_idle_agent(self):
+        result = self.send('Please read LEAD.md.')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertEqual(reply['turn_before'], 4)
+        self.assertLessEqual(abs(reply['sent_at'] - time.time()), 5)
+        self.assertEqual(self.events(2), [('paste', self.LABEL + '\nPlease read LEAD.md.'), ('enter',)])
+
+    def test_message_starts_with_the_agent_label(self):
+        self.claim('orchestrator-a')
+        self.assertEqual(self.send('hi', actor='orchestrator-a').returncode, 0)
+        expected = '[Message from agent orchestrator-a through Tokiwa. It is not from the owner and carries no owner approval.]\nhi'
+        self.assertEqual(self.events(2)[0], ('paste', expected))
+
+    def test_send_with_a_read_only_viewer(self):
+        self.attach_client('lead', self.identity, 'view')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(self.events(2)[1], ('enter',))
+
+    def test_send_when_limited(self):
+        self.option('lead', '@tokiwa_agent', 'limited:100')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(len(self.events(2)), 2)
+
+    def test_send_when_error(self):
+        self.option('lead', '@tokiwa_agent', 'error:100')
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.assertEqual(len(self.events(2)), 2)
+
+    def test_send_to_a_codex_pane(self):
+        self.start_agent('other', 'codex')
+        self.claim('worker-a', 'other')
+        result = self.send('hello', 'other', self.rows()['other']['identity'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unicode_multiline_message_arrives_as_one_paste(self):
+        text = 'Grüße ☃ 日本語\n\n  indented line\twith tab\n' + ('Zeile mit Äpfeln und Öl.\n' * 400) + 'end'
+        self.assertLess(len(text.encode()), 16384)
+        self.assertEqual(self.send(text).returncode, 0)
+        self.assertEqual(self.events(2), [('paste', self.LABEL + '\n' + text), ('enter',)])
+
+    def test_the_paste_buffer_is_deleted(self):
+        self.assertEqual(self.send('hello').returncode, 0)
+        self.events(2)
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_send_sets_working_in_the_same_queue(self):
+        before = int(time.time())
+        reply = json.loads(self.send('hello').stdout)
+        state = self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip()
+        self.assertEqual(state, f"working:{reply['sent_at']}")
+        self.assertGreaterEqual(reply['sent_at'], before)
+
+    def test_second_send_before_the_hook_is_refused(self):
+        self.assertEqual(self.send('first').returncode, 0)
+        self.events(2)
+        result = self.send('second')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The agent is not idle. Nothing was sent.', result.stderr.decode())
+        time.sleep(.2)
+        self.assertEqual(len(self.events()), 2)
+
+    def test_send_writes_an_audit_line_without_the_text(self):
+        self.env['TOKIWA_VIA'] = 'mcp'
+        self.assertEqual(self.send('marker-text-77 hello').returncode, 0)
+        lines = (Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()
+        entry = json.loads(lines[-1])
+        self.assertEqual((entry['action'], entry['name'], entry['identity'], entry['via'], entry['actor']),
+                         ('send', 'lead', self.identity, 'mcp', 'worker-a'))
+        self.assertNotIn('marker-text', '\n'.join(lines))
+
+    def test_send_refuses_a_replaced_identity(self):
+        self.refused(self.send('hello', identity='1:$99:1'), 'Session identity changed. Nothing was sent.')
+
+    def test_send_refuses_a_shell_pane(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-a', 'plain')
+        self.option('plain', '@tokiwa_agent', 'idle:100')
+        result = self.send('hello', 'plain', self.rows()['plain']['identity'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The pane does not run an agent. Nothing was sent.', result.stderr.decode())
+        # The shell never saw the text.
+        self.assertNotIn('Tokiwa', self.tm('capture-pane', '-p', '-t', '=plain:').stdout)
+
+    def test_send_refuses_a_writable_client(self):
+        self.attach_client('lead', self.identity, 'attach')
+        self.refused(self.send('hello'), 'A client is attached. Nothing was sent.')
+
+    def test_send_refuses_a_client_that_attaches_between_count_and_paste(self):
+        tools = Path(self.temp.name) / 'wrap'
+        tools.mkdir()
+        flag = Path(self.temp.name) / 'attached'
+        (tools / 'tmux').write_text(f"""#!/bin/bash
+{self.tmux} "$@"; code=$?
+if [[ " $* " == *' list-clients '* && ! -e {flag} ]]; then
+ touch {flag}
+ ( sleep 30 | {self.tmux} -N -S {self.socket} -C attach-session -t =lead ) </dev/null >/dev/null 2>&1 &
+ for _ in $(seq 100); do
+  [[ $({self.tmux} -N -S {self.socket} list-clients -t =lead | wc -l) -gt 0 ]] && break
+  sleep 0.05
+ done
+fi
+exit $code
+""")
+        (tools / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{tools}:{os.environ['PATH']}"
+        self.refused(self.send('hello'), 'A client is attached. Nothing was sent.')
+
+    def test_send_refuses_without_an_actor(self):
+        for actor in [None, '', 'bad;rm', '-x']:
+            self.refused(self.send('hello', actor=actor), 'Nothing was sent.')
+
+    def test_send_refuses_another_driver(self):
+        self.claim('worker-b')
+        self.refused(self.send('hello'), 'Only the driver can send.')
+
+    def test_send_refuses_without_a_driver(self):
+        self.assertEqual(self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_driver').returncode, 0)
+        self.refused(self.send('hello'), 'Only the driver can send.')
+
+    def test_send_refuses_while_working(self):
+        self.option('lead', '@tokiwa_agent', 'working:100')
+        self.refused(self.send('hello'), 'The agent is not idle. Nothing was sent.')
+
+    def test_send_refuses_an_agent_that_has_reported_nothing(self):
+        self.assertEqual(self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent').returncode, 0)
+        self.refused(self.send('hello'), 'The agent is not idle. Nothing was sent.')
+
+    def test_send_refuses_with_a_pending_item(self):
+        self.option('lead', '@tokiwa_agent_pending', self.b64({'id': 'q1', 'kind': 'question', 'at': 5}))
+        self.refused(self.send('hello'), 'An item waits for a person. Nothing was sent.')
+
+    def test_send_refuses_a_dialog_on_screen(self):
+        self.log.unlink()
+        self.tm('kill-session', '-t', '=lead')
+        self.start_agent('lead', screen='Enter to confirm')
+        self.identity = self.rows()['lead']['identity']
+        self.claim('worker-a')
+        self.refused(self.send('hello'), 'A dialog is on the screen. Nothing was sent.')
+
+    def test_send_refuses_control_characters(self):
+        for bad in ['bell\a', 'esc\x1b[31m', 'cr\rreturn', 'nul\x00', 'del\x7f']:
+            self.refused(self.send(bad), 'control character')
+
+    def test_send_refuses_a_leading_slash_bang_or_hash(self):
+        for bad in ['/clear', '!ls', '#note', '   /clear', '\t!ls', '  \n#x']:
+            self.refused(self.send(bad), 'starts with')
+        # The same characters later in the text are fine.
+        self.assertEqual(self.send('read /etc and #3 and !x').returncode, 0)
+
+    def test_send_refuses_text_over_the_limit(self):
+        self.refused(self.send('x' * 16385), 'over 16384 bytes')
+        self.refused(self.send('ä' * 8193), 'over 16384 bytes')
+        self.assertEqual(self.send('x' * 16384).returncode, 0)
+
+    def test_send_refuses_empty_text(self):
+        for bad in ['', '\n', '  \t \n']:
+            self.refused(self.send(bad), 'The message is empty. Nothing was sent.')
+
+    def test_send_refuses_text_that_is_not_utf8(self):
+        self.refused(self.send(b'bad \xff\xfe'), 'not UTF-8 text')
+
+    def test_core_delivery_has_no_agent_checks(self):
+        # The core function pastes into a shell pane: the shell refusal lives in the agent layer.
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-a', 'plain')
+        identity = self.rows()['plain']['identity']
+        result = subprocess.run(['bash', '-c', 'identity=$1; set --; source "$0"; name=plain; core_deliver "$identity"', str(ROOT / 'terminal-session.sh'), identity],
+                                env=dict(self.env, TOKIWA_SOURCE_ONLY='1', TOKIWA_ACTOR='worker-a'),
+                                input=b'echo core-text-$((6 * 7))', capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('plain', 'core-text-42')
+
+    def test_core_delivery_still_refuses_another_driver(self):
+        self.assertEqual(self.helper('ensure', 'plain').returncode, 0)
+        self.claim('worker-b', 'plain')
+        identity = self.rows()['plain']['identity']
+        result = subprocess.run(['bash', '-c', 'identity=$1; set --; source "$0"; name=plain; core_deliver "$identity"', str(ROOT / 'terminal-session.sh'), identity],
+                                env=dict(self.env, TOKIWA_SOURCE_ONLY='1', TOKIWA_ACTOR='worker-a'),
+                                input=b'echo core-text', capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Only the driver can send.', result.stderr.decode())
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_a_failed_paste_leaves_no_text_and_no_buffer(self):
+        folder = Path(self.temp.name) / 'fail-bin'
+        folder.mkdir()
+        (folder / 'tmux').write_text(f'''#!/bin/bash
+if [[ " $* " == *" paste-buffer "* ]]; then echo 'tmux failed' >&2; exit 1; fi
+exec {self.tmux} "$@"
+''')
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+        result = self.send('hello')
+        self.assertEqual(result.returncode, 1)
+        time.sleep(.2)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+        # The state did not change, so the caller may try again.
+        self.assertEqual(self.tm('show-options', '-qv', '-t', '=lead:', '@tokiwa_agent').stdout.strip(), 'idle:100')
+
+    def test_one_paste_call_holds_the_paste_and_the_enter(self):
+        folder = Path(self.temp.name) / 'rec-bin'
+        folder.mkdir()
+        record = Path(self.temp.name) / 'argv.log'
+        (folder / 'tmux').write_text(f'''#!/bin/bash
+printf '%s\\n' "$*" >> {record}
+exec {self.tmux} "$@"
+''')
+        (folder / 'tmux').chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+        self.assertEqual(self.send('marker-text-88').returncode, 0)
+        calls = record.read_text()
+        self.assertNotIn('marker-text', calls)
+        deliveries = [c for c in calls.splitlines() if 'paste-buffer' in c]
+        self.assertEqual(len(deliveries), 1)
+        self.assertIn('send-keys', deliveries[0])
+        self.assertIn('@tokiwa_agent', deliveries[0])

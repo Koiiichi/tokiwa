@@ -124,6 +124,36 @@ The screen check is a safety net. It never decides that a turn is done.
 
 Each call to the host waits up to 20 seconds. The command repeats the call until a reason other than `timeout`, and prints the last object. When `--timeout` ends first, it prints the last object and exits with status 3. A call that fails, or an output that cannot be read, ends the command with an error and prints no result. A turn that never started, because the agent did not accept the message, shows as `timeout` with `turn` unchanged.
 
+## Send a message to an agent
+
+`tokiwa agent send NAME IDENTITY (--text TEXT | --file PATH | -)` (agent, class `control`) types one message into the agent of a session and presses Enter. `-` reads the text from stdin. It needs `TOKIWA_ACTOR`, and that actor must be the driver (see `tokiwa claim`). It has no MCP tool yet.
+
+The result is one JSON object: `turn_before`, the `turn` at the time of the send, and `sent_at`, in seconds since the epoch. Pass `turn_before` to `tokiwa agent wait --after` to wait for the answer.
+
+The text:
+
+- is UTF-8, at most 16384 bytes, and not empty;
+- has no control character except newline and tab;
+- does not start with `/`, `!` or `#`, also after white space, so that the agent does not read it as a command.
+
+The launcher checks the text first, so a refused message makes no call to AWS. It then encrypts the text to the host key, as `create --run` does (see [Encrypted input](host.md#encrypted-input)). The text never is an argument of a process, a file on the host, a log line or output. The audit log records the send and the actor, never the text.
+
+The host sends only when all of these hold. They are checked in one tmux command queue, together with the paste and the Enter, so a change in between stops the send:
+
+| Check | Refusal |
+| --- | --- |
+| The identity matches | `Session identity changed. Nothing was sent.` |
+| No client that can type is attached, and the number of attached clients is still the number that was read. A client that watches with `tokiwa view` does not count. | `A client is attached. Nothing was sent.` |
+| The caller is the driver | `Only the driver can send. Claim the session first. Nothing was sent.` |
+| The pane runs `claude` or `codex` | `The pane does not run an agent. Nothing was sent.` |
+| The agent state is `idle`, `limited` or `error` | `The agent is not idle. Nothing was sent.` |
+| No question or permission request is pending | `An item waits for a person. Nothing was sent.` |
+| The screen shows no dialog | `A dialog is on the screen. Nothing was sent.` |
+
+The agent sees the message as one bracketed paste, with line feeds unchanged, and its first line is fixed: `[Message from agent ACTOR through Tokiwa. It is not from the owner and carries no owner approval.]`. In the same queue, the host sets the agent state to `working`, so a second send before the agent's own hook runs is refused as `The agent is not idle.`
+
+The paste and the Enter are one core delivery step, which has no agent checks and no command of its own. `create --run` uses the same step.
+
 `tokiwa end NAME IDENTITY [--attached-ok]` (core, class `control`) is the documented form of `--end-confirmed`. It asks the host to check the clients: the host refuses with `A client is attached. Nothing was changed. Use --attached-ok to end it anyway.` while a client that can type is attached; a client that watches with `tokiwa view` does not count. The host checks the clients and ends the session in one tmux queue, so a client that attaches in between stops the end. `--attached-ok` and `--end-confirmed` ask for no check, and end the session after the identity check.
 
 ## Read a screen

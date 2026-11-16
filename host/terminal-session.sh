@@ -48,14 +48,14 @@ name=${2:-}
 extra=${3:-}
 [[ $# -le 3 || ( $mode == capture && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -121,7 +121,7 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == end ]]; then
@@ -132,6 +132,9 @@ if [[ $mode == claim ]]; then
 fi
 if [[ $mode == claim || $mode == release ]]; then
  valid_actor "${TOKIWA_ACTOR:-}" || fail "Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was changed."
+fi
+if [[ $mode == agent-send ]]; then
+ valid_actor "${TOKIWA_ACTOR:-}" || fail "Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was sent."
 fi
 if [[ $mode == agent-wait ]]; then
  after=${4:-}
@@ -220,12 +223,16 @@ read -r -d '' session_lib <<'PY_SESSION_LIB' || true
 import base64
 import binascii
 import json
+import os
 import re
+import secrets
 import subprocess
 import sys
 import time
 
 socket = sys.argv[1]
+# The longest message text, in bytes of UTF-8.
+MAX_MESSAGE_BYTES = 16384
 AGENTS = ('claude', 'codex')
 SHELLS = ('bash', 'sh', 'zsh', 'fish')
 
@@ -278,11 +285,74 @@ def read_session(name, identity, extra=()):
                  driver=driver or None,
                  program=command if command in AGENTS else 'shell' if command in SHELLS else 'other')
     return facts, pane, dead, values
+
+def text_refusal(text):
+    """The sentence that refuses message `text`, or None. The rules of every delivery."""
+    if not text.strip():
+        return 'The message is empty. Nothing was sent.'
+    if len(text.encode('utf-8')) > MAX_MESSAGE_BYTES:
+        return f'The message is over {MAX_MESSAGE_BYTES} bytes. Nothing was sent.'
+    if any((ord(c) < 32 and c not in '\n\t') or ord(c) == 127 for c in text):
+        return 'The message has a control character. Nothing was sent.'
+    return None
+
+def read_message():
+    """The message text on stdin, or the exit of the program with the sentence that refuses it."""
+    data = sys.stdin.buffer.read(MAX_MESSAGE_BYTES + 1)
+    if len(data) > MAX_MESSAGE_BYTES:
+        sys.exit(f'The message is over {MAX_MESSAGE_BYTES} bytes. Nothing was sent.')
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        sys.exit('The message is not UTF-8 text. Nothing was sent.')
+
+def stage_delivery(name, identity, payload, extra=(), check=None):
+    """Check session `name` and put `payload` in a tmux buffer. Return (pane, clients, buffer, values).
+
+    The checks here only refuse early with a clear sentence. The shell function `deliver` repeats
+    each of them inside the tmux command queue that pastes, which is what makes them hold.
+    `clients` is the number of clients that this call counted; the paste goes only while it is the
+    number then attached. `check(facts, pane, values)` is the layer's own check: it returns a
+    sentence, or None. `extra` lists the tmux formats whose values `check` and the caller read.
+    The program exits with the sentence on a refusal.
+    """
+    # The clients are read before the session, so that a client that attaches in between is counted
+    # by the tmux condition and not missed.
+    total, writable = client_counts(name, identity)
+    facts, pane, dead, values = read_session(name, identity, extra)
+    if facts['session'] == 'gone':
+        sys.exit('The selected session no longer exists. Nothing was sent.')
+    if facts['session'] == 'replaced':
+        sys.exit('Session identity changed. Nothing was sent.')
+    if dead == '1':
+        sys.exit('The pane has ended. Nothing was sent.')
+    if writable:
+        sys.exit('A client is attached. Nothing was sent.')
+    if facts['driver'] != os.environ.get('TOKIWA_ACTOR'):
+        sys.exit('Only the driver can send. Claim the session first. Nothing was sent.')
+    problem = check(facts, pane, values) if check else None
+    if problem:
+        sys.exit(problem)
+    buffer = 'tokiwa-send-' + secrets.token_hex(6)
+    # The text reaches tmux on stdin only. It is never an argument of a process.
+    loaded = subprocess.run(['tmux', '-N', '-S', socket, 'load-buffer', '-b', buffer, '-'],
+                            input=payload.encode('utf-8'), capture_output=True, timeout=10)
+    if loaded.returncode:
+        sys.exit('The message could not be loaded. Nothing was sent.')
+    return pane, total, buffer, values
 PY_SESSION_LIB
 # `state`: the facts of a session, with no agent field and no screen read.
 read -r -d '' state_program <<'PY_STATE' || true
 print(json.dumps(read_session(sys.argv[2], sys.argv[3])[0]))
 PY_STATE
+# The core stage of a delivery: the text on stdin, as it is. Prints `PANE CLIENTS BUFFER`.
+read -r -d '' core_stage_program <<'PY_CORE_STAGE' || true
+text = read_message()
+problem = text_refusal(text)
+if problem:
+    sys.exit(problem)
+print(*stage_delivery(sys.argv[2], sys.argv[3], text)[:3])
+PY_CORE_STAGE
 # `end`: the clients of the session, as `ALL WRITABLE`.
 read -r -d '' client_counts_program <<'PY_CLIENT_COUNTS' || true
 print(*client_counts(sys.argv[2], sys.argv[3]))
@@ -379,6 +449,40 @@ while True:
     time.sleep(0.5)
 print(json.dumps(dict(record, reason=found or 'timeout')))
 PY_AGENT_WAIT
+# The agent stage of a delivery. The fixed first line tells the agent that the text is not from the
+# owner. Prints `PANE CLIENTS BUFFER TURN`; TURN is `-` when the agent has reported no turn.
+read -r -d '' agent_send_program <<'PY_AGENT_SEND' || true
+actor = os.environ['TOKIWA_ACTOR']
+LABEL = f'[Message from agent {actor} through Tokiwa. It is not from the owner and carries no owner approval.]'
+text = read_message()
+problem = text_refusal(text)
+# After any leading white space, a / ! or # would make the agent read the line as a command, not as text.
+if not problem and text.lstrip()[:1] in ('/', '!', '#'):
+    problem = 'The message starts with /, ! or #. Nothing was sent.'
+if problem:
+    sys.exit(problem)
+
+def check(facts, pane, values):
+    """The sentence that refuses the session, or None when its agent is ready for a message."""
+    agent, turn, pending = values
+    if facts['program'] not in AGENTS:
+        return 'The pane does not run an agent. Nothing was sent.'
+    state, _, at = agent.partition(':')
+    # An agent that has reported nothing yet is `unknown`: no caller treats it as idle.
+    if state not in ('idle', 'limited', 'error') or not at.isdigit():
+        return 'The agent is not idle. Nothing was sent.'
+    if pending:
+        return 'An item waits for a person. Nothing was sent.'
+    if screen_dialog(pane, facts['program']):
+        return 'A dialog is on the screen. Nothing was sent.'
+    return None
+
+pane, clients, buffer, values = stage_delivery(
+    sys.argv[2], sys.argv[3], LABEL + '\n' + text,
+    ('#{@tokiwa_agent}', '#{@tokiwa_agent_turn}', '#{@tokiwa_agent_pending}'), check)
+turn = values[1]
+print(pane, clients, buffer, turn if turn.isdigit() else '-')
+PY_AGENT_SEND
 ensure() {
  if ! tm has-session -t "=$name" 2>/dev/null; then
   printf 'Creating terminal: %s\n' "$name" >&2
@@ -388,7 +492,82 @@ ensure() {
   fi
  fi
 }
+# Deliver the buffer $3 into the pane $1 of the session $name (identity $extra), then press Enter.
+# The checks, the paste and the Enter run in one tmux command queue, so that a failed paste never
+# leaves typed text at the prompt, and a change since the checks stops the delivery.
+#   $2 the number of attached clients that the caller counted
+#   $4 1 to require the driver and no writable client, 0 for a session that was just made
+#   $5 the flags of paste-buffer
+#   $6 a tmux condition of the layer above, $7 the sentence that names its failure, and
+#   $8 a tmux command that the layer above runs in the same queue after the Enter.
+# The sentences go through #{?...} and display-message -p '...': they must stay free of commas
+# and single quotes. On a failure the buffer is deleted, and `delivery_answer` holds the sentence
+# of a refusal, or nothing when tmux itself failed. The status is 0 when the text was delivered.
+# The refusal text never names the pane: display-message expands % sequences of its text, so a pane id
+# such as %0 cannot be compared there. A change of the pane shows as `The session changed.` send-keys gets an empty -c: without it, tmux takes the attached client of the
+# session as the target client, and refuses when that client is read only.
+deliver() {
+ local pane=$1 total=$2 buffer=$3 guard=$4 flags=$5 layer_condition=${6:-1} layer_refusal=${7:-} layer_action=${8:-}
+ local session_id=${extra#*:}
+ session_id=${session_id%%:*}
+ local identity_ok="#{==:#{pid}:#{session_id}:#{session_created},$extra}"
+ local pane_ok="#{==:#{pane_id},$pane}"
+ local condition="#{&&:$identity_ok,$pane_ok}"
+ local refusal="#{?$identity_ok,The session changed. Nothing was sent.,Session identity changed. Nothing was sent.}"
+ if [[ $guard == 1 ]]; then
+  local clients_ok="#{==:#{session_attached},$total}"
+  local driver_ok="#{==:#{@tokiwa_driver},$TOKIWA_ACTOR}"
+  condition="#{&&:$condition,#{&&:$clients_ok,#{&&:$driver_ok,$layer_condition}}}"
+  refusal="#{?$identity_ok,#{?$clients_ok,#{?$driver_ok,${layer_refusal:-The session changed. Nothing was sent.},Only the driver can send. Claim the session first. Nothing was sent.},A client is attached. Nothing was sent.},Session identity changed. Nothing was sent.}"
+ fi
+ local action="paste-buffer${flags:+ $flags} -d -b '$buffer' -t '$pane' ; send-keys -c '' -t '$pane' Enter"
+ [[ -z $layer_action ]] || action="$action ; $layer_action"
+ delivery_answer=
+ if ! delivery_answer=$(tm if-shell -F -t "=$name:" "$condition" "$action" "display-message -p '$refusal'"); then
+  delivery_answer=
+  tm delete-buffer -b "$buffer" 2>/dev/null || true
+  return 1
+ fi
+ [[ -z $delivery_answer ]] || { tm delete-buffer -b "$buffer" 2>/dev/null || true; return 1; }
+}
+# Sets the layer's condition, refusal and action of a delivery after the agent stage ($1 is its TURN).
+agent_layer() {
+ local state='#{@tokiwa_agent}'
+ local program="#{||:#{==:#{pane_current_command},claude},#{==:#{pane_current_command},codex}}"
+ local idle="#{||:#{m:idle:*,$state},#{||:#{m:limited:*,$state},#{m:error:*,$state}}}"
+ local no_item='#{==:#{@tokiwa_agent_pending},}'
+ local turn=$1
+ [[ $turn != - ]] || turn=
+ layer_condition="#{&&:$program,#{&&:$idle,#{&&:$no_item,#{==:#{@tokiwa_agent_turn},$turn}}}}"
+ layer_refusal="#{?$program,#{?$idle,#{?$no_item,The session changed. Nothing was sent.,An item waits for a person. Nothing was sent.},The agent is not idle. Nothing was sent.},The pane does not run an agent. Nothing was sent.}"
+ local session_id=${extra#*:}
+ session_id=${session_id%%:*}
+ sent_at=$(date +%s)
+ layer_action="set-option -t '$session_id' @tokiwa_agent 'working:$sent_at'"
+}
+# Send the text on stdin into session $name with identity $1. The core layer knows no agent: a
+# layer above passes its own stage program (Python, text on stdin) and its function that sets
+# layer_condition, layer_refusal and layer_action from the last field of the stage output.
+core_deliver() {
+ extra=$1
+ local stage=${2:-$core_stage_program} lib=${3:-} layer=${4:-} staged pane clients buffer rest
+ staged=$(python3 -c "$session_lib"$'\n'"$lib"$'\n'"$stage" "$socket" "$name" "$extra") || return 1
+ read -r pane clients buffer rest < <(printf '%s\n' "$staged")
+ layer_condition= layer_refusal= layer_action=
+ [[ -z $layer ]] || "$layer" "$rest"
+ if ! deliver "$pane" "$clients" "$buffer" 1 '-p -r' "$layer_condition" "$layer_refusal" "$layer_action"; then
+  fail "${delivery_answer:-The message could not be sent. Refresh the session state.}"
+ fi
+ audit send "$extra"
+ turn_before=$rest
+}
+# A test sources this file with TOKIWA_SOURCE_ONLY=1 to call the functions above.
+[[ ${TOKIWA_SOURCE_ONLY:-} != 1 ]] || return 0
 case "$mode" in
+ agent-send)
+  core_deliver "$extra" "$agent_send_program" "$agent_lib" agent_layer
+  printf '{"turn_before": %s, "sent_at": %s}\n' "$([[ $turn_before == - ]] && echo 0 || echo "$turn_before")" "$sent_at"
+  exit ;;
  state)
   # Read only. One JSON object that holds no session text and is not sealed.
   python3 -c "$session_lib"$'\n'"$state_program" "$socket" "$name" "$extra"
@@ -862,7 +1041,8 @@ except (ValueError, OSError, TypeError, AttributeError):
     raise SystemExit('Use an existing absolute directory, or a folder name of letters, digits, dots, hyphens or underscores.')
 PY_CREATE
 ) || exit 1
-  read -r directory_b64 label_b64 run_b64 <<< "$request"
+  # A here-string would put the request, which can hold the command, in a temporary file on some systems.
+  read -r directory_b64 label_b64 run_b64 < <(printf '%s\n' "$request")
   directory=$(printf '%s' "$directory_b64" | base64 -d)
   label=''
   [[ $label_b64 == - ]] || label=$(project_label "$label_b64") || exit 1
@@ -878,22 +1058,20 @@ PY_CREATE
    tm set-option -t "=$name:" @tokiwa_project "$label"
    registry add "$label" "$directory"
   fi
+  # The identity lets the app attach at once, without another read of the session list.
+  read -r pane identity < <(tm display-message -p -t "=$name:" '#{pane_id} #{pid}:#{session_id}:#{session_created}') ||
+   fail 'The terminal could not be created.'
   # The shell reads the typed line after its startup file, so the command has the PATH and the
   # secrets of a new shell, and the shell stays when the command ends. The line reaches tmux on stdin
   # (load-buffer) and is pasted from a buffer that tmux deletes: it is never an argument of a process.
-  # printf is a shell builtin, so the line is not an argument of base64 either.
+  # printf is a shell builtin, so the line is not an argument of base64 either. The paste and the
+  # Enter are one core delivery, as for a message to an agent.
   if [[ $run_b64 != - ]]; then
    buffer="tokiwa-create-$$-$RANDOM"
-   if ! { printf '%s' "$run_b64" | base64 -d | tm load-buffer -b "$buffer" - &&
-          tm paste-buffer -d -b "$buffer" -t "=$name:" &&
-          tm send-keys -t "=$name:" Enter; }; then
-    tm delete-buffer -b "$buffer" 2>/dev/null || true
-    fail 'The command could not be typed into the new terminal. Refresh the session state.'
-   fi
+   printf '%s' "$run_b64" | base64 -d | tm load-buffer -b "$buffer" - || fail 'The command could not be typed into the new terminal. Refresh the session state.'
+   extra=$identity
+   deliver "$pane" 0 "$buffer" 0 '' || fail "${delivery_answer:-The command could not be typed into the new terminal. Refresh the session state.}"
   fi
-  # The identity lets the app attach at once, without another read of the session list.
-  identity=$(tm display-message -p -t "=$name:" '#{pid}:#{session_id}:#{session_created}') ||
-   fail 'The terminal could not be created.'
   audit create "$identity" "$([[ $run_b64 == - ]] && echo 0 || echo 1)"
   printf 'Created terminal: %s %s\n' "$name" "$identity"
   exit ;;

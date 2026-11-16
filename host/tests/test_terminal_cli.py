@@ -398,12 +398,13 @@ esac
             self.assertFalse((self.home / 'calls').exists(), args)
 
     def test_agent_without_a_subcommand_prints_usage(self):
-        for args in [('agent',), ('agent', 'send'), ('agent', 'bogus', 'lead', '1:$2:3')]:
+        for args in [('agent',), ('agent', 'read'), ('agent', 'bogus', 'lead', '1:$2:3')]:
             result = self.run_cli(*args)
             self.assertEqual(result.returncode, 2, args)
             self.assertIn('Usage: tokiwa agent', result.stderr)
             self.assertIn('state NAME IDENTITY', result.stderr)
             self.assertIn('wait NAME IDENTITY --after TURN', result.stderr)
+            self.assertIn('send NAME IDENTITY', result.stderr)
         self.assertFalse((self.home / 'calls').exists())
 
     def test_the_old_top_level_wait_is_not_a_command(self):
@@ -488,6 +489,77 @@ esac
                 self.assertEqual(result.returncode, 1, (mode, actor))
                 self.assertIn('TOKIWA_ACTOR', result.stderr)
         self.assertFalse((self.home / 'calls').exists())
+
+    def send_calls(self):
+        return (self.home / 'calls').read_text()
+
+    def test_send_text_is_not_in_the_parameters(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'marker-text-9f3c and \u00e4\u00f6 more'
+        result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.send_calls()
+        encoded = base64.b64encode(text.encode()).decode()
+        for part in ['marker-text', encoded, encoded.rstrip('=')]:
+            self.assertNotIn(part, calls)
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\n' + text.encode())
+        send = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(send, r"set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace -- env TOKIWA_QUIET=1 TOKIWA_VIA=cli TOKIWA_ACTOR=worker-a /opt/agent-platform/rootless/terminal-session\.sh agent-send lead")
+
+    def test_send_reads_a_file_and_stdin(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        text = 'line one\n\u00dcber line two\n'
+        path = self.home / 'message.txt'
+        path.write_text(text, encoding='utf-8')
+        self.assertEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--file', str(path)).returncode, 0)
+        self.assertEqual(self.host_decrypt(self.send_calls()), b'tokiwa-input-v1\n' + text.encode())
+        result = subprocess.run(['bash', str(CLI), 'agent', 'send', 'lead', '1:$2:3', '-'], env=self.env, input=text.encode(),
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.host_decrypt(self.send_calls()), b'tokiwa-input-v1\n' + text.encode())
+
+    def test_send_refuses_text_checks_on_the_mac_first(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        for bad in ['/clear', '  !ls', '#x', 'bell\a', '', '  \n', 'x' * 16385]:
+            result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', bad)
+            self.assertEqual(result.returncode, 1, repr(bad))
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+        missing = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--file', str(self.home / 'none'))
+        self.assertEqual(missing.returncode, 1)
+        for args in [('agent', 'send', 'lead'), ('agent', 'send', 'lead', '1:$2:3'), ('agent', 'send', 'lead', '1:$2:3', '--text'),
+                     ('agent', 'send', 'lead', '1:$2:3', '--bogus', 'x'), ('agent', 'send', 'bad name', '1:$2:3', '--text', 'x')]:
+            self.assertNotEqual(self.run_cli(*args).returncode, 0, args)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_send_without_tokiwa_actor_is_refused(self):
+        for actor in [None, '', 'bad;rm']:
+            self.env.pop('TOKIWA_ACTOR', None)
+            if actor is not None:
+                self.env['TOKIWA_ACTOR'] = actor
+            result = self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', 'hello')
+            self.assertEqual(result.returncode, 1, actor)
+            self.assertIn('TOKIWA_ACTOR', result.stderr)
+            self.assertIn('Nothing was sent.', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
+    def test_the_temporary_folder_is_gone_after_a_call(self):
+        # A message and a create line leave no temporary folder, after a success and after a refusal.
+        scratch = self.home / 'scratch'
+        scratch.mkdir()
+        self.env.update(TMPDIR=str(scratch), TOKIWA_ACTOR='worker-a')
+        self.assertEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', 'hello').returncode, 0)
+        self.assertNotEqual(self.run_cli('agent', 'send', 'lead', '1:$2:3', '--text', '/x').returncode, 0)
+        self.assertEqual(self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi').returncode, 0)
+        self.assertEqual(self.run_cli('capture', 'lead', '1:$2:3').returncode, 0)
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_no_here_string_carries_message_text(self):
+        # macOS /bin/bash 3.2 writes a here-string to a temporary file.
+        for path in [CLI, CLI.parents[1] / 'host/terminal-session.sh']:
+            for line in path.read_text().splitlines():
+                if any(word in line for word in ('create_out', 'run_b64', '$request', 'input_file')):
+                    self.assertNotIn('<<<', line, line)
 
     def test_claim_and_release_refuse_bad_arguments_before_aws(self):
         self.env['TOKIWA_ACTOR'] = 'worker-a'
