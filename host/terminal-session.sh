@@ -846,6 +846,7 @@ def check(facts, pane, values):
     try:
         item = json.loads(base64.b64decode(values[0], validate=True))
         kind, found, options = item['kind'], item['id'], item.get('options')
+        tool, questions, multi = item.get('tool'), item.get('questions'), item.get('multi_select')
     except (binascii.Error, ValueError, KeyError, TypeError, RecursionError):
         return 'The pending item cannot be read. Nothing was sent.'
     # A permission item, also a sign-in page, has no answer path. Its only key is interrupt (Esc).
@@ -855,8 +856,15 @@ def check(facts, pane, values):
         return 'The pending item is not a question. Nothing was sent.'
     if found != pending_id:
         return 'The pending item is not the one named. Nothing was sent.'
+    # Only the question tool of Claude Code adds the input label to the context of the worker, and only its
+    # numbered dialog takes a digit. A form of an MCP server, or any item without options, has neither.
+    if tool != 'AskUserQuestion' or not isinstance(options, list) or not options:
+        return 'The pending item has no options to choose. Nothing was sent.'
+    # One digit and Enter answer one single-select question. The keys of other shapes are not checked live.
+    if questions != 1 or multi is not False:
+        return 'The question has more than one part or allows several choices. Nothing was sent.'
     # A digit past the last option would reach the free-text entry of the dialog, not an option.
-    if isinstance(options, list) and options and int(choice) > len(options):
+    if int(choice) > len(options):
         return 'The choice is not one of the options. Nothing was sent.'
     return None
 

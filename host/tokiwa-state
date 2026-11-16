@@ -13,11 +13,13 @@ Options that it sets on the session:
   @tokiwa_agent_turn        The number of turns, counted by --turn.
   @tokiwa_agent_transcript  The transcript path from the event.
   @tokiwa_agent_session     The session id of the agent from the event.
-  @tokiwa_agent_pending     Base64 JSON of the question or permission request that waits for a person.
+  @tokiwa_agent_pending     Base64 JSON {id, kind, summary, options, tool, questions, multi_select, at} of the question
+                            or permission request that waits for a person.
   @tokiwa_agent_last_tool   Base64 JSON of the last tool call that a `note` event reported.
   @tokiwa_agent_input       Base64 JSON {actor, pending_id, at}, set by `tokiwa agent answer`. `answered` clears it.
 
-`answered` is the one synchronous command. A PostToolUse hook of the question tool runs it. When an agent
+`answered` is the one command that a synchronous Claude Code hook runs (the Codex hooks also have a timeout and no
+`async`, but their output adds nothing to the context). A PostToolUse hook of the question tool runs it. When an agent
 chose the answer of the question that the event reports, it prints the hook output that adds a context
 line to the agent, and clears the option. Otherwise it prints nothing.
 """
@@ -90,23 +92,25 @@ def tool_summary(event):
 
 
 def questions_of(event):
-    """The first question of an AskUserQuestion call, as (text, option labels)."""
+    """The first question of an AskUserQuestion call, as (text, option labels, number of questions, multi-select)."""
     tool_input = event.get("tool_input")
     questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
-    first = questions[0] if isinstance(questions, list) and questions else None
+    count = len(questions) if isinstance(questions, list) else 0
+    first = questions[0] if count else None
     if not isinstance(first, dict):
-        return "", []
+        return "", [], count, False
     options = first.get("options") if isinstance(first.get("options"), list) else []
-    return text(first.get("question")), [text(o.get("label")) for o in options if isinstance(o, dict)]
+    return (text(first.get("question")), [text(o.get("label")) for o in options if isinstance(o, dict)],
+            count, first.get("multiSelect") is True)
 
 
 def pending_item(event, raw, kind, last_tool):
     """The question or permission request that the event reports."""
     if event.get("mode") == "url" or event.get("notification_type") == "elicitation_url_dialog":
         kind = "permission"
-    options = []
+    options, questions, multi_select = [], 0, False
     if event.get("tool_name") == "AskUserQuestion":
-        summary, options = questions_of(event)
+        summary, options, questions, multi_select = questions_of(event)
     elif event.get("tool_name"):
         summary = tool_summary(event)
     elif kind == "permission" and last_tool and event.get("notification_type") == "permission_prompt":
@@ -117,7 +121,10 @@ def pending_item(event, raw, kind, last_tool):
         summary = f"{summary} {event['url']}".strip()
     identity = text(event.get("tool_use_id")) or hashlib.sha256(raw).hexdigest()[:16]
     return {"id": identity, "kind": kind, "summary": summary[:MAX_SUMMARY], "options": options,
-            "at": int(time.time())}
+            # The source: `AskUserQuestion`, another tool, or the hook event (for example `Elicitation`).
+            # `questions` and `multi_select` describe an AskUserQuestion call; `agent answer` needs one single-select question.
+            "tool": text(event.get("tool_name")) or text(event.get("hook_event_name")), "questions": questions,
+            "multi_select": multi_select, "at": int(time.time())}
 
 
 def tmux(*args):

@@ -84,6 +84,24 @@ class TokiwaState(unittest.TestCase):
         self.assertEqual(pending["summary"], "Which parser should the test cover?")
         self.assertIsInstance(pending["at"], int)
 
+    def test_question_tool_records_its_source_and_shape(self):
+        self.record("waiting", "--kind", "question", stdin=fixture("claude-pre-tool-use-ask-user-question"))
+        pending = self.decoded("@tokiwa_agent_pending")
+        self.assertEqual((pending["tool"], pending["questions"], pending["multi_select"]), ("AskUserQuestion", 1, False))
+
+    def test_question_tool_records_several_questions_and_multi_select(self):
+        data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
+        first = data["tool_input"]["questions"][0]
+        data["tool_input"]["questions"] = [dict(first, multiSelect=True), dict(first)]
+        self.record("waiting", "--kind", "question", stdin=json.dumps(data))
+        pending = self.decoded("@tokiwa_agent_pending")
+        self.assertEqual((pending["questions"], pending["multi_select"]), (2, True))
+
+    def test_an_elicitation_form_records_its_event_as_the_source(self):
+        self.record("waiting", "--kind", "question", stdin=fixture("claude-elicitation-form"))
+        pending = self.decoded("@tokiwa_agent_pending")
+        self.assertEqual((pending["tool"], pending["options"], pending["questions"]), ("Elicitation", [], 0))
+
     def test_long_question_is_cut_to_500_characters(self):
         data = json.loads(fixture("claude-pre-tool-use-ask-user-question"))
         data["tool_input"]["questions"][0]["question"] = "q" * 900

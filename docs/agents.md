@@ -6,7 +6,7 @@ A local agent reaches Tokiwa in one of two ways: the `tokiwa` command, for an ag
 | --- | --- | --- | --- |
 | `read` | sessions, a screen, health, status | yes | always |
 | `control` | changes to a session or a project | yes | only with `tokiwa mcp --allow control` |
-| `answer` | an answer to an agent's question, `agent answer` | yes | only with `tokiwa mcp --allow answer` (no tool yet) |
+| `answer` | an answer to an agent's question, `agent answer` | yes | none yet: the MCP task adds the tool and the `--allow answer` option |
 | `run` | a command that runs on the host, `create --run` | yes | only with `tokiwa mcp --allow run` |
 | `commands` | an entry of the owner's command list, run on the host | yes | only with `tokiwa mcp --allow commands` |
 | `human` | sign-in, `secret`, `admin`, an attached view | yes, for a person | never |
@@ -174,6 +174,8 @@ The host answers only when all of these hold. They are checked in one tmux comma
 | An item is pending | `No item waits for an answer. Nothing was sent.` |
 | The item is a `question`, not a `permission` request | `A permission item has no answer path. Use interrupt to refuse it. Nothing was sent.` |
 | The item has the `id` that the caller named, and its value is still the value that the host read | `The pending item is not the one named. Nothing was sent.` |
+| The item comes from the `AskUserQuestion` tool and lists options. A form of an MCP server (an elicitation) has no label hook and takes no digit. | `The pending item has no options to choose. Nothing was sent.` |
+| The item is one question that allows one choice. A dialog with several questions or several choices takes other keys, which the live check has not confirmed. | `The question has more than one part or allows several choices. Nothing was sent.` |
 | `N` is not more than the number of options that the item lists | `The choice is not one of the options. Nothing was sent.` |
 
 The screen check for a dialog does not apply: a question is itself a dialog. In the same queue, the host removes the pending item and sets the input label.
@@ -186,7 +188,7 @@ The screen check for a dialog does not apply: a question is itself a dialog. In 
 
 `The answer to this question was chosen by agent ACTOR through Tokiwa, not by the owner. It carries no owner approval.`
 
-This hook is the only synchronous one: Claude Code waits for it, with a timeout of 5 seconds. Every other hook of Tokiwa is async. When the hook fails or times out, the answer still stands, and the agent gets no label. Codex has no question tool. A Codex pane has no `question` item, and a message to it carries the message label. The label is a statement in the context of the worker, not a security boundary.
+Of the Claude Code hooks of Tokiwa, this is the only synchronous one: Claude Code waits for it, with a timeout of 5 seconds. The others are async. The Codex hooks also run with a timeout and no `async`, but Codex has no question tool, so none of them adds a label. When the hook fails or times out, the answer still stands, and the agent gets no label. Codex has no question tool. A Codex pane has no `question` item, and a message to it carries the message label. The label is a statement in the context of the worker, not a security boundary.
 
 ## Read an agent's transcript
 

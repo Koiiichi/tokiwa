@@ -2200,7 +2200,8 @@ exec {self.tmux} "$@"
 class AgentAnswer(AgentSession):
     """`agent-answer` presses the digit of an option for a pending question, or refuses."""
 
-    ITEM = {'id': 'toolu_q1', 'kind': 'question', 'summary': 'Which parser?', 'options': ['Text', 'Binary'], 'at': 5}
+    ITEM = {'id': 'toolu_q1', 'kind': 'question', 'summary': 'Which parser?', 'options': ['Text', 'Binary'],
+            'tool': 'AskUserQuestion', 'questions': 1, 'multi_select': False, 'at': 5}
 
     def setUp(self):
         super().setUp()
@@ -2227,6 +2228,34 @@ class AgentAnswer(AgentSession):
         # The item still waits, and no label was recorded.
         self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(self.ITEM))
         self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def refused_item(self, item, sentence):
+        self.ask(item)
+        result = self.answer('1')
+        self.refused(result, sentence)
+        self.assertEqual(self.value('@tokiwa_agent_pending'), self.b64(item))
+        self.assertEqual(self.value('@tokiwa_agent_input'), '')
+
+    def test_answer_refuses_an_item_without_options(self):
+        # An elicitation form of an MCP server: no hook of the question tool follows it, so no label would
+        # reach the worker, and a digit would be typed into a form field.
+        self.refused_item(dict(self.ITEM, tool='Elicitation', options=[], summary='Please provide a name'),
+                          'The pending item has no options to choose. Nothing was sent.')
+        self.refused_item(dict(self.ITEM, options=[]), 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_an_elicitation_item_that_has_options(self):
+        self.refused_item(dict(self.ITEM, tool='Elicitation'), 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_an_item_that_does_not_name_its_tool(self):
+        # An item that an older recorder wrote has no source, so it is not known to be a question of the tool.
+        item = {key: value for key, value in self.ITEM.items() if key not in ('tool', 'questions', 'multi_select')}
+        self.refused_item(item, 'The pending item has no options to choose. Nothing was sent.')
+
+    def test_answer_refuses_a_question_with_more_than_one_part(self):
+        self.refused_item(dict(self.ITEM, questions=2), 'The question has more than one part or allows several choices. Nothing was sent.')
+
+    def test_answer_refuses_a_multi_select_question(self):
+        self.refused_item(dict(self.ITEM, multi_select=True), 'The question has more than one part or allows several choices. Nothing was sent.')
 
     def test_answer_sends_the_digit_and_enter(self):
         result = self.answer('2')
