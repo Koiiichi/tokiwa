@@ -83,6 +83,25 @@ class HostInstall(unittest.TestCase):
         self.assertNotIn('commands.json', out)
         self.assertIn('tokiwa-run.py', out)
 
+    def test_installer_places_tokiwa_input(self):
+        out = self.install().stdout
+        self.assertIn('install -D -m 0644 tokiwa-input.py /opt/agent-platform/rootless/tokiwa-input.py', out)
+
+    def test_installer_makes_the_input_key_once(self):
+        out = self.install().stdout
+        self.assertIn('would run: openssl req -x509 -newkey rsa:3072 -nodes -keyout /etc/tokiwa/input-key.pem '
+                      '-out /etc/tokiwa/input-cert.pem -subj /CN=tokiwa-input -days 3650', out)
+        self.assertIn('would run: chmod 0600 /etc/tokiwa/input-key.pem', out)
+        self.assertIn('would run: chmod 0644 /etc/tokiwa/input-cert.pem', out)
+        # With both files present, a second run prints no key step.
+        folder = Path(self.env['TOKIWA_INSTALL_CHECK_ROOT']) / 'etc/tokiwa'
+        folder.mkdir(parents=True)
+        (folder / 'input-key.pem').write_text('key\n')
+        (folder / 'input-cert.pem').write_text('certificate\n')
+        out = self.install().stdout
+        self.assertNotIn('input-key.pem', out)
+        self.assertNotIn('input-cert.pem', out)
+
     def test_package_changes_never_restart_the_service(self):
         rule = (ROOT / 'needrestart.conf').read_text()
         self.assertIn('$nrconf{override_rc}{qr(^cloud-workbench)} = 0;', rule)

@@ -375,6 +375,12 @@
       "helper": "end"
     },
     {
+      "command": "input-cert",
+      "class": "read",
+      "hidden": true,
+      "example": ["input-cert"]
+    },
+    {
       "command": "dashboard",
       "class": "human"
     },

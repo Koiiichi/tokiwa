@@ -114,9 +114,24 @@ dir agent-workspace agent-workspace 700 /srv/development/private/peermesh
 
 # The helpers and the units.
 for file in start-workbench.sh terminal-session.sh tokiwa-open; do place 0755 "$file" "$rootless/$file"; done
-for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft tokiwa-run.py; do place 0644 "$file" "$rootless/$file"; done
+for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft tokiwa-run.py tokiwa-input.py; do place 0644 "$file" "$rootless/$file"; done
 # The command list starts empty; the owner edits it, and a later install never replaces it.
 place_once 0644 commands.json /etc/tokiwa/commands.json
+# The input key pair. The launcher encrypts message text to the certificate; only root holds the key.
+# An existing key stays, so that the certificate that the Mac pinned stays valid. The tests point the
+# existence checks at the stand-in folder.
+input_key=/etc/tokiwa/input-key.pem input_cert=/etc/tokiwa/input-cert.pem
+if [[ ! -e $check$input_key ]]; then
+ umask 077
+ run openssl req -x509 -newkey rsa:3072 -nodes -keyout "$input_key" -out "$input_cert" -subj /CN=tokiwa-input -days 3650
+ umask 022
+ run chmod 0600 "$input_key"
+ run chmod 0644 "$input_cert"
+elif [[ ! -e $check$input_cert ]]; then
+ # The certificate holds no secret, so it can be made again from the key.
+ run openssl req -x509 -new -key "$input_key" -out "$input_cert" -subj /CN=tokiwa-input -days 3650
+ run chmod 0644 "$input_cert"
+fi
 # The run log, and the run folders on the cache volume (outside the backup).
 dir root root 755 /var/log/tokiwa
 dir root root 755 /srv/development/cache/tokiwa-runs

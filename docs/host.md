@@ -97,6 +97,9 @@ systemctl start cloud-workbench.service
 | `agent-hooks.py` | `/opt/agent-platform/rootless/agent-hooks.py` | 0644 | Adds Tokiwa's state hooks to the Claude Code and Codex settings of the workbench user, or removes them. |
 | `tokiwa-run.py` | `/opt/agent-platform/rootless/tokiwa-run.py` | 0644 | The command runner. Run Command starts it as root with `python3 -I`. See [The command list](#the-command-list). |
 | `commands.json` | `/etc/tokiwa/commands.json` | 0644 | The owner's command list. The installer copies an empty list (`{"entries": {}}`) only when no file exists, and never replaces it. |
+| `tokiwa-input.py` | `/opt/agent-platform/rootless/tokiwa-input.py` | 0644 | Decrypts message text. Run Command starts it as root with `python3 -I`. See [Encrypted input](#encrypted-input). |
+| `input-key.pem` | `/etc/tokiwa/input-key.pem` | 0600 | The private key for message text. The installer makes it with `openssl req -x509 -newkey rsa:3072 -nodes -days 3650` only when the file is absent, so the certificate that the Mac pinned stays valid. |
+| `input-cert.pem` | `/etc/tokiwa/input-cert.pem` | 0644 | The certificate of that key. The Mac encrypts message text to it. |
 | `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
 | `dockerd-rootless.sh` | `/opt/agent-platform/rootless/dockerd-rootless.sh` | 0755 | Starts `dockerd` inside RootlessKit. |
 | `workbench-health.py` | `/opt/agent-platform/rootless/workbench-health.py` | 0644 | Reads host and workbench metrics for `tokiwa health` (see [Health](health.md)). |
@@ -306,9 +309,23 @@ The screen check of the agent layer reads the last 15 lines of the active pane w
 
 ### Claim and release the driver
 
-The driver of a session is the tmux option `@tokiwa_driver`: the actor that may send input to the session or answer in it. `create` sets it to `TOKIWA_ACTOR` when the caller has a valid actor, and leaves it empty otherwise. `claim NAME IDENTITY [replace]` sets it to the caller; `release NAME IDENTITY` clears it. Both refuse without a valid `TOKIWA_ACTOR` (1 to 64 letters, digits, dots, colons, hyphens or underscores, starting with a letter or digit).
+The driver of a session is the tmux option `@tokiwa_driver`: the actor that may send input to the session or answer in it. `create` sets it to `TOKIWA_ACTOR` when the caller has a valid actor and the session has no driver yet, in one tmux command, so that a claim made since the session was created is kept. It leaves it empty otherwise. If tmux refuses that command, `create` fails with `The terminal was created, but its driver could not be set. Nothing was typed into it. Refresh the session state.` `claim NAME IDENTITY [replace]` sets it to the caller; `release NAME IDENTITY` clears it. Both refuse without a valid `TOKIWA_ACTOR` (1 to 64 letters, digits, dots, colons, hyphens or underscores, starting with a letter or digit).
 
 `claim` reads the clients of the session first and refuses with `A client is attached. Nothing was changed.` while any client can type. The queue then checks, in one tmux call, that the identity matches, that `#{session_attached}` is still the number of clients that was read, and that the session has no driver or the caller is the driver. With `replace`, the last check passes. A refusal names its cause: `Session identity changed. Nothing was changed.`, `A client is attached. Nothing was changed.` or `Another actor is the driver. Nothing was changed. Use --replace to take it.` `release` refuses with `Only the driver can release. Nothing was changed.` when another actor, or no actor, is the driver. A read-only viewer does not count as a client for `claim`.
+
+## Encrypted input
+
+Message text, for example the command line of `tokiwa create --run`, reaches the host only encrypted to the host input certificate. Run Command keeps its parameters in the account, so a plain line would stay there. The launcher encrypts the text with `openssl smime -encrypt -aes256 -binary -outform DER` and sends it as base64. Run Command starts [`tokiwa-input.py`](../host/tokiwa-input.py) as root. It decrypts with `/etc/tokiwa/input-key.pem` and prints the text on stdout, into a pipe to the helper:
+
+```sh
+bash -c 'set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input.py SEALED | sudo -n runuser -u agent-workspace -- ... terminal-session.sh MODE ARGS'
+```
+
+The helper reads the text from stdin. The text is never an argument, a file, a log line or output of Run Command. A request says that its text is on stdin, for example `{"run_stdin": true}` in `create`; the helper applies its usual checks to what it reads. A message that cannot be decrypted, with a wrong or missing key or bad base64, exits 1 with `The message could not be decrypted with the host input key. Nothing was sent.`, and the helper then gets no text and refuses. Plain text over `MAX_MESSAGE_BYTES` (16384) is refused with `The message is longer than 16384 bytes. Nothing was sent.`
+
+The limit follows the size limit of a Run Command call. The documentation of `SendCommand` gives 64 KB as the size limit of a document (`MaxDocumentSizeExceeded`, https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_SendCommand.html) and states no other limit for the parameters of `AWS-RunShellScript`. A message of 16384 bytes becomes about 24 KB of base64 with the envelope, 38% of 64 KB, which leaves more than the 20% margin.
+
+The launcher pins the certificate on first use: see [the pin](configuration.md#files). `tokiwa input-cert` prints the certificate that the host shows now, for a comparison with the pin.
 
 ## Audit log
 

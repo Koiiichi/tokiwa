@@ -811,12 +811,22 @@ PY_MOVE
  create)
   # A session in an existing directory, or in a new folder inside the workspaces folder.
   tm has-session -t "=$name" 2>/dev/null && fail 'This session exists. Use tokiwa attach NAME.'
+  # With run_stdin in the request, the command line arrives on stdin and not in the request: the
+  # launcher sends it encrypted, and root decrypts it into this pipe (docs/host.md, "Encrypted input").
+  # The program below reads the pipe from descriptor 3, because its own stdin holds its source.
+  exec 3<&0
   request=$(python3 - "$extra" "$workspaces" <<'PY_CREATE'
 import base64, json, os, re, sys
 try:
     want = json.loads(base64.b64decode(sys.argv[1], validate=True))
-    # The command is typed into the shell, so one line of printable text: no extra line runs.
     run = want.get('run')
+    if want.get('run_stdin') is True:
+        if run is not None:
+            raise SystemExit('Use a command of one line, at most 2000 printable characters.')
+        # One more character than the limit shows that a line is too long. The final newline ends the line.
+        run = os.fdopen(3, encoding='utf-8', errors='replace').read(2002)
+        run = run[:-1] if run.endswith('\n') else run
+    # The command is typed into the shell, so one line of printable text: no extra line runs.
     if run is not None and (not isinstance(run, str) or not run or len(run) > 2000
                             or any(ord(c) < 32 or ord(c) == 127 for c in run)):
         raise SystemExit('Use a command of one line, at most 2000 printable characters.')
@@ -855,7 +865,12 @@ PY_CREATE
   [[ $label_b64 == - ]] || label=$(project_label "$label_b64") || exit 1
   start_shell "$name" "$directory" || fail 'The terminal could not be created.'
   # The actor that creates a session is its driver; a call with no valid actor leaves it with none.
-  if valid_actor "${TOKIWA_ACTOR:-}"; then tm set-option -t "=$name:" @tokiwa_driver "$TOKIWA_ACTOR"; fi
+  # The change is conditional on an empty driver, in the same tmux command, so that a claim made
+  # since the session was created is never overwritten. Its status is checked.
+  if valid_actor "${TOKIWA_ACTOR:-}"; then
+   tm if-shell -F -t "=$name:" '#{==:#{@tokiwa_driver},}' "set-option -t '=$name:' @tokiwa_driver '$TOKIWA_ACTOR'" ||
+    fail 'The terminal was created, but its driver could not be set. Nothing was typed into it. Refresh the session state.'
+  fi
   if [[ -n $label ]]; then
    tm set-option -t "=$name:" @tokiwa_project "$label"
    registry add "$label" "$directory"

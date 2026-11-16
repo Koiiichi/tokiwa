@@ -660,6 +660,77 @@ class SessionModel(ModelHelpers, Server):
         self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
         self.assertFalse((project / 'bad').exists())
 
+    def helper_with_stdin(self, text, *args):
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), *args], env=self.env, input=text,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_create_reads_the_run_line_from_stdin(self):
+        root = Path(self.temp.name) / 'workspaces'
+        project = root / 'proj'
+        project.mkdir(parents=True)
+        self.env['TOKIWA_WORKSPACES'] = str(root)
+        request = self.b64({'dir': str(project), 'project': 'proj', 'run_stdin': True})
+        result = self.helper_with_stdin('echo from-stdin-$((40 + 2))\n', 'create', 'lead', request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.screen('lead', 'from-stdin-42')
+        # The line is not an argument of any process on the host, and not in the audit log.
+        self.assertNotIn('from-stdin', json.dumps(self.audit_entries()))
+        # The same checks as for a line in the request: one line of at most 2000 printable characters.
+        for bad in ['two\nlines\n', 'bell\a\n', '', '\n', 'x' * 2001]:
+            result = self.helper_with_stdin(bad, 'create', 'bad', request)
+            self.assertNotEqual(result.returncode, 0, repr(bad))
+            self.assertIn('one line', result.stderr)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+        # A request cannot carry the line and ask for stdin too.
+        both = self.b64({'dir': str(project), 'run': 'echo a', 'run_stdin': True})
+        self.assertNotEqual(self.helper_with_stdin('echo b\n', 'create', 'bad', both).returncode, 0)
+        self.assertNotEqual(self.tm('has-session', '-t', '=bad').returncode, 0)
+
+    def audit_entries(self):
+        file = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+
+    def fake_tmux(self, mode):
+        """Put a tmux in front of the real one. It acts at the driver `if-shell` of `create`.
+
+        `claimed` makes another actor the driver just before the command runs, as a claim between
+        the creation of the session and that command would. `broken` fails the command.
+        """
+        folder = Path(self.temp.name) / 'fake-bin'
+        folder.mkdir(exist_ok=True)
+        wrapper = folder / 'tmux'
+        wrapper.write_text(f'''#!/bin/bash
+if [[ " $* " == *" if-shell "* && "$*" == *@tokiwa_driver* ]]; then
+ case {mode} in
+  claimed) {self.tmux} -N -S "{self.socket}" set-option -t "=lead:" @tokiwa_driver worker-b ;;
+  broken) echo 'tmux failed' >&2; exit 1 ;;
+ esac
+fi
+exec {self.tmux} "$@"
+''')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f"{folder}:{self.env['PATH']}"
+
+    def create_as(self, actor):
+        root = Path(self.temp.name) / 'workspaces'
+        root.mkdir(exist_ok=True)
+        self.env.update(TOKIWA_WORKSPACES=str(root), TOKIWA_ACTOR=actor)
+        return self.helper('create', 'lead', self.b64({'folder': 'inbox'}))
+
+    def test_create_never_overwrites_a_driver_claimed_in_between(self):
+        self.fake_tmux('claimed')
+        result = self.create_as('orchestrator-a')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = self.rows()['lead']
+        state = json.loads(self.helper('state', 'lead', row['identity']).stdout)
+        self.assertEqual(state['driver'], 'worker-b')
+
+    def test_create_reports_a_driver_that_could_not_be_set(self):
+        self.fake_tmux('broken')
+        result = self.create_as('orchestrator-a')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('driver could not be set', result.stderr)
+
 
 class SecretStore(Server):
     """A secret is read with hidden input on the host, saved private, and never printed."""

@@ -40,7 +40,11 @@ case "$*" in
   last=$(grep 'send-command' "$HOME/calls" | tail -1)
   core='"name": "lead", "identity": "1:$2:3", "session": "live", "program": "claude", "clients": %s, "writable_clients": %s, "driver": null, "sampled_at": 2'
   agent='"agent": "idle", "agent_at": 1, "turn": 4, "pending": null, "dialog": false'
-  if [ -n "${TEST_FETCH_FAIL:-}" ] && [[ $last == *'terminal-session.sh agent-wait '* ]]; then
+  if [[ $last == *'input-cert.pem'* ]]; then
+   # The host input certificate; the key stays here so that a test can decrypt what was sealed.
+   [ -e "$HOME/host-input-cert.pem" ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout "$HOME/host-input-key.pem" -out "$HOME/host-input-cert.pem" -subj /CN=tokiwa-input -days 1 >/dev/null 2>&1
+   cat "$HOME/host-input-cert.pem"
+  elif [ -n "${TEST_FETCH_FAIL:-}" ] && [[ $last == *'terminal-session.sh agent-wait '* ]]; then
    exit 1
   elif [[ $last == *'terminal-session.sh state '* ]]; then
    printf "{$core}\\n" "${TEST_WRITABLE:-0}" "${TEST_WRITABLE:-0}"
@@ -191,14 +195,63 @@ esac
         calls = (self.home / 'calls').read_text()
         self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'project': 'proj'})
 
-    def test_create_sends_the_command_to_run_encoded(self):
+    def test_create_sends_the_command_to_run_encrypted(self):
         command = 'git clone https://example.com/app.git . && claude "Read LEAD.md and start."'
         result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--subfolder', 'lead', '--run', command)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = (self.home / 'calls').read_text()
-        self.assertEqual(self.encoded_payload(calls, 'create'), {'dir': '/w/proj', 'subfolder': 'lead', 'run': command})
-        # The quotes and && of the command never reach the remote shell unencoded.
+        # The request names stdin; the line is in the sealed argument of the input program.
+        self.assertEqual(self.encoded_payload(calls, 'create'),
+                         {'dir': '/w/proj', 'subfolder': 'lead', 'run_stdin': True})
         self.assertNotIn('Read LEAD.md', calls)
+        self.assertEqual(self.host_decrypt(calls), command.encode())
+
+    def host_decrypt(self, calls):
+        """Decrypt the sealed argument of tokiwa-input.py in the last recorded call, as the host does."""
+        sealed = re.findall(r'tokiwa-input\.py ([A-Za-z0-9+/=]+)', calls)[-1]
+        opened = subprocess.run(['openssl', 'smime', '-decrypt', '-binary', '-inform', 'DER', '-inkey',
+                                 str(self.home / 'host-input-key.pem')],
+                                input=base64.b64decode(sealed), capture_output=True, check=True)
+        return opened.stdout
+
+    def test_create_run_text_is_not_in_the_run_command_parameters(self):
+        command = 'echo marker-text-9f3c'
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.home / 'calls').read_text()
+        encoded = base64.b64encode(command.encode()).decode()
+        self.assertNotIn('marker-text', calls)
+        self.assertNotIn(encoded, calls)
+        self.assertNotIn(encoded.rstrip('='), calls)
+        # The host decrypts as root and pipes the text to the helper, which reads it from stdin.
+        send = [line for line in calls.splitlines() if 'tokiwa-input.py' in line][-1]
+        self.assertRegex(send, r'set -o pipefail; python3 -I /opt/agent-platform/rootless/tokiwa-input\.py [A-Za-z0-9+/=]+ \| sudo -n runuser -u agent-workspace')
+
+    def test_first_use_pins_the_host_certificate(self):
+        pin = self.home / '.config/tokiwa/input-cert.pem'
+        self.assertFalse(pin.exists())
+        for _ in range(2):
+            result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(pin.read_text(), (self.home / 'host-input-cert.pem').read_text())
+        # The second call used the pin: the certificate was fetched once.
+        calls = (self.home / 'calls').read_text()
+        self.assertEqual(calls.count('cat /etc/tokiwa/input-cert.pem'), 1)
+
+    def test_input_cert_prints_the_host_certificate(self):
+        result = self.run_cli('input-cert')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, (self.home / 'host-input-cert.pem').read_text())
+        self.assertFalse((self.home / '.config/tokiwa/input-cert.pem').exists())
+
+    def test_decrypt_refusal_prints_the_pin_advice(self):
+        # The key is pinned first. The host then refuses the message, as it does after a key change.
+        self.assertEqual(self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi').returncode, 0)
+        self.env.update(TEST_STATUS='Failed', TEST_STDERR='The message could not be decrypted with the host input key. Nothing was sent.')
+        result = self.run_cli('create', 'lead', '--dir', '/w/proj', '--run', 'echo hi')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('The host input key changed or is missing. Check the host, then delete '
+                      '~/.config/tokiwa/input-cert.pem to pin the new key.', result.stderr)
 
     def test_secret_reads_the_value_on_the_host_in_a_terminal(self):
         self.run_cli_in_terminal('secret', 'API_KEY')

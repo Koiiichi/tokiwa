@@ -47,7 +47,7 @@ Programs can start tmux sessions of their own, for example a watcher or a bridge
 
 ## Start a program in a new session
 
-`--run` types one command line into the shell of a new session. The shell reads its startup file first, so the command has the owner's `PATH` and the [saved secrets](host.md#secrets), and the shell stays when the command ends. Tokiwa does not know what the command is: an agent, a server or a script.
+`--run` types one command line into the shell of a new session. The shell reads its startup file first, so the command has the owner's `PATH` and the [saved secrets](host.md#secrets), and the shell stays when the command ends. Tokiwa does not know what the command is: an agent, a server or a script. The line travels encrypted to the host key, so it is not kept in the AWS account: see [Encrypted input](host.md#encrypted-input).
 
 For example, a session with its own clone that starts an agent with its first message (`claude` and `codex` both take the first message as an argument):
 
