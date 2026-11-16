@@ -23,7 +23,7 @@ class TerminalCLI(unittest.TestCase):
         aws.write_text('''#!/bin/bash
 printf '%s\\n' "$*" >> "$HOME/calls"
 case "$*" in
- *sso\ login*) touch "$HOME/logged-in" ;;
+ *sso\ login*) printf '%s\\n' "${BROWSER:-}" >> "$HOME/browsers"; touch "$HOME/logged-in" ;;
  *get-caller-identity*)
   if [ -n "${TEST_EXPIRED:-}" ] && [ ! -e "$HOME/logged-in" ]; then
    echo 'Error when retrieving token from sso: Token has expired and refresh failed' >&2; exit 255
@@ -83,6 +83,8 @@ esac
         (config / 'host.env').write_text('# the test host\ninstance=i-0123456789abcdef0\nprofile=work\n'
                                          'region=us-east-1\naccount=123456789012\nend=2030-01-01T00:00:00Z\n')
         self.env = dict(os.environ, HOME=str(self.home))
+        self.env.pop('BROWSER', None)
+        self.env.pop('TOKIWA_SIGN_IN_BROWSER', None)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -401,6 +403,50 @@ esac
         calls = (self.home / 'calls').read_text().splitlines()
         self.assertEqual([c for c in calls if 'sso login' in c], ['sso login --profile work'])
         self.assertFalse(any('sts' in c or 'ssm' in c for c in calls), calls)
+
+    NOTE = 'the sign-in opens with TOKIWA_SIGN_IN_BROWSER'
+    REFUSAL = 'TOKIWA_SIGN_IN_BROWSER must name an executable file. Its path cannot contain : or %.'
+
+    def opener(self, name='opener'):
+        path = self.home / name
+        path.write_text('#!/bin/bash\nexit 0\n')
+        path.chmod(0o755)
+        return str(path)
+
+    def browsers(self):
+        return (self.home / 'browsers').read_text().splitlines()
+
+    def test_sign_in_without_a_browser_setting_leaves_browser_empty(self):
+        code, output, _ = self.run_cli_in_terminal('login')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.browsers(), [''])
+        self.assertNotIn(self.NOTE.encode(), output)
+
+    def test_login_opens_the_sign_in_with_the_browser_setting(self):
+        self.env['TOKIWA_SIGN_IN_BROWSER'] = opener = self.opener()
+        code, output, _ = self.run_cli_in_terminal('login')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.browsers(), [opener])
+        self.assertIn(self.NOTE.encode(), output)
+
+    def test_expired_session_opens_the_sign_in_with_the_browser_setting(self):
+        self.env['TEST_EXPIRED'] = '1'
+        self.env['TOKIWA_SIGN_IN_BROWSER'] = opener = self.opener()
+        code, output, _ = self.run_cli_in_terminal('attach', 'backend')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.browsers(), [opener])
+        self.assertIn(self.NOTE.encode(), output)
+
+    def test_browser_setting_that_is_not_valid_stops_before_the_sign_in(self):
+        (self.home / 'folder:name').mkdir()
+        for value in [str(self.home / 'missing'), self.opener('with:colon'), self.opener('with%percent'), str(self.home / 'folder:name')]:
+            with self.subTest(value=value):
+                self.env['TOKIWA_SIGN_IN_BROWSER'] = value
+                code, output, _ = self.run_cli_in_terminal('login')
+                self.assertNotEqual(code, 0, output)
+                self.assertIn(self.REFUSAL.encode(), output)
+                self.assertFalse((self.home / 'browsers').exists())
+                self.assertNotIn(self.NOTE.encode(), output)
 
     def test_login_needs_a_terminal(self):
         result = self.run_cli('login')

@@ -137,7 +137,7 @@ The snapshot never holds screen text, only its hash. The app compares hashes bet
 
 The launcher is one Bash script, installed on the Mac at `~/.local/bin/tokiwa`. It reads the instance, the AWS profile, the region, and optionally the account and an end time from the [host settings](configuration.md#host-settings). Before any host command, it:
 
-1. Calls `sts get-caller-identity`. In an interactive terminal outside the app, an expired sign-in starts `aws sso login`; otherwise the call fails with the command to run.
+1. Calls `sts get-caller-identity`. In an interactive terminal outside the app, an expired sign-in starts `aws sso login`, with the opener in [`TOKIWA_SIGN_IN_BROWSER`](configuration.md#environment-variables) when it is set; otherwise the call fails with the command to run.
 2. Compares the account with `account=`, when it is set.
 3. Reads the instance state. A host that is not `running` stops the command with `The host is <state>. No restart was requested.`
 

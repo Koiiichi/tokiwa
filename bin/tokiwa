@@ -229,9 +229,22 @@ if [[ $mode == dashboard ]]; then
  [[ -x $app ]] || fail 'The Tokiwa interface is not installed. Run app/install.sh, or use tokiwa attach NAME.'
  exec "$app"
 fi
+# aws sso login opens the sign-in link with Python webbrowser, which uses BROWSER when it is set.
+# TOKIWA_SIGN_IN_BROWSER names the program that receives the link, and BROWSER is set for this one command only.
+sso_login() {
+ local opener=${TOKIWA_SIGN_IN_BROWSER:-}
+ if [[ -z $opener ]]; then
+  aws sso login --profile "$profile"
+  return
+ fi
+ [[ -f $opener && -x $opener && $opener != *[:%]* ]] || fail 'TOKIWA_SIGN_IN_BROWSER must name an executable file. Its path cannot contain : or %.'
+ printf 'Tokiwa · the sign-in opens with TOKIWA_SIGN_IN_BROWSER. If the page shows an error, press Ctrl-C and sign in again.\n' >&2
+ BROWSER="$opener" aws sso login --profile "$profile"
+}
 if [[ $mode == login ]]; then
  [[ -t 0 && -t 1 ]] || fail 'Use an interactive terminal for this command.'
- exec aws sso login --profile "$profile"
+ sso_login
+ exit
 fi
 note() { [[ ${TOKIWA_DASHBOARD:-0} == 1 ]] || printf "$@"; }
 aws_call() { aws --profile "$profile" --region "$region" --cli-connect-timeout 5 --cli-read-timeout 10 "$@"; }
@@ -241,7 +254,7 @@ note 'Tokiwa · checking AWS access…\n' >&2
 if ! signed_in=$(aws_call sts get-caller-identity --query Account --output text 2>/dev/null); then
  [[ -t 0 && -t 1 && ${TOKIWA_DASHBOARD:-0} != 1 ]] || fail "AWS authentication failed. Run aws sso login --profile $profile."
  note "Tokiwa · AWS sign-in expired; starting aws sso login --profile ${profile}…\\n" >&2
- aws sso login --profile "$profile" >&2 || fail "The AWS login did not complete. Run aws sso login --profile $profile."
+ sso_login >&2 || fail "The AWS login did not complete. Run aws sso login --profile $profile."
  signed_in=$(aws_call sts get-caller-identity --query Account --output text) || fail "AWS authentication failed. Run aws sso login --profile $profile."
 fi
 [[ -z $account || $signed_in == "$account" ]] || fail "The AWS account does not match account= in $config."
