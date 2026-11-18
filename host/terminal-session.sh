@@ -48,16 +48,16 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) || ( $mode == agent-answer && $# -le 5 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) || ( ( $mode == agent-answer || $mode == agent-relaunch ) && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read|agent-answer) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read|agent-answer|agent-relaunch) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || $mode == agent-relaunch || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -828,6 +828,225 @@ pane, clients, buffer, values = stage_delivery(
 turn = values[1]
 print(pane, clients, buffer, turn if turn.isascii() and turn.isdigit() else '-')
 PY_AGENT_SEND
+# The relaunch of a Claude Code session: the shared part of its two programs below. A relaunch stops the
+# agent with /exit and types `claude --resume ID --settings PATH` into the shell of the same pane, so that
+# the tmux session, its pane, its folder and the conversation stay. It decides nothing about the settings.
+read -r -d '' relaunch_lib <<'PY_RELAUNCH_LIB' || true
+import hashlib
+import shlex
+import stat
+
+# A settings path is one absolute path of these characters, so that it needs no quoting in the typed line
+# and reads the same in the process list.
+SETTINGS_PATH = re.compile(r'/[A-Za-z0-9._/-]{1,1000}')
+MAX_SETTINGS_BYTES = 1 << 20
+SESSION_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+def settings_digest(path):
+    """(sha256, None) of the settings file at `path`, or (None, the sentence that refuses it)."""
+    if not SETTINGS_PATH.fullmatch(path) or '/../' in path + '/' or '/./' in path + '/':
+        return None, 'Use an absolute settings path of letters, digits, dots, hyphens, underscores and slashes.'
+    try:
+        # A link could change its target between this check and the start of the agent.
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None, 'The settings path is not a regular file.'
+        if info.st_size > MAX_SETTINGS_BYTES:
+            return None, 'The settings file is over 1 MiB.'
+        with open(path, 'rb') as f:
+            data = f.read(MAX_SETTINGS_BYTES + 1)
+    except OSError:
+        return None, 'The settings file cannot be read.'
+    try:
+        # Claude Code shows a dialog for a file that is not valid JSON, and one of its choices starts the
+        # agent without the file. So a file that is not a JSON object stops here.
+        if not isinstance(json.loads(data), dict):
+            raise ValueError
+    except ValueError:
+        return None, 'The settings file is not a JSON object.'
+    return hashlib.sha256(data).hexdigest(), None
+
+def descendants(root):
+    """The processes below pid `root`, with the root, as {pid: ppid}."""
+    listed = subprocess.run(['ps', '-A', '-o', 'pid=,ppid='], capture_output=True, text=True, timeout=10)
+    children = {}
+    for line in listed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2:
+            children.setdefault(fields[1], []).append(fields[0])
+    found, todo = [], [str(root)]
+    while todo:
+        pid = todo.pop()
+        found.append(pid)
+        todo.extend(children.get(pid, []))
+    return found
+
+def arguments(pid):
+    """The argument list of process `pid`, or None. /proc keeps the boundaries of the arguments; `ps`,
+    where /proc is missing, splits them at spaces."""
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return [a.decode('utf-8', 'replace') for a in f.read().split(b'\0') if a]
+    except OSError:
+        pass
+    listed = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(pid)], capture_output=True, text=True, timeout=10)
+    return listed.stdout.split() or None
+
+def agent_process(pane_pid):
+    """(pid, arguments) of the one process below the pane's shell whose program is claude, or None."""
+    found = []
+    for pid in descendants(pane_pid)[1:]:
+        args = arguments(pid)
+        if args and os.path.basename(args[0]) == 'claude':
+            found.append((pid, args))
+    return found[0] if len(found) == 1 else None
+PY_RELAUNCH_LIB
+# The stage of a relaunch: the checks of a delivery, the agent checks of agent send, and the checks of
+# the settings file and of the command that started the agent. Puts /exit in a buffer. Prints
+# `PANE CLIENTS BUFFER TURN SESSION_ID SHA256 PID COMMAND`; COMMAND is the base64 of the new command line.
+read -r -d '' agent_relaunch_program <<'PY_AGENT_RELAUNCH' || true
+settings, expected = sys.argv[4], sys.argv[5]
+# The options of the first command that the relaunch keeps, with a value or without one. The relaunch sets
+# the session and the settings itself, so it drops those options and the first prompt. Any other option
+# could change what the agent may do, so it stops the relaunch.
+KEEP_VALUE = ('--model', '--permission-mode', '--effort', '--agent', '--fallback-model')
+KEEP_FLAG = ('--verbose',)
+DROP_VALUE = ('--settings', '--session-id')
+DROP_OPTIONAL = ('-r', '--resume')
+DROP_FLAG = ('-c', '--continue', '--fork-session')
+VALUE = re.compile(r'[A-Za-z0-9._:/@+-]{1,200}')
+found = {}
+
+def kept_options(args):
+    """The options of `args` (without the program) that the new command keeps, or a refusal sentence."""
+    kept, i = [], 0
+    while i < len(args):
+        word = args[i]
+        option, has_value, value = word.partition('=') if word.startswith('--') else (word, '', '')
+        i += 1
+        if not word.startswith('-'):
+            continue
+        if option in KEEP_FLAG and not has_value:
+            kept.append(option)
+        elif option in KEEP_VALUE + DROP_VALUE:
+            if not has_value:
+                if i >= len(args):
+                    return f'The option {option} of the Claude command has no value. Nothing was changed.'
+                value, i = args[i], i + 1
+            if option in KEEP_VALUE:
+                if not VALUE.fullmatch(value):
+                    return f'The value of {option} in the Claude command cannot be kept. Nothing was changed.'
+                kept += [option, value]
+        elif option in DROP_OPTIONAL:
+            if not has_value and i < len(args) and not args[i].startswith('-'):
+                i += 1
+        elif option not in DROP_FLAG or has_value:
+            name = option if re.fullmatch(r'-{1,2}[A-Za-z0-9-]{1,40}', option) else 'an option'
+            return f'The Claude command has {name}, which a relaunch does not keep. Nothing was changed.'
+    return kept
+
+def check(facts, pane, values):
+    agent, turn, pending, session, frozen, pane_pid = values
+    if facts['program'] != 'claude':
+        return 'The pane does not run Claude Code. Only Claude Code can be relaunched. Nothing was changed.'
+    state, _, at = agent.partition(':')
+    if state not in ('idle', 'limited', 'error') or not (at.isascii() and at.isdigit()):
+        return 'The agent is not idle. Nothing was changed.'
+    if pending:
+        return 'An item waits for a person. Nothing was changed.'
+    if frozen:
+        return 'The session is frozen. Nothing was changed.'
+    if screen_dialog(pane, 'claude'):
+        return 'A dialog is on the screen. Nothing was changed.'
+    if not SESSION_ID.fullmatch(session):
+        return 'The agent has not reported its session id. Nothing was changed.'
+    listed = tmux('list-panes', '-s', '-t', '=' + facts['name'], '-F', '#{pane_id} #{pane_current_command}')
+    agents = [line.split(' ', 1)[0] for line in listed.stdout.splitlines() if line.partition(' ')[2] in AGENTS]
+    if listed.returncode or agents != [pane]:
+        return 'Another pane of the session runs an agent. Nothing was changed.'
+    digest, problem = settings_digest(settings)
+    if problem:
+        return problem + ' Nothing was changed.'
+    if expected != '-' and digest != expected:
+        return 'The settings file does not have the expected SHA-256. Nothing was changed.'
+    process = agent_process(pane_pid)
+    if process is None:
+        return 'The Claude process of the pane cannot be found. Nothing was changed.'
+    kept = kept_options(process[1][1:])
+    if isinstance(kept, str):
+        return kept
+    found.update(digest=digest, pid=process[0],
+                 command=' '.join(['claude', *map(shlex.quote, kept), '--resume', session, '--settings', settings]))
+    return None
+
+pane, clients, buffer, values = stage_delivery(
+    sys.argv[2], sys.argv[3], '/exit',
+    ('#{@tokiwa_agent}', '#{@tokiwa_agent_turn}', '#{@tokiwa_agent_pending}', '#{@tokiwa_agent_session}',
+     '#{@tokiwa_frozen}', '#{pane_pid}'), check)
+turn = values[1]
+print(pane, clients, buffer, turn if turn.isascii() and turn.isdigit() else '-', values[3], found['digest'],
+      found['pid'], base64.b64encode(found['command'].encode()).decode())
+PY_AGENT_RELAUNCH
+# Wait until the old agent of a relaunch has exited and the pane shows its shell. Prints `exited` or
+# `running`. Arguments: NAME IDENTITY PID SECONDS.
+read -r -d '' relaunch_exit_program <<'PY_RELAUNCH_EXIT' || true
+pid, limit = sys.argv[4], float(sys.argv[5])
+deadline = time.monotonic() + limit
+while True:
+    facts, pane, dead, values = read_session(sys.argv[2], sys.argv[3])
+    gone = subprocess.run(['ps', '-o', 'pid=', '-p', pid], capture_output=True, text=True).stdout.strip() == ''
+    if facts['session'] == 'live' and facts['program'] == 'shell' and gone:
+        print('exited')
+        break
+    if time.monotonic() >= deadline:
+        print('running')
+        break
+    time.sleep(0.2)
+PY_RELAUNCH_EXIT
+# Check that the relaunched agent started with the settings file: a Claude process below the pane's shell
+# has `--resume ID --settings PATH` in its arguments, the agent's hooks reported a start of the same session
+# after the relaunch, no dialog is on the screen, and the file still has the SHA-256 that the stage read.
+# Arguments: NAME IDENTITY SESSION_ID SETTINGS SHA256 STARTED_AT SECONDS. Prints the result as JSON, or
+# exits with the sentence of a failure.
+read -r -d '' relaunch_verify_program <<'PY_RELAUNCH_VERIFY' || true
+session, settings, digest, started, limit = sys.argv[4], sys.argv[5], sys.argv[6], int(sys.argv[7]), float(sys.argv[8])
+begun = time.monotonic()
+deadline = begun + limit
+# Claude Code draws in the pane and not on a second screen, so the last lines of the old agent can stay
+# until the new one draws. A dialog counts only when it stays on the screen this long.
+DIALOG_SECONDS = 2
+dialog_since = None
+problem = None
+while True:
+    facts, pane, dead, values = read_session(
+        sys.argv[2], sys.argv[3], ('#{@tokiwa_agent}', '#{@tokiwa_agent_session}', '#{pane_pid}'))
+    if facts['session'] != 'live' or dead == '1':
+        sys.exit('The session ended during the relaunch.')
+    agent, reported, pane_pid = values
+    state, _, at = agent.partition(':')
+    process = agent_process(pane_pid)
+    args = process[1] if process else []
+    loaded = any(args[i:i + 2] == ['--settings', settings] for i in range(len(args)))
+    resumed = any(args[i:i + 2] == ['--resume', session] for i in range(len(args)))
+    dialog = facts['program'] == 'claude' and screen_dialog(pane, 'claude')
+    dialog_since = (dialog_since or time.monotonic()) if dialog else None
+    if dialog and time.monotonic() - dialog_since >= DIALOG_SECONDS:
+        problem = 'Claude Code shows a dialog after the relaunch. The settings may not be in effect. Look at the session.'
+    elif not dialog and process and loaded and resumed and state == 'idle' and at.isascii() and at.isdigit() \
+            and int(at) >= started and reported == session:
+        if settings_digest(settings)[0] != digest:
+            sys.exit('The settings file changed during the relaunch. Relaunch again to use the current file.')
+        print(json.dumps({'relaunched': True, 'session_id': session, 'pid': int(process[0]),
+                          'settings': settings, 'sha256': digest, 'started_at': started}))
+        sys.exit(0)
+    elif facts['program'] == 'shell' and time.monotonic() > begun + 2:
+        problem = 'Claude Code exited after the relaunch.'
+    else:
+        problem = None
+    if problem or time.monotonic() >= deadline:
+        sys.exit(problem or 'The relaunched agent did not report its start in time. Look at the session.')
+    time.sleep(0.3)
+PY_RELAUNCH_VERIFY
 # The answer stage of a delivery: the digit of an option for the pending question PENDING_ID. A choice
 # of `text` would type free text, whose key path is unknown (docs/agents.md), so it refuses after the text
 # checks. Prints `PANE CLIENTS - PENDING LAST LABEL`: PENDING and LAST are the base64 values of @tokiwa_agent_pending
@@ -1003,6 +1222,46 @@ case "$mode" in
   stage_args="$pending_id $choice"
   core_deliver "$extra" "$agent_answer_program" "$agent_lib" answer_layer
   printf '{"pending_id": "%s", "choice": %s}\n' "$pending_id" "$choice"
+  exit ;;
+ agent-relaunch)
+  # Relaunch the Claude Code agent of the session with a settings file: /exit, then `claude --resume ID
+  # --settings PATH` in the same shell. Each step runs only while the checks of a delivery still hold.
+  [[ -n ${4:-} && ${5:-} =~ ^([0-9a-f]{64}|-)$ ]] || fail 'Use agent-relaunch NAME IDENTITY SETTINGS SHA256|-.'
+  settings=$4
+  staged=$(python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$relaunch_lib"$'\n'"$agent_relaunch_program" \
+   "$socket" "$name" "$extra" "$settings" "$5") || exit 1
+  read -r pane clients buffer turn claude_session digest old_pid command_b64 < <(printf '%s\n' "$staged")
+  [[ $turn != - ]] || turn=
+  # The same conditions as a message to an idle agent, and the agent is still the one of that session.
+  layer_condition="#{&&:#{==:#{pane_current_command},claude},#{&&:#{||:#{m:idle:*,#{@tokiwa_agent}},#{||:#{m:limited:*,#{@tokiwa_agent}},#{m:error:*,#{@tokiwa_agent}}}},#{&&:#{==:#{@tokiwa_agent_pending},},#{&&:#{==:#{@tokiwa_agent_turn},$turn},#{==:#{@tokiwa_agent_session},$claude_session}}}}}"
+  layer_refusal='The agent changed. Nothing was changed.'
+  # The same tmux queue marks the agent busy, so that a send or a second relaunch refuses while it exits.
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  layer_action="set-option -t '$session_id' @tokiwa_agent 'working:$(date +%s)'"
+  if ! deliver "$pane" "$clients" "$buffer" 1 '-p -r' "$layer_condition" "$layer_refusal" "$layer_action"; then
+   fail "${delivery_answer:-The agent could not be stopped. Nothing was changed.}"
+  fi
+  recover="To start it again by hand, type in the session: claude --resume $claude_session"
+  exited=$(python3 -c "$session_lib"$'\n'"$relaunch_exit_program" "$socket" "$name" "$extra" "$old_pid" \
+   "${TOKIWA_RELAUNCH_EXIT_SECONDS:-8}") || exited=
+  [[ $exited == exited ]] || fail 'Claude Code did not exit after /exit. It may still run with its old settings. Look at the session.'
+  # From here the agent has stopped. Each failure says how to start it again.
+  read -r total writable < <(python3 -c "$session_lib"$'\n'"$client_counts_program" "$socket" "$name" "$extra") ||
+   fail "Claude Code stopped, but the clients could not be read. $recover"
+  (( writable == 0 )) || fail "Claude Code stopped, and a client attached before the new command was typed. $recover"
+  buffer="tokiwa-relaunch-$$-$RANDOM"
+  printf '%s' "$command_b64" | base64 -d | tm load-buffer -b "$buffer" - ||
+   fail "Claude Code stopped, but the new command could not be loaded. $recover"
+  started=$(date +%s)
+  shell_ok="#{||:#{==:#{pane_current_command},bash},#{||:#{==:#{pane_current_command},sh},#{||:#{==:#{pane_current_command},zsh},#{==:#{pane_current_command},fish}}}}"
+  if ! deliver "$pane" "$total" "$buffer" 1 '' "$shell_ok" 'The pane does not show its shell.'; then
+   fail "Claude Code stopped, but the new command was not typed: ${delivery_answer:-tmux failed.} $recover"
+  fi
+  python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$relaunch_lib"$'\n'"$relaunch_verify_program" "$socket" "$name" "$extra" \
+   "$claude_session" "$settings" "$digest" "$started" "${TOKIWA_RELAUNCH_START_SECONDS:-15}" ||
+   fail "The relaunch could not be confirmed. The new command was typed: claude --resume $claude_session --settings $settings"
+  # Only a confirmed relaunch is recorded, as for every other action.
+  audit relaunch "$extra"
   exit ;;
  agent-send)
   core_deliver "$extra" "$agent_send_program" "$agent_lib" agent_layer

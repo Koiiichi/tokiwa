@@ -50,6 +50,10 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 The text is at most 16384 bytes of UTF-8, with no control character except newline and tab, and does not
                 start with /, ! or #. It reaches the host encrypted. The agent sees a first line that names the sender.
                 The result is JSON with turn_before, the turn count to give to agent wait --after
+  agent relaunch NAME IDENTITY --settings PATH [--sha256 HEX]
+                Restart the Claude Code agent of an idle session with a settings file on the host: /exit, then
+                claude --resume SESSION --settings PATH in the same pane. The session and the conversation stay.
+                Needs TOKIWA_ACTOR, which must be the driver. The result is JSON with the session id and the file's SHA-256
   agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
                 Answer the pending question of the agent: press the digit N (1 to 9) of an option, then Enter. ID is the id of the
                 pending item from agent read --pending; the question must still wait and the caller must drive. A permission item
@@ -116,6 +120,7 @@ Usage: tokiwa agent state NAME IDENTITY
        tokiwa agent send NAME IDENTITY (--text TEXT | --file PATH | -)
        tokiwa agent answer NAME IDENTITY --pending ID (--choice N | --text TEXT)
        tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]
+       tokiwa agent relaunch NAME IDENTITY --settings PATH [--sha256 HEX]
 
 Commands for the agent in a session, Claude Code or Codex. They read what its hooks report.
   state   The facts of the session, and the agent's state, turn, pending item and dialog, as JSON
@@ -123,6 +128,7 @@ Commands for the agent in a session, Claude Code or Codex. They read what its ho
   send    Send a message to an idle agent; the text reaches the host encrypted
   answer  Answer the pending question of the agent by the number of an option
   read    Read the transcript of the agent in pages, or its pending item; the result is encrypted on the way
+  relaunch  Restart an idle Claude Code agent with a settings file of the host, in the same pane and conversation
 EOF
 }
 fail() { printf 'Tokiwa: %s\n' "$*" >&2; exit 1; }
@@ -148,7 +154,7 @@ if text.lstrip()[:1] in ("/", "!", "#"):
 }
 # `tokiwa agent SUBCOMMAND ...` is the agent layer. Its helper mode is `agent-SUBCOMMAND`.
 if [[ $mode == agent ]]; then
- case ${2:-} in state|wait|send|answer|read) ;; *) agent_usage >&2; exit 2 ;; esac
+ case ${2:-} in state|wait|send|answer|read|relaunch) ;; *) agent_usage >&2; exit 2 ;; esac
  set -- "agent-$2" "${@:3}"
  mode=$1
  name=${2:-}
@@ -228,6 +234,15 @@ case "$mode" in
            check_message_text ;;
    *) fail "$answer_usage" ;;
   esac ;;
+ agent-relaunch)
+  relaunch_usage='Use agent relaunch NAME IDENTITY --settings PATH [--sha256 HEX], with an absolute path on the host.'
+  [[ ( $# -eq 5 || ( $# -eq 7 && $6 == --sha256 && $7 =~ ^[0-9a-f]{64}$ ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && $4 == --settings && $5 =~ ^/[A-Za-z0-9._/-]+$ && ${#5} -le 1001 ]] \
+   || fail "$relaunch_usage"
+  [[ ${TOKIWA_ACTOR:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
+   || fail 'Set TOKIWA_ACTOR to the name of the caller: 1 to 64 letters, digits, dots, colons, hyphens or underscores. Nothing was changed.'
+  extra=$3
+  relaunch_settings=$5
+  relaunch_digest=${7:--} ;;
  claim|release)
   [[ ( $# -eq 3 || ( $mode == claim && $# -eq 4 && $4 == --replace ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] \
    || fail "Use $mode NAME IDENTITY$([[ $mode == claim ]] && echo ' [--replace]')."
@@ -500,11 +515,11 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-relaunch || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
-  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"})
+  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"} ${relaunch_settings:+"$relaunch_settings" "$relaunch_digest"})
   remote="$remote $quoted"
  fi
  # Run Command keeps its output in the account, so the host encrypts a result to a key that
@@ -566,7 +581,7 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  # A sealed call ends on the host, so wait for its end: Run Command stops it after 30 seconds.
  # A wait call holds the host for up to 20 seconds, so it gets the same time.
  tries=15
- [[ $sealed == 0 && $mode != agent-wait ]] || tries=40
+ [[ $sealed == 0 && $mode != agent-wait && $mode != agent-relaunch ]] || tries=40
  # The host certificate that message text is encrypted to. Only the certificate is public; the key
  # stays on the host (see host/tokiwa-input.py). This reads it from the host in one Run Command call.
  # A host from before encrypted input has no certificate: the launcher stops there, and never sends the

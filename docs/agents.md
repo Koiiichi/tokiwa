@@ -7,7 +7,7 @@ A local agent reaches Tokiwa in one of two ways: the `tokiwa` command, for an ag
 | `read` | sessions, a screen, health, status | yes | always |
 | `control` | changes to a session or a project | yes | only with `tokiwa mcp --allow control` |
 | `answer` | an answer to an agent's question, `agent answer` | yes | only with `tokiwa mcp --allow answer` |
-| `run` | a command that runs on the host, `create --run` | yes | only with `tokiwa mcp --allow run` |
+| `run` | a command that runs on the host, `create --run`, `agent relaunch` | yes | only with `tokiwa mcp --allow run` |
 | `commands` | an entry of the owner's command list, run on the host | yes | only with `tokiwa mcp --allow commands` |
 | `human` | sign-in, `secret`, `admin`, an attached view | yes, for a person | never |
 
@@ -212,6 +212,59 @@ A task in the command line of `create --run`, for example `create --run 'claude 
 
 Codex runs its hooks only from the first prompt of a session, so a new Codex session reports no state and `agent send` refuses it with `The agent is not idle.` Start Codex with a first prompt that is not the task, for example `create --run 'codex "Reply with the single word ready."'`, and send the task with `agent send` after it is idle.
 
+## Relaunch an agent with a settings file
+
+`tokiwa agent relaunch NAME IDENTITY --settings PATH [--sha256 HEX]` (agent, class `run`, no MCP tool) restarts the Claude Code agent of one session with a settings file on the host, for example the file of a standing grant. Claude Code reads a `--settings` file only when it starts, so a new file needs a restart. The relaunch keeps the tmux session, its identity, its pane, its folder and project, and the conversation: in the same queue checks as `agent send`, it types `/exit`, waits until the pane shows its shell, and types this line into that shell:
+
+```
+claude [kept options] --resume SESSION_ID --settings PATH
+```
+
+`SESSION_ID` is the session id that the agent's hooks reported, so the line resumes that conversation and no other one. `--continue` would resume the newest conversation of the folder, which can belong to another session in the same folder. The line keeps `--model`, `--permission-mode`, `--effort`, `--agent`, `--fallback-model` and `--verbose` of the first command, and leaves out its first prompt and its `--continue`, `--resume`, `--session-id`, `--fork-session` and `--settings`. Any other option stops the relaunch, because it could change what the agent may do.
+
+Tokiwa does not read the file for meaning and decides nothing about it. The command needs `TOKIWA_ACTOR`, and that actor must be the driver. The result is JSON:
+
+```json
+{"relaunched": true, "session_id": "SESSION_ID", "pid": 4242, "settings": "PATH", "sha256": "HEX", "started_at": 1794880000}
+```
+
+The relaunch is confirmed when all of these hold, within 15 seconds:
+
+- a `claude` process below the pane's shell has `--resume SESSION_ID` and `--settings PATH` in its arguments;
+- the agent's hooks reported a start of the same session after the relaunch;
+- no dialog is on the screen;
+- the file still has the SHA-256 that was read before the relaunch.
+
+These facts show that Claude Code started with the file. They do not show that it applied each setting. A file whose own SessionStart hook writes a receipt, as the file of a standing grant can, shows that: compare the session id of the receipt with `session_id`.
+
+Before anything changes, the host refuses:
+
+| Condition | Refusal |
+| --- | --- |
+| The pane does not run Claude Code | `The pane does not run Claude Code. Only Claude Code can be relaunched. Nothing was changed.` |
+| The agent is not idle, an item waits for a person, a dialog is on the screen, or the session is frozen | `The agent is not idle.`, `An item waits for a person.`, `A dialog is on the screen.` or `The session is frozen.`, then `Nothing was changed.` |
+| The agent has not reported a session id | `The agent has not reported its session id. Nothing was changed.` |
+| Another pane of the session runs an agent | `Another pane of the session runs an agent. Nothing was changed.` |
+| The path is not absolute, has a character other than letters, digits and `. _ / -`, or names a link, a file over 1 MiB, a file that cannot be read or a file that is not a JSON object | A sentence that names the cause, then `Nothing was changed.` Claude Code shows a dialog for a file that is not valid JSON, and one of its choices starts the agent without the file, so such a file stops here. |
+| `--sha256` is given and the file has another SHA-256 | `The settings file does not have the expected SHA-256. Nothing was changed.` |
+| The first command has an option that the relaunch does not keep | `The Claude command has OPTION, which a relaunch does not keep. Nothing was changed.` |
+| A client is attached, or the caller does not drive | The refusals of `agent send` |
+
+After the agent stopped, a failure says so and names the command line that starts the conversation again: `claude --resume SESSION_ID`, and after the new line was typed, also its `--settings PATH`. These failures are:
+
+| Failure | What remains |
+| --- | --- |
+| `Claude Code did not exit after /exit.` (8 seconds) | The old agent may still run, with its old settings. |
+| A client attached, or the pane changed, before the new line was typed | The shell of the pane, with no agent. |
+| `Claude Code exited after the relaunch.`, for example for a file that it cannot use | The shell of the pane, with no agent. |
+| `Claude Code shows a dialog after the relaunch.` | The agent waits at the dialog. Look at the session before you choose: one choice of a settings dialog starts the agent without the file. |
+| `The relaunched agent did not report its start in time.` | The new line was typed. Read the session with `agent state` or attach. |
+| `The settings file changed during the relaunch.` | The agent runs with a file that is not the one that was checked. Relaunch again. |
+
+The same tmux queue that types `/exit` marks the agent `working`, so that `agent send` and a second relaunch refuse while Claude Code exits. When Claude Code does not exit, the agent stays `working`; `tokiwa interrupt` makes it idle again.
+
+The audit log records `relaunch` with the actor only after the relaunch is confirmed.
+
 ## Read an agent's transcript
 
 `tokiwa agent read NAME IDENTITY [--after CURSOR] [--tools] [--pending]` (agent, class `read`) reads what the agent said and did, in pages, from the transcript file that its hooks name (`@tokiwa_agent_transcript`). It reads a Claude Code or a Codex transcript, by the shape of each line. The MCP tool is `tokiwa_agent_read`. Like `capture`, the host encrypts the result to a one-time key of the launcher (see [Limits](#limits)).
@@ -336,7 +389,7 @@ A mode that approves on its own, such as Claude Code's auto mode, runs a command
 ```json
 "ask": ["Bash(tokiwa freeze:*)", "Bash(tokiwa resume:*)", "Bash(tokiwa interrupt:*)", "Bash(tokiwa create:*)", "Bash(tokiwa run:*)",
         "Bash(tokiwa agent send:*)", "Bash(tokiwa agent answer:*)", "Bash(tokiwa end:*)", "Bash(tokiwa claim:*)",
-        "Bash(tokiwa release:*)",
+        "Bash(tokiwa release:*)", "Bash(tokiwa agent relaunch:*)",
         "mcp__tokiwa__tokiwa_freeze", "mcp__tokiwa__tokiwa_resume", "mcp__tokiwa__tokiwa_interrupt",
         "mcp__tokiwa__tokiwa_create", "mcp__tokiwa__tokiwa_launch", "mcp__tokiwa__tokiwa_run",
         "mcp__tokiwa__tokiwa_agent_send", "mcp__tokiwa__tokiwa_agent_answer", "mcp__tokiwa__tokiwa_end",
