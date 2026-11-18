@@ -379,6 +379,9 @@ export class App {
   pendingText?: TextRenderable;
   /** The view that runs the AWS sign-in. A failed sign-in stays open, so its message can be read. */
   signInShell?: Shell;
+  /** The recovery that the band's first key hint offers, and the width of that hint in cells. */
+  bandAction?: "sign-in" | "retry";
+  bandActionWidth = 0;
   /** The search panel. The confirmation of End session and Project directory also uses it. */
   palette?: BoxRenderable;
   search?: InputRenderable;
@@ -622,11 +625,16 @@ export class App {
       truncate: true,
       selectable: false,
     });
+    // Each key hint is also a button: a click runs its action, also while a terminal view has the focus.
     this.bandKeys = this.text(bandRow, "problem-keys", "", {
       fg: theme.muted,
       flexShrink: 0,
       wrapMode: "none",
       selectable: false,
+      onMouseDown: (event: MouseEvent) => {
+        event.stopPropagation();
+        this.clickBandKey(event.x - this.bandKeys.x);
+      },
     });
     // The second row: what the failure means, and how old the last good read is.
     this.bandSub = this.text(this.band, "problem-sub", "", {
@@ -1984,6 +1992,9 @@ export class App {
               ? "l shows the sign-in"
               : "l sign in"
             : "";
+      this.bandAction =
+        action && state.recovery !== "none" ? state.recovery : undefined;
+      this.bandActionWidth = action.length;
       const keys = `${action ? `${action} · ` : ""}${this.detailsOpen ? "e hides details" : "e details"}`;
       this.bandKeys.content = keys;
       this.bandKeys.width = keys.length;
@@ -2045,6 +2056,18 @@ export class App {
     for (const source of Object.keys(this.logged))
       if (!failures.some((f) => f.source === source))
         delete this.logged[source];
+  }
+  /**
+   * A click at `column` of the band's key hints: the recovery hint (sign in or retry) runs its action;
+   * the rest opens or closes the details, as a click elsewhere on the band does.
+   */
+  clickBandKey(column: number) {
+    if (this.bandAction && column < this.bandActionWidth) {
+      if (this.bandAction === "sign-in") this.signIn();
+      else this.runAction("refresh");
+      return;
+    }
+    this.toggleDetails();
   }
   signingIn() {
     return !!this.signInShell && !this.signInShell.exited;

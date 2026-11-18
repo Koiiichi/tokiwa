@@ -990,3 +990,22 @@ test("the focus strip draws the needs-you glyph amber while live and dim when st
     await close(t, app);
   }
 });
+
+test("a click on the retry hint of the band reads again", async () => {
+  const { t, app, state } = await open(undefined);
+  try {
+    state.error = (args) =>
+      new LauncherError("The launcher exceeded 90 seconds.", args[0], "timeout", null, "");
+    await app.refreshSessions();
+    await t.renderOnce();
+    const rows = t.captureCharFrame().split("\n");
+    const y = rows.findIndex((row) => row.includes("▲") && row.includes("u retry"));
+    expect(y).toBeGreaterThanOrEqual(0);
+    const before = state.commands.length;
+    await t.mockMouse.click(rows[y].indexOf("u retry") + 2, y);
+    await until(() => state.commands.length > before);
+    expect(app.detailsOpen).toBe(false);
+  } finally {
+    await close(t, app);
+  }
+});
