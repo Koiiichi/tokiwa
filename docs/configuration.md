@@ -89,6 +89,18 @@ A missing file, a missing required key or a value in the wrong form stops the la
 
 The launcher sets its own `PATH`, with `~/.local/lib/cloud-access` first, and sets `AWS_PAGER` to an empty value. `tokiwa --help` lists its commands. See [Host](host.md) and [Transport](transport.md).
 
+## Session cache settings
+
+The host helper reads these settings when it starts a session. They are not set on the Mac. See [Host](host.md#session-cache).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `TOKIWA_CACHE_ROOT` | Unset | The folder that holds one cache folder for each new session. It wins over the root file. |
+| Root file `/etc/tokiwa/cache-root`, or the file that `TOKIWA_CACHE_ROOT_FILE` names | Missing | The first line is the cache root. |
+| `TOKIWA_CACHE_MIN_FREE` | `0.05` | The part of the blocks and of the inodes that must be free on the root's filesystem. |
+
+Without a usable root, a session keeps the default places for caches and temporary files. A new shell sets `TOKIWA_CACHE`, `XDG_CACHE_HOME`, `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `npm_config_cache`, `TMPDIR` and `UV_LINK_MODE=copy` only when the root is usable. A tool that renames a temporary file into the project may need its own temp setting, because `TMPDIR` is on another filesystem.
+
 ## Related
 
 - [Interface](interface.md)

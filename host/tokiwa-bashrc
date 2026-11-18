@@ -10,3 +10,41 @@ fi
 PS1=$TOKIWA_PS1
 export BROWSER=$TOKIWA_BROWSER
 unset TOKIWA_PS1 TOKIWA_BROWSER
+# The session cache: caches and temporary files go to a folder of this session under the host cache
+# root, so that they stay off the backed-up disk. A host with no root keeps the default places.
+tokiwa_session_cache() {
+ local root=$TOKIWA_CACHE_ROOT name=$TOKIWA_SESSION min=${TOKIWA_CACHE_MIN_FREE:-0.05} reason='' dir
+ if [[ ! $root =~ ^/[A-Za-z0-9._/-]*$ ]]; then reason='bad folder name'
+ elif [[ ! $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ ]]; then reason='bad session name'
+ elif [[ ! -d $root ]]; then reason='no such folder'
+ elif [[ ! -w $root || ! -x $root ]]; then reason='not writable'
+ elif ! [[ $min =~ ^[0-9]*\.?[0-9]+$ ]]; then reason='bad free space setting'
+ else
+  # Blocks and inodes of the filesystem: each must have at least $min free. A filesystem with
+  # no inode count passes the inode check.
+  local blocks inodes
+  blocks=$(df -P "$root" 2>/dev/null | awk -v min="$min" 'NR==2 { print ($2 > 0 && $4 / $2 >= min) ? "ok" : "low" }')
+  inodes=$(df -Pi "$root" 2>/dev/null | awk -v min="$min" '
+   NR==1 { for (i = 1; i <= NF; i++) { h = tolower($i); if (h == "iused") u = i; if (h == "ifree") f = i } }
+   NR==2 { if (!u || !f || $u + $f == 0) print "ok"; else print ($f / ($u + $f) >= min) ? "ok" : "low" }')
+  [[ $blocks == ok && $inodes == ok ]] || reason='disk nearly full'
+ fi
+ if [[ -z $reason ]]; then
+  dir="${root%/}/$name"
+  ( umask 077 && mkdir -p "$dir/cache" "$dir/tmp" "$dir/work" ) 2>/dev/null || reason='not writable'
+ fi
+ if [[ -z $reason && ! -e $dir/cache/CACHEDIR.TAG ]]; then
+  ( umask 077 && printf 'Signature: 8a477f597d28d172789f06886806bc55\n# This folder holds caches of Tokiwa session %s.\n' "$name" >"$dir/cache/CACHEDIR.TAG" ) 2>/dev/null || reason='not writable'
+ fi
+ if [[ -n $reason ]]; then
+  printf 'Tokiwa: the session cache is not available (%s). Temporary files and caches use the default places.\n' "$reason"
+  return 0
+ fi
+ export TOKIWA_CACHE=$dir XDG_CACHE_HOME=$dir/cache UV_CACHE_DIR=$dir/cache/uv PIP_CACHE_DIR=$dir/cache/pip \
+  npm_config_cache=$dir/cache/npm TMPDIR=$dir/tmp UV_LINK_MODE=copy
+}
+if [[ -n ${TOKIWA_CACHE_ROOT:-} ]]; then
+ tokiwa_session_cache
+fi
+unset -f tokiwa_session_cache
+unset TOKIWA_CACHE_ROOT TOKIWA_CACHE_MIN_FREE TOKIWA_SESSION

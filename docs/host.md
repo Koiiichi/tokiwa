@@ -77,7 +77,7 @@ systemctl start cloud-workbench.service
 | Configuration file | none (`-f /dev/null`) |
 | Server options from `start-workbench.sh` | `mouse on`, `set-clipboard on`, `allow-passthrough on`, `history-limit 50000` |
 | Global environment | `BROWSER=/opt/agent-platform/rootless/tokiwa-open` |
-| Shell of a new session | `/bin/bash --noprofile --rcfile tokiwa-bashrc`: it reads the owner's `~/.bashrc` (for example the `PATH` of the tools in `~/.local/bin`), then the [saved secrets](#secrets), then sets `BROWSER` and `PS1=NAME:\W\$ ` |
+| Shell of a new session | `/bin/bash --noprofile --rcfile tokiwa-bashrc`: it reads the owner's `~/.bashrc` (for example the `PATH` of the tools in `~/.local/bin`), then the [saved secrets](#secrets), then the [session cache](#session-cache) when the host sets a cache root, then sets `BROWSER` and `PS1=NAME:\W\$ ` |
 | Prompt name | The `@tokiwa_name` server option, `tokiwa` when it is not set (`tokiwa name NAME`) |
 | Session options | `@tokiwa_project` and `@tokiwa_parent` (see [Sessions and projects](sessions-and-projects.md)) |
 
@@ -251,6 +251,26 @@ tokiwa secret --remove OPENAI_API_KEY
 The prompt runs on the host, in a Session Manager session, so the value goes from your keyboard to the host through that encrypted connection. It is never stored on the Mac, and it never goes through Run Command, which keeps its parameters and output in the AWS account. The host does not print the value, so a Session Manager log of the session would not hold it either. Type the command instead of pasting it, so that the clipboard still holds the value. When a paste holds several lines, the host keeps the first line, reads the rest so that no shell runs it, and says how many lines it dropped.
 
 The values are in `~/.tokiwa/secrets.env` of the workbench user (`/srv/development/private/homes/workbench`), mode 600, one `export NAME='value'` line each. `tokiwa-bashrc` loads the file after `~/.bashrc`, so the newest saved value wins. Every program in a session runs as that user and can read the values; that includes the agents. Names that shells and Tokiwa rely on are refused: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `PWD`, `BROWSER`, `PS1`, and names that start with `TOKIWA_` or `TMUX`.
+
+## Session cache
+
+A host can keep the caches and the temporary files of each new session off the backed-up disk. The host owner sets a cache root, a folder on a disk that is not backed up. The helper reads the root from the environment variable `TOKIWA_CACHE_ROOT`, or else from the first line of `/etc/tokiwa/cache-root`. The variable wins when both exist. Without a root, nothing changes: a new shell has none of the variables below.
+
+`tokiwa-bashrc` checks the root after it loads the secrets. The root must be an absolute path of letters, digits and `. _ / -`, an existing folder that the workbench user can write to, on a filesystem with at least 5% of its blocks and 5% of its inodes free (`TOKIWA_CACHE_MIN_FREE`, default `0.05`, read from `df -P` and `df -Pi`). The session name must be a valid session name. When the check passes, the shell gets a folder `ROOT/SESSION` with the subfolders `cache`, `tmp` and `work` (mode 700) and these variables:
+
+| Variable | Value |
+| --- | --- |
+| `TOKIWA_CACHE` | `ROOT/SESSION` |
+| `XDG_CACHE_HOME` | `$TOKIWA_CACHE/cache` |
+| `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `npm_config_cache` | `$TOKIWA_CACHE/cache/uv`, `.../pip`, `.../npm` |
+| `TMPDIR` | `$TOKIWA_CACHE/tmp` |
+| `UV_LINK_MODE` | `copy`, because a link from a cache on another disk fails |
+
+`cache/CACHEDIR.TAG` holds the standard signature, so that backup tools skip the folder. The `tmp` and `work` folders have no tag. `TOKIWA_CACHE_ROOT`, `TOKIWA_CACHE_MIN_FREE` and `TOKIWA_SESSION` are not visible in the session after startup.
+
+When the check fails, the shell exports none of these variables and prints one line, for example `Tokiwa: the session cache is not available (no such folder). Temporary files and caches use the default places.` The reason is `no such folder`, `not writable`, `disk nearly full` `bad folder name`, `bad session name` or `bad free space setting`.
+
+The folder belongs to the name that the session had at creation. A renamed session keeps its shell and its folder. A new session that takes the old name uses the same folder again. Nothing deletes a session folder. A tool that renames a temporary file into the project folder fails when `TMPDIR` is on another filesystem. Such a tool needs its own setting, for example a temp folder inside the project.
 
 ## Agent state
 

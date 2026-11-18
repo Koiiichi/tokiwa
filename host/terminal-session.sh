@@ -167,9 +167,15 @@ prompt_name() {
  value=$(tm show-options -gqv @tokiwa_name 2>/dev/null || true)
  valid_prompt_name "$value" && printf '%s' "$value" || printf 'tokiwa'
 }
-# Start session $1 in directory $2 with a plain shell.
+# Start session $1 in directory $2 with a plain shell. tokiwa-bashrc sets the session cache
+# from TOKIWA_SESSION and TOKIWA_CACHE_ROOT.
 start_shell() {
- tm new-session -d -s "$1" -c "$2" env "TOKIWA_BROWSER=$browser" "TOKIWA_PS1=$(prompt_name):\\W\\$ " /bin/bash --noprofile --rcfile "$(dirname "$0")/tokiwa-bashrc" \; set-option @tokiwa_session 1
+ local cache_args=("TOKIWA_SESSION=$1") cache_root=${TOKIWA_CACHE_ROOT:-} cache_file=${TOKIWA_CACHE_ROOT_FILE:-/etc/tokiwa/cache-root}
+ # The root comes from the environment of the helper, else from the first line of the root file.
+ [[ -n $cache_root || ! -r $cache_file ]] || IFS= read -r cache_root <"$cache_file" || [[ -n $cache_root ]] || true
+ [[ -z $cache_root ]] || cache_args+=("TOKIWA_CACHE_ROOT=$cache_root")
+ [[ -z ${TOKIWA_CACHE_MIN_FREE:-} ]] || cache_args+=("TOKIWA_CACHE_MIN_FREE=$TOKIWA_CACHE_MIN_FREE")
+ tm new-session -d -s "$1" -c "$2" env "TOKIWA_BROWSER=$browser" "TOKIWA_PS1=$(prompt_name):\\W\\$ " "${cache_args[@]}" /bin/bash --noprofile --rcfile "$(dirname "$0")/tokiwa-bashrc" \; set-option @tokiwa_session 1
 }
 # Validate a project label from base64 $1: a name path such as studio/api, or an existing absolute directory.
 project_label() {
