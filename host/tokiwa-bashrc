@@ -33,6 +33,13 @@ tokiwa_session_cache() {
   dir="${root%/}/$name"
   ( umask 077 && mkdir -p "$dir/cache" "$dir/tmp" "$dir/work" ) 2>/dev/null || reason='not writable'
  fi
+ # mkdir -p accepts a link to a folder, and a folder that this user cannot write.
+ if [[ -z $reason ]]; then
+  local sub
+  for sub in cache tmp; do
+   [[ -d $dir/$sub && ! -L $dir/$sub && -w $dir/$sub ]] || reason='not writable'
+  done
+ fi
  if [[ -z $reason && ! -e $dir/cache/CACHEDIR.TAG ]]; then
   ( umask 077 && printf 'Signature: 8a477f597d28d172789f06886806bc55\n# This folder holds caches of Tokiwa session %s.\n' "$name" >"$dir/cache/CACHEDIR.TAG" ) 2>/dev/null || reason='not writable'
  fi

@@ -268,7 +268,7 @@ A host can keep the caches and the temporary files of each new session off the b
 
 `cache/CACHEDIR.TAG` holds the standard signature, so that backup tools skip the folder. The `tmp` and `work` folders have no tag. `TOKIWA_CACHE_ROOT`, `TOKIWA_CACHE_MIN_FREE` and `TOKIWA_SESSION` are not visible in the session after startup.
 
-When the check fails, the shell exports none of these variables and prints one line, for example `Tokiwa: the session cache is not available (no such folder). Temporary files and caches use the default places.` The reason is `no such folder`, `not writable`, `disk nearly full` `bad folder name`, `bad session name` or `bad free space setting`.
+When the check fails, the shell exports none of these variables and prints one line, for example `Tokiwa: the session cache is not available (no such folder). Temporary files and caches use the default places.` The reason is `no such folder`, `not writable`, `disk nearly full`, `bad folder name`, `bad session name` or `bad free space setting`. The reason is `not writable` also when the `cache` or `tmp` folder of the session is a link, or a folder that the session user cannot write.
 
 The folder belongs to the name that the session had at creation. A renamed session keeps its shell and its folder. A new session that takes the old name uses the same folder again. Nothing deletes a session folder. A tool that renames a temporary file into the project folder fails when `TMPDIR` is on another filesystem. Such a tool needs its own setting, for example a temp folder inside the project.
 
