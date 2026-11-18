@@ -211,3 +211,43 @@ test("a recovery clears a notice about the cause", async () => {
     await close(t, app);
   }
 });
+
+/** The cell of `text` in the frame: its column and its row. */
+function cell(frame: string, text: string) {
+  const rows = frame.split("\n");
+  const y = rows.findIndex((row) => row.includes(text));
+  expect(y).toBeGreaterThanOrEqual(0);
+  return { x: rows[y].indexOf(text), y };
+}
+
+test("a click on the sign-in hint of the band signs in while a terminal view has the focus", async () => {
+  const { t, app } = await open(EXPIRED, "sleep 0.3");
+  try {
+    app.startShell("shell-0");
+    app.focusPaneOf("shell-0");
+    await pause();
+    await t.renderOnce();
+    expect(app.shells[0].terminal.focused).toBe(true);
+    const at = cell(t.captureCharFrame(), "l sign in · e details");
+    await t.mockMouse.click(at.x + 2, at.y);
+    await pause();
+    expect(app.shells.map((s) => s.name)).toContain("aws-sign-in");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a click on the details hint of the band opens the details and does not sign in", async () => {
+  const { t, app } = await open(EXPIRED);
+  try {
+    const frame = t.captureCharFrame();
+    const at = cell(frame, "e details");
+    await t.mockMouse.click(at.x + 2, at.y);
+    await pause();
+    await t.renderOnce();
+    expect(app.detailsOpen).toBe(true);
+    expect(app.shells).toHaveLength(0);
+  } finally {
+    await close(t, app);
+  }
+});

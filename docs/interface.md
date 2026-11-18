@@ -91,7 +91,9 @@ While a failure of the whole link is active, one band of two rows under the head
 
 A read that failed for its own reason has no band. One amber line sits at the top of the view of that source: `▲ Sessions read failed: <first line>` at the top of the session list, and `▲ Health read failed: <first line>` at the top of Health, each with `u retry · e details` at the right. The first line is the first line of output, without the launcher prefix and without shell warnings about a removed folder. While the band shows, these lines do not show. A failed Spend read stays in the Spend rows.
 
-`e`, or a click on the band, opens one details box under it; `e` closes it. For a failure of one source, the box opens under the header with no band row. The box holds, in this order:
+Each key hint at the right of the band is also a button. A click on `l sign in` signs in, and a click on `u retry` reads again, also while a terminal view has the keyboard. A click on `e details` opens or closes the details box.
+
+`e`, or a click elsewhere on the band, opens one details box under it; `e` closes it. For a failure of one source, the box opens under the header with no band row. The box holds, in this order:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -261,6 +263,8 @@ The Session keys act on the selected row while the list has the keyboard, and on
 | --- | --- | --- |
 | `Workspace` or `Health` in the navigation row | Click | Show that view and close the sheet. `Workspace` gives the keyboard to the list. |
 | Header status | Pointer over | Show the connection card. |
+| `l sign in` or `u retry` in the problem band | Click | Sign in, or read again. It works also while a terminal view has the keyboard. |
+| Problem band elsewhere | Click | Open or close the details box. |
 | Session row | Click | Attach the session on release, or bring its view forward. |
 | Session row of a remote session | Second press within 400 ms | Ask for a new name for the session. |
 | Session row | Pointer over | Show the hover band and `×` at the end; the footer explains the state. |
