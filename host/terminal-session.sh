@@ -1241,7 +1241,10 @@ case "$mode" in
   # The same conditions as a message to an idle agent, and the agent is still the one of that session.
   layer_condition="#{&&:#{==:#{pane_current_command},claude},#{&&:#{||:#{m:idle:*,#{@tokiwa_agent}},#{||:#{m:limited:*,#{@tokiwa_agent}},#{m:error:*,#{@tokiwa_agent}}}},#{&&:#{==:#{@tokiwa_agent_pending},},#{&&:#{==:#{@tokiwa_agent_turn},$turn},#{==:#{@tokiwa_agent_session},$claude_session}}}}}"
   layer_refusal='The agent changed. Nothing was changed.'
-  if ! deliver "$pane" "$clients" "$buffer" 1 '-p -r' "$layer_condition" "$layer_refusal"; then
+  # The same tmux queue marks the agent busy, so that a send or a second relaunch refuses while it exits.
+  session_id=${extra#*:}; session_id=${session_id%%:*}
+  layer_action="set-option -t '$session_id' @tokiwa_agent 'working:$(date +%s)'"
+  if ! deliver "$pane" "$clients" "$buffer" 1 '-p -r' "$layer_condition" "$layer_refusal" "$layer_action"; then
    fail "${delivery_answer:-The agent could not be stopped. Nothing was changed.}"
   fi
   recover="To start it again by hand, type in the session: claude --resume $claude_session"
@@ -1260,10 +1263,11 @@ case "$mode" in
   if ! deliver "$pane" "$total" "$buffer" 1 '' "$shell_ok" 'The pane does not show its shell.'; then
    fail "Claude Code stopped, but the new command was not typed: ${delivery_answer:-tmux failed.} $recover"
   fi
-  audit relaunch "$extra"
   python3 -c "$session_lib"$'\n'"$agent_lib"$'\n'"$relaunch_lib"$'\n'"$relaunch_verify_program" "$socket" "$name" "$extra" \
    "$claude_session" "$settings" "$digest" "$started" "${TOKIWA_RELAUNCH_START_SECONDS:-15}" ||
    fail "The relaunch could not be confirmed. The new command was typed: claude --resume $claude_session --settings $settings"
+  # Only a confirmed relaunch is recorded, as for every other action.
+  audit relaunch "$extra"
   exit ;;
  agent-send)
   core_deliver "$extra" "$agent_send_program" "$agent_lib" agent_layer
