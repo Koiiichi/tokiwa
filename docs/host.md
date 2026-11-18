@@ -352,6 +352,28 @@ The launcher pins the certificate on first use: see [the pin](configuration.md#f
 
 Update the host with `host/install.sh` before you update the launcher on the Mac. A host from before encrypted input has no input key. A new launcher then refuses `create --run`, `agent send` and `agent answer --text` with `The host has no input key. Update the host with host/install.sh.` and `Nothing was created.` or `Nothing was sent.`, and creates or sends nothing. It never falls back to plain text.
 
+## Paste an image
+
+`terminal-session.sh paste-image NAME IDENTITY SHA256 SIZE` downloads one image into the `tmp` folder of a session. The launcher runs it after `tokiwa-input.py`, which prints the decrypted URL on stdin as one line with no final newline:
+
+```sh
+tokiwa-input.py SEALED | terminal-session.sh paste-image NAME IDENTITY SHA256 SIZE
+```
+
+`SHA256` is 64 lowercase hexadecimal digits. `SIZE` is the byte count, from 1 to 10485760 (10 MiB). The URL must start with `https://` and hold no white space. The helper checks that the session still has the given identity, then reads the cache root as [the session cache](#session-cache) does. It makes `ROOT/NAME` and `ROOT/NAME/tmp` (both mode 700) if they are missing. It downloads with `curl -q --globoff --fail --silent --proto =https --max-time 20 --max-filesize SIZE -K -`, which reads the URL from a config on stdin, so the URL is never an argument of a process, into a hidden `.paste-*.part` file in that folder. The part file is removed on every exit. The file gets its final name only when its byte count equals `SIZE` and its `sha256sum` equals `SHA256`.
+
+On success the helper exits 0 and prints one line, `{"path": "ROOT/NAME/tmp/paste-YYYYMMDDTHHMMSSZ-XXXXXXXX.png"}`. The file has mode 600. Nothing deletes it: it follows the rules of the `tmp` folder. On failure the helper exits 1, prints one sentence on stderr and leaves no file:
+
+| Sentence | Cause |
+| --- | --- |
+| `Use paste-image NAME IDENTITY SHA256 SIZE.` | `SHA256` or `SIZE` is malformed, or `SIZE` is over the limit. |
+| `The image URL is not valid. Nothing was pasted.` | The line on stdin is not an `https://` URL. |
+| `The selected session no longer exists.` | The session ended before the helper checked it. |
+| `Session identity changed. Nothing was pasted.` | The session has another identity. |
+| `The session cache folder is not usable. Nothing was pasted.` | There is no cache root, or `ROOT/NAME` or `tmp` is a link, is not a folder or is not writable. |
+| `The image could not be downloaded to the host. Nothing was pasted.` | `curl` failed or hit the limit. |
+| `The image on the host does not match the image on the Mac. Nothing was pasted.` | The byte count or the hash is wrong. |
+
 ## Audit log
 
 The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send`, `answer` and `relaunch`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:

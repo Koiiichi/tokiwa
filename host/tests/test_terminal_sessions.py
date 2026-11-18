@@ -3176,3 +3176,123 @@ class AgentRelaunch(Pty, ModelHelpers, Server):
         result = self.relaunch(dialog)
         self.assertEqual(result.returncode, 1)
         self.assertIn('Claude Code shows a dialog after the relaunch.', result.stderr)
+
+
+class PasteImage(ModelHelpers, Server):
+    """`paste-image` downloads one checked image into the tmp folder of a session, or refuses and leaves no file."""
+
+    IMAGE = b'\x89PNG\r\n\x1a\n' + bytes(range(256))
+    URL = 'https://example.com/image.png'
+
+    def setUp(self):
+        super().setUp()
+        self.root = Path(self.temp.name) / 'cache-root'
+        self.root.mkdir()
+        self.tools = Path(self.temp.name) / 'tools'
+        self.tools.mkdir()
+        self.image = Path(self.temp.name) / 'fixture.png'
+        self.image.write_bytes(self.IMAGE)
+        self.calls = Path(self.temp.name) / 'curl.log'
+        stand_in = self.tools / 'curl'
+        stand_in.write_text('#!/bin/bash\n'
+                            'echo "$*" >> "$FAKE_CURL_LOG"\n'
+                            '[[ $* != *" -K -" ]] || cat > "$FAKE_CURL_CONFIG"\n'
+                            'while [[ $# -gt 0 ]]; do [[ $1 != -o ]] || out=$2; shift; done\n'
+                            'cp "$FAKE_IMAGE" "$out"\n'
+                            'exit "${FAKE_CURL_EXIT:-0}"\n')
+        stand_in.chmod(0o755)
+        self.env.update(PATH=f'{self.tools}:{os.environ["PATH"]}', TOKIWA_CACHE_ROOT=str(self.root),
+                        FAKE_IMAGE=str(self.image), FAKE_CURL_LOG=str(self.calls),
+                        FAKE_CURL_CONFIG=str(Path(self.temp.name) / 'curl.config'))
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        self.identity = self.rows()['lead']['identity']
+
+    def helper_with_stdin(self, text, *args):
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), *args], env=self.env, input=text,
+                              capture_output=True, text=True, timeout=30)
+
+    def paste(self, url=None, sha=None, size=None, identity=None, name='lead'):
+        return self.helper_with_stdin(self.URL if url is None else url, 'paste-image', name,
+                                      identity or self.identity,
+                                      sha or hashlib.sha256(self.IMAGE).hexdigest(),
+                                      str(len(self.IMAGE) if size is None else size))
+
+    def pasted(self):
+        folder = self.root / 'lead' / 'tmp'
+        return sorted(folder.glob('*')) if folder.is_dir() else []
+
+    def refused(self, result, sentence, curl_called=False):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.stdout, '')
+        self.assertIn(sentence, result.stderr)
+        self.assertEqual(self.pasted(), [])
+        self.assertEqual(self.calls.exists(), curl_called)
+
+    def test_places_a_checked_image_in_the_session_tmp_folder(self):
+        result = self.paste()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = json.loads(result.stdout)['path']
+        self.assertRegex(path, rf'^{re.escape(str(self.root))}/lead/tmp/paste-\d{{8}}T\d{{6}}Z-[0-9a-f]{{8}}\.png$')
+        self.assertEqual(Path(path).read_bytes(), self.IMAGE)
+        self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in self.pasted()], [Path(path).name])
+        # The URL reaches curl on stdin, not in its arguments.
+        arguments = self.calls.read_text()
+        self.assertNotIn('https://', arguments)
+        self.assertTrue(arguments.startswith('-q '), arguments)
+        self.assertIn('--globoff', arguments)
+        # The download fails on an HTTP error, uses https only, and stops at the announced size.
+        self.assertIn(' --fail ', arguments)
+        self.assertIn(' --proto =https ', arguments)
+        self.assertIn(f' --max-filesize {len(self.IMAGE)} ', arguments)
+        self.assertEqual(Path(self.env['FAKE_CURL_CONFIG']).read_text(), f'url = "{self.URL}"\n')
+
+    def test_escapes_quotes_and_backslashes_in_the_url_config(self):
+        url = 'https://example.com/a"b\\c.png'
+        self.assertEqual(self.paste(url=url).returncode, 0)
+        self.assertEqual(Path(self.env['FAKE_CURL_CONFIG']).read_text(), 'url = "https://example.com/a\\"b\\\\c.png"\n')
+
+    def test_makes_the_tmp_folder_of_a_session_that_has_none(self):
+        # The shell of the session made its folder at start; a session from before the cache root has none.
+        shutil.rmtree(self.root / 'lead', ignore_errors=True)
+        self.assertEqual(self.paste().returncode, 0)
+        self.assertEqual((self.root / 'lead/tmp').stat().st_mode & 0o777, 0o700)
+
+    def test_refuses_a_wrong_sha256_and_leaves_no_file(self):
+        self.refused(self.paste(sha='0' * 64),
+                     'The image on the host does not match the image on the Mac. Nothing was pasted.', True)
+
+    def test_refuses_a_wrong_size_and_leaves_no_file(self):
+        self.refused(self.paste(size=len(self.IMAGE) + 1),
+                     'The image on the host does not match the image on the Mac. Nothing was pasted.', True)
+
+    def test_refuses_a_failed_download_and_leaves_no_file(self):
+        self.env['FAKE_CURL_EXIT'] = '22'
+        self.refused(self.paste(), 'The image could not be downloaded to the host. Nothing was pasted.', True)
+
+    def test_refuses_another_identity(self):
+        self.refused(self.paste(identity='1:$99:1'), 'Session identity changed. Nothing was pasted.')
+
+    def test_refuses_a_size_over_the_limit_and_a_malformed_sha256(self):
+        usage = 'Use paste-image NAME IDENTITY SHA256 SIZE.'
+        self.refused(self.paste(size=10485761), usage)
+        self.refused(self.paste(size=0), usage)
+        self.refused(self.paste(size='abc'), usage)
+        self.refused(self.paste(sha='A' * 64), usage)
+        self.refused(self.paste(sha='ab'), usage)
+
+    def test_refuses_a_url_that_is_not_https(self):
+        for url in ('http://example.com/a.png', '', 'https://example.com/a b.png', 'file:///etc/passwd'):
+            self.refused(self.paste(url=url), 'The image URL is not valid. Nothing was pasted.')
+
+    def test_refuses_a_tmp_folder_that_is_a_link(self):
+        shutil.rmtree(self.root / 'lead')
+        (self.root / 'lead').mkdir()
+        elsewhere = Path(self.temp.name) / 'elsewhere'
+        elsewhere.mkdir()
+        (self.root / 'lead/tmp').symlink_to(elsewhere)
+        result = self.paste()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('The session cache folder is not usable. Nothing was pasted.', result.stderr)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertFalse(self.calls.exists())
