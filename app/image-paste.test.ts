@@ -232,7 +232,7 @@ test("a view that closes before the reply gets nothing", async () => {
     s.cmdV();
     await pause();
     s.shell.exited = true;
-    s.app.shells.splice(s.app.shells.indexOf(s.shell), 1);
+    s.app.discardView(s.shell);
     release();
     await pause();
     expect(s.written).toEqual([]);
@@ -298,7 +298,7 @@ test("a view that closes mid-flight clears the pasting notice", async () => {
     s.cmdV();
     await pause();
     expect(s.footer()).toBe("Pasting image…");
-    s.app.shells.splice(s.app.shells.indexOf(s.shell), 1);
+    s.app.discardView(s.shell);
     release();
     await pause();
     expect(s.app.footerNotice).toBeUndefined();
