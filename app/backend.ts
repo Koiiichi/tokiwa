@@ -322,6 +322,15 @@ export class BackendClient {
   async spend() {
     return spendReading(JSON.parse(await this.call(["spend"])));
   }
+  /** Copy an image file to the session's host; returns its path there. */
+  async pasteImage(ref: SessionRef, file: string): Promise<string> {
+    const reply = JSON.parse(
+      await this.call(["paste-image", ref.name, ref.identity, file]),
+    );
+    if (typeof reply?.path !== "string" || !/^\/[A-Za-z0-9._/-]+\.png$/.test(reply.path))
+      throw new Error("The host returned an invalid path.");
+    return reply.path;
+  }
   /** Put a session in a project: a name path such as `studio/api`. Its directory stays. */
   async setProject(ref: SessionRef, project: string) {
     await this.resolve(ref.name, ref.identity);
