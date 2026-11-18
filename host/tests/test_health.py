@@ -1,6 +1,7 @@
 """Test Linux resource metric calculations without host changes."""
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from collections import namedtuple
@@ -175,6 +176,66 @@ class CollectTests(unittest.TestCase):
                 "tx_bytes_per_second": 500.0,
             },
         )
+
+    def status_rows(self, content, name="storage-status.json"):
+        path = Path(self.temp.name) / name
+        if content is not None:
+            path.write_text(content)
+        with mock.patch.dict(health.os.environ, {"TOKIWA_STORAGE_STATUS": str(path)}):
+            return self.collect()
+
+    def test_storage_status_adds_a_backup_and_a_private_disk_row(self):
+        status = {
+            "epoch": 1,
+            "backup": {
+                "age_s": 600,
+                "consecutive_failures": 2,
+                "entries": 120,
+                "entries_limit": 500,
+                "bytes": 1,
+                "bytes_limit": 2,
+                "level": "warn",
+                "contributors": [],
+            },
+            "disks": {
+                "private": {
+                    "used_fraction": 0.425,
+                    "inodes_used_fraction": 0.1,
+                    "level": "ok",
+                }
+            },
+        }
+        sample = self.status_rows(json.dumps(status))
+        rows = dict(sample["rows"])
+        self.assertEqual(
+            rows["Backup"], "WARN \u00b7 120 of 500 files \u00b7 age 10 min \u00b7 2 failures"
+        )
+        self.assertEqual(
+            rows["Private disk"], "42.5% used \u00b7 10.0% inodes used \u00b7 OK"
+        )
+        self.assertEqual(sample["errors"], [])
+
+    def test_missing_status_values_show_a_dash(self):
+        sample = self.status_rows(json.dumps({"backup": {"level": None}, "disks": {}}))
+        rows = dict(sample["rows"])
+        self.assertEqual(
+            rows["Backup"], "- \u00b7 - of - files \u00b7 age - min \u00b7 - failures"
+        )
+        self.assertEqual(
+            rows["Private disk"], "- used \u00b7 - inodes used \u00b7 -"
+        )
+
+    def test_without_a_usable_status_file_the_rows_are_unchanged(self):
+        baseline = [row[0] for row in self.status_rows(None)["rows"]]
+        self.assertNotIn("Backup", baseline)
+        self.assertNotIn("Private disk", baseline)
+        for content in ["not json", "[1, 2]", "null", "7"]:
+            # Restore the fake counters that the previous run advanced.
+            self.tearDown()
+            self.setUp()
+            sample = self.status_rows(content)
+            self.assertEqual([row[0] for row in sample["rows"]], baseline)
+            self.assertEqual(sample["errors"], [])
 
     def test_a_stuck_connection_is_a_tokiwa_sudo_that_lost_its_parent(self):
         """Only an adopted `sudo -n runuser -u agent-workspace` counts; a live one keeps its parent."""

@@ -548,3 +548,21 @@ test("syncedText gives the time today, the date on another day, and days from 48
   expect(syncedText(earlier(50), now)).toMatch(/^Nov 13 12:30 · 2d ago$/);
   expect(syncedText(earlier(50), now).endsWith("· 2d ago")).toBe(true);
 });
+
+test("the Storage section shows the backup and private disk rows when the host sends them", () => {
+  const model = fixtureModel();
+  const sample = {
+    ...fixtureSample,
+    rows: [
+      ...fixtureSample.rows,
+      ["Backup", "OK · 12 of 500 files · age 5 min · 0 failures"],
+      ["Private disk", "42.5% used · 10.0% inodes used · OK"],
+    ],
+  };
+  const withRows = text(healthLines({ ...model, sample }, 120));
+  expect(withRows).toContain("Backup:");
+  expect(withRows).toContain("OK · 12 of 500 files · age 5 min · 0 failures");
+  expect(withRows).toContain("Private disk:");
+  expect(withRows).toContain("42.5% used · 10.0% inodes used · OK");
+  expect(text(healthLines(model, 120))).not.toContain("Backup:");
+});
