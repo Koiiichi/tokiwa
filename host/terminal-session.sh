@@ -48,16 +48,16 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
-[[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) || ( ( $mode == agent-answer || $mode == agent-relaunch ) && $# -le 5 ) ]] || fail 'Too many arguments.'
+[[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) || ( ( $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image ) && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
- new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read|agent-answer|agent-relaunch) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
+ new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read|agent-answer|agent-relaunch|paste-image) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  name) [[ -z $name ]] || valid_prompt_name "$name" || fail 'Use a name of 1 to 24 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;
  relabel|forget-project) [[ $name =~ ^[A-Za-z0-9+/=]+$ && ${#name} -le 2000 && -z $extra ]] || fail 'The project move is invalid.' ;;
  health|shell|sessions|status|snapshot|secrets|audit|digest) [[ -z $name ]] || fail 'This command does not accept a session name.' ;;
  secret|secret-remove) valid_secret "$name" || fail 'Use a secret name of letters, digits and underscores. PATH, HOME, SHELL, USER, LOGNAME, PWD, BROWSER, PS1 and names that start with TOKIWA_ or TMUX are refused.' ;;
  *) fail 'Unknown terminal command.' ;;
 esac
-[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || $mode == agent-relaunch || -z $extra ]] || fail 'Too many arguments.'
+[[ $mode == new || $mode == project || $mode == end || $mode == attach || $mode == create || $mode == rename || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image || -z $extra ]] || fail 'Too many arguments.'
 if [[ $mode == new && -n $extra ]]; then valid_name "$extra" || fail 'The source session name is invalid.'; fi
 if [[ $mode == health ]]; then
  exec python3 "$(dirname "$0")/workbench-health.py"
@@ -123,7 +123,7 @@ PY_SECRETS
  esac
  exit
 fi
-if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || ( $mode == attach && $# -eq 3 ) ]]; then
+if [[ $mode == end || $mode == capture || $mode == view || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == claim || $mode == release || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-read || $mode == agent-answer || $mode == paste-image || ( $mode == attach && $# -eq 3 ) ]]; then
  [[ $extra =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'The session identity is invalid. Refresh the session list.'
 fi
 if [[ $mode == end ]]; then
@@ -144,6 +144,10 @@ if [[ $mode == agent-answer ]]; then
  choice=${5:-}
  [[ $pending_id =~ ^[A-Za-z0-9_.:-]{1,128}$ ]] || fail 'Use the id of the pending item. Nothing was sent.'
  [[ $choice =~ ^([1-9]|text)$ ]] || fail 'Use a choice from 1 to 9, or text. Nothing was sent.'
+fi
+if [[ $mode == paste-image ]]; then
+ # The size limit is the same as the limit of the Mac when it reads the image.
+ [[ ${4:-} =~ ^[0-9a-f]{64}$ && ${5:-} =~ ^[1-9][0-9]{0,7}$ ]] && (( $5 <= 10485760 )) || fail 'Use paste-image NAME IDENTITY SHA256 SIZE.'
 fi
 if [[ $mode == agent-wait ]]; then
  after=${4:-}
@@ -1228,6 +1232,48 @@ case "$mode" in
   stage_args="$pending_id $choice"
   core_deliver "$extra" "$agent_answer_program" "$agent_lib" answer_layer
   printf '{"pending_id": "%s", "choice": %s}\n' "$pending_id" "$choice"
+  exit ;;
+ paste-image)
+  # Download one image to the tmp folder of the session. The URL comes on stdin, so that no process
+  # lists it. The image is checked before it gets its final name; every failure leaves no file.
+  image_sha=$4
+  image_size=$5
+  url=
+  IFS= read -r url || [[ -n $url ]] || true
+  [[ $url =~ ^https://[^[:space:]]+$ ]] || fail 'The image URL is not valid. Nothing was pasted.'
+  answer=$(tm if-shell -F -t "=$name:" "#{==:#{pid}:#{session_id}:#{session_created},$extra}" \
+   "display-message -p ok" "display-message -p 'Session identity changed. Nothing was pasted.'") ||
+   fail 'The selected session no longer exists.'
+  [[ $answer == ok ]] || fail "$answer"
+  # The cache root is read as start_shell reads it.
+  cache_root=${TOKIWA_CACHE_ROOT:-}
+  cache_file=${TOKIWA_CACHE_ROOT_FILE:-/etc/tokiwa/cache-root}
+  [[ -n $cache_root || ! -r $cache_file ]] || IFS= read -r cache_root <"$cache_file" || [[ -n $cache_root ]] || true
+  unusable='The session cache folder is not usable. Nothing was pasted.'
+  [[ $cache_root =~ ^/[A-Za-z0-9._/-]*$ && -d $cache_root ]] || fail "$unusable"
+  umask 077
+  tmp_folder=$cache_root/$name/tmp
+  for folder in "$cache_root/$name" "$tmp_folder"; do
+   [[ -L $folder ]] && fail "$unusable"
+   [[ -d $folder ]] || mkdir -- "$folder" 2>/dev/null || fail "$unusable"
+   [[ -d $folder && -w $folder && ! -L $folder ]] || fail "$unusable"
+  done
+  part=$(mktemp "$tmp_folder/.paste-XXXXXXXX.part") || fail "$unusable"
+  trap 'rm -f -- "$part"' EXIT
+  # curl reads the URL from a config on stdin, so that it is not in the arguments of a process.
+  url=${url//\\/\\\\}
+  url=${url//\"/\\\"}
+  printf 'url = "%s"\n' "$url" |
+   curl -q --globoff --fail --silent --proto =https --max-time 20 --max-filesize "$image_size" -o "$part" -K - 2>/dev/null ||
+   fail 'The image could not be downloaded to the host. Nothing was pasted.'
+  mismatch='The image on the host does not match the image on the Mac. Nothing was pasted.'
+  read -r found_size < <(wc -c <"$part") || fail "$mismatch"
+  read -r found_sha _ < <(sha256sum "$part") || fail "$mismatch"
+  [[ $found_size == "$image_size" && $found_sha == "$image_sha" ]] || fail "$mismatch"
+  chmod 600 "$part"
+  final=$tmp_folder/paste-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n').png
+  mv -n -- "$part" "$final" || fail "$unusable"
+  printf '{"path": "%s"}\n' "$final"
   exit ;;
  agent-relaunch)
   # Relaunch the Claude Code agent of the session with a settings file: /exit, then `claude --resume ID

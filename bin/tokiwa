@@ -15,8 +15,20 @@ input_file= answer_pending= answer_choice=
 run_offset=
 wait_timeout=600
 # One cleanup for every private temporary folder: the plain text of a message, and the key of a sealed result.
-input_dir= work=
-cleanup() { [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf "$work"; }
+input_dir= work= paste_file= paste_sha= paste_size= paste_bucket= paste_key= paste_version=
+# The image object of paste-image is deleted on every exit once its upload started. On a versioned
+# bucket a plain delete only adds a delete marker, so the uploaded version is deleted by its id. If that
+# delete fails, or the bucket gave no version id, the plain delete runs. A failed delete is silent, so
+# that it never hides the first error.
+cleanup() {
+ [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf "$work"
+ if [[ -n $paste_key ]]; then
+  if [[ -n $paste_version && $paste_version != None && $paste_version != null ]] \
+   && aws_call s3api delete-object --bucket "$paste_bucket" --key "$paste_key" --version-id "$paste_version" >/dev/null 2>&1; then :
+  else aws_call s3 rm "s3://$paste_bucket/$paste_key" >/dev/null 2>&1 || true
+  fi
+ fi
+}
 trap cleanup EXIT
 usage() {
  cat <<'EOF'
@@ -234,6 +246,19 @@ case "$mode" in
            check_message_text ;;
    *) fail "$answer_usage" ;;
   esac ;;
+ paste-image)
+  # Internal command of the app: it is not in the help. The file is checked here, before any AWS call.
+  [[ $# -eq 4 && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ ]] || fail 'Use paste-image NAME IDENTITY FILE.'
+  extra=$3
+  paste_file=$4
+  paste_facts=$([[ -f $paste_file && -r $paste_file ]] && python3 -I -c '
+import hashlib, sys
+data = open(sys.argv[1], "rb").read(10485761)
+if len(data) > 10485760 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    sys.exit(1)
+print(hashlib.sha256(data).hexdigest(), len(data))
+' "$paste_file" 2>/dev/null) || fail 'The file is not a PNG image of at most 10 MB.'
+  read -r paste_sha paste_size <<< "$paste_facts" ;;
  agent-relaunch)
   relaunch_usage='Use agent relaunch NAME IDENTITY --settings PATH [--sha256 HEX], with an absolute path on the host.'
   [[ ( $# -eq 5 || ( $# -eq 7 && $6 == --sha256 && $7 =~ ^[0-9a-f]{64}$ ) ) && $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$ && $3 =~ ^[0-9]+:\$[0-9]+:[0-9]+$ && $4 == --settings && $5 =~ ^/[A-Za-z0-9._/-]+$ && ${#5} -le 1001 ]] \
@@ -412,16 +437,18 @@ fi
 # The host settings: KEY=VALUE lines. The file is read, never run. See docs/configuration.md.
 config=${TOKIWA_HOST_CONFIG:-$HOME/.config/tokiwa/host.env}
 [[ -r $config ]] || fail "Set the host in $config: instance=, profile= and region=, and optionally account= and end=."
-instance= profile= region= account= end=
+instance= profile= region= account= end= paste_bucket=
 while IFS= read -r line || [[ -n $line ]]; do
  [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
- [[ $line =~ ^(instance|profile|region|account|end)=([A-Za-z0-9._:+-]*)$ ]] || fail "$config has a line that is not KEY=VALUE for instance, profile, region, account or end."
+ [[ $line =~ ^(instance|profile|region|account|end|paste_bucket)=([A-Za-z0-9._:+-]*)$ ]] || fail "$config has a line that is not KEY=VALUE for instance, profile, region, account, end or paste_bucket."
  printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
 done < "$config"
 [[ $instance =~ ^i-[0-9a-f]{8,17}$ ]] || fail "$config: instance= must be an EC2 instance ID, for example i-0123456789abcdef0."
 [[ -n $profile ]] || fail "$config: profile= must name an AWS CLI profile."
 [[ $region =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || fail "$config: region= must be an AWS region, for example us-east-1."
 [[ -z $account || $account =~ ^[0-9]{12}$ ]] || fail "$config: account= must be a 12-digit AWS account ID."
+[[ -z $paste_bucket || $paste_bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "$config: paste_bucket= must be an S3 bucket name."
+[[ $mode != paste-image || -n $paste_bucket ]] || fail 'Image paste is not set up. Set paste_bucket= in ~/.config/tokiwa/host.env.'
 if [[ -n $end ]]; then
  # An end time with an offset, for example 2026-12-31T23:59:00-08:00. After it, Tokiwa starts no connection.
  end_epoch=$(python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); assert t.tzinfo; print(int(t.timestamp()))' "$end" 2>/dev/null) \
@@ -515,11 +542,11 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-relaunch || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
+if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
-  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"} ${relaunch_settings:+"$relaunch_settings" "$relaunch_digest"})
+  quoted=$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$name" "$extra" ${lines:+"$lines"} ${answer_pending:+"$answer_pending" "$answer_choice"} ${paste_sha:+"$paste_sha" "$paste_size"} ${relaunch_settings:+"$relaunch_settings" "$relaunch_digest"})
   remote="$remote $quoted"
  fi
  # Run Command keeps its output in the account, so the host encrypts a result to a key that
@@ -581,7 +608,7 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  # A sealed call ends on the host, so wait for its end: Run Command stops it after 30 seconds.
  # A wait call holds the host for up to 20 seconds, so it gets the same time.
  tries=15
- [[ $sealed == 0 && $mode != agent-wait && $mode != agent-relaunch ]] || tries=40
+ [[ $sealed == 0 && $mode != agent-wait && $mode != agent-relaunch && $mode != paste-image ]] || tries=40
  # The host certificate that message text is encrypted to. Only the certificate is public; the key
  # stays on the host (see host/tokiwa-input.py). This reads it from the host in one Run Command call.
  # A host from before encrypted input has no certificate: the launcher stops there, and never sends the
@@ -618,7 +645,18 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
    || fail 'The message could not be encrypted. Nothing was sent.'
  }
  if [[ $mode == input-cert ]]; then host_cert; exit 0; fi
- if [[ ( $mode == create || $mode == agent-send || $mode == agent-answer ) && -n $input_file ]]; then
+ if [[ $mode == paste-image ]]; then
+  # The image goes to the bucket, and only a presigned URL that lives 5 minutes goes to the host. The
+  # URL is written by builtins and redirections only, in a private folder, and travels sealed.
+  paste_key=inputs/clipboard/$(python3 -c 'import secrets; print(secrets.token_hex(16))').png
+  input_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-input.XXXXXX") || fail 'An image paste needs a temporary folder. Nothing was pasted.'
+  input_file=$input_dir/url
+  paste_version=$(aws_call s3api put-object --bucket "$paste_bucket" --key "$paste_key" --body "$paste_file" --query VersionId --output text) || fail 'The image could not be uploaded. Nothing was pasted.'
+  paste_url=$(aws_call s3 presign "s3://$paste_bucket/$paste_key" --expires-in 300) || fail 'The image link could not be made. Nothing was pasted.'
+  printf '%s' "$paste_url" > "$input_file"
+  unset paste_url
+ fi
+ if [[ ( $mode == create || $mode == agent-send || $mode == agent-answer || $mode == paste-image ) && -n $input_file ]]; then
   # Run Command runs as root. Root decrypts the line and pipes it to the helper, which reads it
   # from stdin: the text is never an argument, a file or output on the host.
   sealed_line=$(seal_input "$input_file") || exit 1
@@ -696,6 +734,7 @@ for r in rows:
   [[ -z $errors ]] || printf '%s\n' "$errors" >&2
   [[ $errors != *'could not be decrypted with the host input key'* ]] \
    || fail 'The host input key changed or is missing. Check the host, then delete ~/.config/tokiwa/input-cert.pem to pin the new key.'
+  [[ $mode != paste-image ]] || fail 'The image was not pasted.'
   # A refusal of the command runner names its cause in its last line. The SSM agent adds
   # "failed to run commands: exit status N" after it when the script exits non-zero.
   refusal=$(printf '%s\n' "$errors" | sed -E '/^[[:space:]]*$/d; /^failed to run commands: exit status [0-9]+$/d' | tail -n 1)

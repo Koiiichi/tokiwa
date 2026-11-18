@@ -22,12 +22,15 @@ import {
   mkdirSync,
   renameSync,
   statSync,
+  mkdtempSync,
+  rmSync,
 } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import groups from "./projects.json";
 import { openGhosttyWindow } from "./ghostty";
 import { steadyCursor } from "./cursor";
+import { readClipboardImage } from "./clipboard-image";
 import { foregroundProgram, localShellCommand, PtyAdapter } from "./pty";
 import { themeRemoteStatus } from "./status-theme";
 import {
@@ -267,6 +270,9 @@ const SESSIONS_SECOND_READ_MS = 5 * 1000;
 // The host state turns stale when no read has succeeded for this time.
 const HOST_STALE_MS = 90 * 1000;
 const binding = (id: string) => KEYMAP.find((b) => b.id === id) as Binding;
+const MAX_PASTE_IMAGE_BYTES = 10485760;
+/** The "Pasting image…" notice lasts as long as the launcher timeout (90 seconds). */
+const PASTE_NOTICE_MS = 90000;
 export type Shell = {
   terminal: EmbeddedTerminalRenderable;
   child: ReturnType<typeof Bun.spawn>;
@@ -513,6 +519,8 @@ export class App {
       device?: string;
       /** Where the order of the top-level projects is kept; none (memory only) without spawn. */
       orderFile?: string;
+      /** Read an image from the clipboard into a file in `dir`; the Mac's clipboard by default. */
+      readImage?: typeof readClipboardImage;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -3597,6 +3605,68 @@ export class App {
       }
     }, ms + 100);
   }
+  imagePasting = false;
+  /** Cmd+V: send the clipboard image to the focused remote view as a path on the host. */
+  async pasteImage() {
+    const shell = this.shells[this.active];
+    if (
+      !shell?.remote ||
+      shell.exited ||
+      !shell.terminal.focused ||
+      this.palette ||
+      this.sheetOpen ||
+      this.listHasFocus()
+    )
+      return;
+    const ref = shell.remote;
+    if (this.imagePasting) {
+      this.notify("An image paste is already in progress.", true);
+      return;
+    }
+    this.imagePasting = true;
+    const pasting = "Pasting image…";
+    const clearPasting = () => {
+      if (this.footerNotice?.text !== pasting) return;
+      this.footerNotice = undefined;
+      this.footerSignature = "";
+      this.drawFooter();
+    };
+    let dir: string | undefined;
+    try {
+      dir = mkdtempSync(join(tmpdir(), "tokiwa-paste-"));
+      const file = await (this.options.readImage ?? readClipboardImage)(dir);
+      if (!file) return;
+      if (statSync(file).size > MAX_PASTE_IMAGE_BYTES) {
+        this.notify("The image is larger than 10 MB. Nothing was pasted.", true);
+        return;
+      }
+      this.notify(pasting, false, undefined, PASTE_NOTICE_MS);
+      const path = await this.backend.pasteImage(ref, file);
+      if (this.disposed || !this.shells.includes(shell) || shell.exited) {
+        clearPasting();
+        return;
+      }
+      shell.adapter.write(`\x1b[200~${path}\x1b[201~`);
+      clearPasting();
+    } catch (e) {
+      const raw =
+        e instanceof LauncherError && e.stderr.trim()
+          ? e.stderr
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      // Helper and launcher sentences already end in "Nothing was pasted."; launcher sentences start with "Tokiwa: ".
+      const first = (raw.split("\n").find((line) => line.trim()) ?? "")
+        .trim()
+        .replace(/^Tokiwa: /, "")
+        .replace(/\s*Nothing was pasted\.?$/, "")
+        .replace(/[.\s]+$/, "");
+      this.notify(`Image paste failed: ${first}. Nothing was pasted.`, true);
+    } finally {
+      this.imagePasting = false;
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  }
   attachSelected() {
     const row = this.sessionRows()[this.listSelection];
     if (row) this.openRow(row, "keyboard");
@@ -5003,6 +5073,12 @@ export class App {
     ) {
       stop();
       this.copySelection();
+      return;
+    }
+    // Cmd+V reaches the app only when the clipboard holds no text (see docs/interface.md).
+    if (key.super && key.name === "v") {
+      stop();
+      void this.pasteImage();
       return;
     }
     if (key.ctrl && key.name === "k") {

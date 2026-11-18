@@ -34,7 +34,15 @@ case "$*" in
  *describe-instances*) echo "${TEST_STATE:-running}" ;;
  *describe-volumes*) echo '[{"id": "vol-1", "type": "gp3", "size_gib": 100}, {"id": "vol-2", "type": "gp3", "size_gib": 500}]' ;;
  *describe-addresses*) echo '[]' ;;
- *send-command*) echo test-command ;;
+ *s3api\ put-object*) echo "${TEST_VERSION-v123}" ;;
+ *s3api\ delete-object*) [ -z "${TEST_VDEL_FAIL:-}" ] || { echo 'versioned delete failed' >&2; exit 1; } ;;
+ *s3\ presign*) echo 'https://example-bucket.s3.us-east-1.amazonaws.com/inputs/clipboard/key.png?X-Amz-Signature=sig0' ;;
+ *s3\ rm*) [ -z "${TEST_RM_FAIL:-}" ] || { echo 'delete failed' >&2; exit 1; } ;;
+ *send-command*)
+  if [ -n "${TEST_SEND_FAIL:-}" ] && [[ $* == *paste-image* ]]; then
+   echo 'Error when retrieving token from sso: Token has expired and refresh failed' >&2; exit 255
+  fi
+  echo test-command ;;
  *get-command-invocation*StandardOutputContent*)
   # The newest Run Command call decides the result for state and wait.
   last=$(grep 'send-command' "$HOME/calls" | tail -1)
@@ -47,6 +55,8 @@ case "$*" in
    # The host input certificate; the key stays here so that a test can decrypt what was sealed.
    [ -e "$HOME/host-input-cert.pem" ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout "$HOME/host-input-key.pem" -out "$HOME/host-input-cert.pem" -subj /CN=tokiwa-input -days 1 >/dev/null 2>&1
    cat "$HOME/host-input-cert.pem"
+  elif [[ $last == *'terminal-session.sh paste-image '* ]]; then
+   echo '{"path": "/home/agent/.cache/tokiwa/lead/tmp/paste-20261118T000000Z-abcd1234.png"}'
   elif [ -n "${TEST_FETCH_FAIL:-}" ] && [[ $last == *'terminal-session.sh agent-wait '* ]]; then
    exit 1
   elif [[ $last == *'terminal-session.sh state '* ]]; then
@@ -121,6 +131,123 @@ esac
 
     def run_cli(self, *args):
         return subprocess.run(['bash', str(CLI), *args], check=False, env=self.env, capture_output=True, text=True, timeout=30)
+
+    PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+
+    def paste_setup(self, body=b'image bytes', bucket=True, magic=PNG_MAGIC):
+        if bucket:
+            with open(self.home / '.config/tokiwa/host.env', 'a') as config:
+                config.write('paste_bucket=example-bucket\n')
+        image = self.home / 'shot.png'
+        image.write_bytes(magic + body)
+        return image
+
+    def s3_calls(self):
+        calls = (self.home / 'calls').read_text() if (self.home / 'calls').exists() else ''
+        return [line for line in calls.splitlines() if ' s3 ' in line or ' s3api ' in line]
+
+    def test_paste_image_uploads_seals_and_deletes(self):
+        import hashlib
+        image = self.paste_setup()
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '{"path": "/home/agent/.cache/tokiwa/lead/tmp/paste-20261118T000000Z-abcd1234.png"}\n')
+        calls = (self.home / 'calls').read_text()
+        s3 = self.s3_calls()
+        self.assertEqual(len(s3), 3, s3)
+        found = re.search(r's3api put-object --bucket example-bucket --key (inputs/clipboard/[0-9a-f]{32}\.png) --body %s --query VersionId --output text' % re.escape(str(image)), s3[0])
+        self.assertIsNotNone(found, s3[0])
+        key = found.group(1)
+        self.assertIn('s3 presign s3://example-bucket/%s' % key, s3[1])
+        self.assertIn('--expires-in 300', s3[1])
+        # A versioned bucket: the delete names the uploaded version, so that no copy stays behind.
+        self.assertIn('s3api delete-object --bucket example-bucket --key %s --version-id v123' % key, s3[2])
+        send = [line for line in calls.splitlines() if 'send-command' in line and 'paste-image' in line][-1]
+        self.assertIn('tokiwa-input.py', send)
+        data = image.read_bytes()
+        # The identity is quoted twice: for the inner shell and for bash -c.
+        self.assertRegex(send, r"terminal-session\.sh paste-image lead .{1,12}1:\$2:3.{1,12} %s %d" % (hashlib.sha256(data).hexdigest(), len(data)))
+        self.assertNotIn('https://', calls)
+        self.assertEqual(self.host_decrypt(calls), b'tokiwa-input-v1\nhttps://example-bucket.s3.us-east-1.amazonaws.com/inputs/clipboard/key.png?X-Amz-Signature=sig0')
+
+    def test_paste_image_falls_back_to_a_plain_delete_when_the_versioned_delete_fails(self):
+        image = self.paste_setup()
+        self.env.update(TEST_VDEL_FAIL='1')
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        s3 = self.s3_calls()
+        self.assertEqual(len(s3), 4, s3)
+        self.assertIn('s3api delete-object', s3[2])
+        self.assertRegex(s3[3], r's3 rm s3://example-bucket/inputs/clipboard/[0-9a-f]{32}\.png')
+
+    def test_paste_image_on_an_unversioned_bucket_uses_the_plain_delete(self):
+        image = self.paste_setup()
+        for version in ('None', ''):
+            with self.subTest(version=version):
+                (self.home / 'calls').unlink(missing_ok=True)
+                self.env.update(TEST_VERSION=version)
+                result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                s3 = self.s3_calls()
+                self.assertEqual(len(s3), 3, s3)
+                self.assertNotIn('delete-object', ' '.join(s3))
+                self.assertIn(' s3 rm s3://example-bucket/inputs/clipboard/', s3[2])
+
+    def test_paste_image_deletes_the_object_when_the_host_fails(self):
+        image = self.paste_setup()
+        # A first paste pins the host certificate; the failing paste then reaches the helper.
+        self.assertEqual(self.run_cli('paste-image', 'lead', '1:$2:3', str(image)).returncode, 0)
+        (self.home / 'calls').unlink()
+        self.env.update(TEST_STATUS='Failed', TEST_STDERR='The image URL is not valid. Nothing was pasted.')
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The image URL is not valid. Nothing was pasted.', result.stderr)
+        self.assertIn('Tokiwa: The image was not pasted.', result.stderr)
+        self.assertEqual(len([c for c in self.s3_calls() if ' s3api delete-object ' in c]), 1)
+
+    def test_paste_image_deletes_the_object_when_the_sign_in_expires(self):
+        image = self.paste_setup()
+        self.env.update(TEST_SEND_FAIL='1', TEST_RM_FAIL='1')
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len([c for c in self.s3_calls() if ' s3api delete-object ' in c]), 1)
+        # A failed delete does not hide the first error.
+        self.assertIn('Tokiwa:', result.stderr)
+        self.assertNotIn('delete failed', result.stderr)
+
+    def test_paste_image_without_a_bucket(self):
+        image = self.paste_setup(bucket=False)
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Tokiwa: Image paste is not set up. Set paste_bucket= in ~/.config/tokiwa/host.env.', result.stderr)
+        self.assertEqual(self.s3_calls(), [])
+
+    def test_paste_image_refuses_a_file_that_is_not_png(self):
+        image = self.paste_setup(magic=b'GIF89a\x00\x00')
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Tokiwa: The file is not a PNG image of at most 10 MB.', result.stderr)
+        self.assertEqual(self.s3_calls(), [])
+
+    def test_paste_image_refuses_a_file_over_the_limit(self):
+        image = self.paste_setup(body=b'\0' * (10485761 - 8))
+        self.assertEqual(image.stat().st_size, 10485761)
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Tokiwa: The file is not a PNG image of at most 10 MB.', result.stderr)
+        self.assertEqual(self.s3_calls(), [])
+
+    def test_paste_image_is_not_in_the_help(self):
+        self.assertNotIn('paste-image', self.run_cli('--help').stdout)
+
+    def test_host_settings_accept_paste_bucket(self):
+        image = self.paste_setup()
+        self.assertEqual(self.run_cli('paste-image', 'lead', '1:$2:3', str(image)).returncode, 0)
+        with open(self.home / '.config/tokiwa/host.env', 'a') as config:
+            config.write('paste_bucket=Bad_Bucket\n')
+        result = self.run_cli('paste-image', 'lead', '1:$2:3', str(image))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('paste_bucket= must be an S3 bucket name.', result.stderr)
 
     def test_help_does_not_connect_or_expose_acceptance_routes(self):
         result = self.run_cli('--help')

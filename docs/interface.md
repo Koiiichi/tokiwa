@@ -188,7 +188,7 @@ The footer also shows short notices: the result of a copy, a saved screen or an 
 
 ## Keyboard
 
-A focused terminal receives every key except Ctrl+K, Ctrl+Shift+C and Cmd+C. Outside a terminal, each action has one key. Ctrl+K opens the search from every view, also inside a terminal.
+A focused terminal receives every key except Ctrl+K, Ctrl+Shift+C, Cmd+C and Cmd+V. Outside a terminal, each action has one key. Ctrl+K opens the search from every view, also inside a terminal.
 
 The Session keys act on the selected row while the list has the keyboard, and on the active view otherwise. An action that does not apply does nothing, for example Reconnect without an attached session. The key map is in [`shortcuts.ts`](../app/shortcuts.ts).
 
@@ -389,6 +389,7 @@ The app ends a session through the launcher with its identity, so an old row can
 | A program writes the clipboard with OSC 52 | The app copies the text on the Mac and the footer says so. |
 | Shift+drag | Ghostty's own selection, in any program. |
 | `ctrl+shift+c` or `cmd+c` | Copy the current selection, or the last finished selection. |
+| `cmd+v` | Paste an image from the Mac's clipboard into the focused remote view. The app sends the image to the host and types its path there as a bracketed paste. An image over 10 MB is refused. Text paste is not changed. |
 | **Copy selection** in the search | Copy the selection that existed when the search opened. |
 
 The app copies through OSC 52. When the terminal refuses, the footer says `copy failed · the terminal did not accept it`. With nothing selected, it says `nothing selected · drag over text, then copy`.
@@ -397,6 +398,12 @@ Cmd+C reaches the app only when Ghostty passes it on. Add this line to the Ghost
 
 ```
 keybind = performable:super+c=copy_to_clipboard
+```
+
+Cmd+V reaches the app only when the clipboard holds no text. Add this line, so that Ghostty keeps Cmd+V for text:
+
+```
+keybind = performable:super+v=paste_from_clipboard
 ```
 
 ## Save screen and Repaint view
