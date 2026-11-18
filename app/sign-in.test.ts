@@ -251,3 +251,18 @@ test("a click on the details hint of the band opens the details and does not sig
     await close(t, app);
   }
 });
+
+test("a click on the sign-in hint closes the shortcuts sheet, so the sign-in view shows", async () => {
+  const { t, app } = await open(EXPIRED, "sleep 0.3");
+  try {
+    app.openSheet();
+    await t.renderOnce();
+    const at = cell(t.captureCharFrame(), "l sign in · e details");
+    await t.mockMouse.click(at.x + 2, at.y);
+    await pause();
+    expect(app.sheetOpen).toBe(false);
+    expect(app.shells.map((s) => s.name)).toContain("aws-sign-in");
+  } finally {
+    await close(t, app);
+  }
+});

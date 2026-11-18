@@ -2063,6 +2063,8 @@ export class App {
    */
   clickBandKey(column: number) {
     if (this.bandAction && column < this.bandActionWidth) {
+      // The sheet would cover the sign-in view; it does nothing when no sheet is open.
+      this.closeSheet();
       if (this.bandAction === "sign-in") this.signIn();
       else this.runAction("refresh");
       return;
