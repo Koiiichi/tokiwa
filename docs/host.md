@@ -334,7 +334,7 @@ Update the host with `host/install.sh` before you update the launcher on the Mac
 
 ## Audit log
 
-The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send` and `answer`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send`, `answer` and `relaunch`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
 
 ```json
 {"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}

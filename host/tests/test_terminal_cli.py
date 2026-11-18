@@ -578,6 +578,32 @@ esac
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"terminal-session.sh agent-answer lead '1:$2:3' toolu_q1 {choice}", self.send_calls())
 
+    def test_relaunch_passes_the_settings_path_and_the_digest(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        path = '/srv/development/private/homes/workbench/.grants/merge.r1.settings.json'
+        result = self.run_cli('agent', 'relaunch', 'lead', '1:$2:3', '--settings', path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"TOKIWA_ACTOR=worker-a /opt/agent-platform/rootless/terminal-session.sh agent-relaunch lead '1:$2:3' {path} -",
+                      self.send_calls())
+        digest = 'a' * 64
+        result = self.run_cli('agent', 'relaunch', 'lead', '1:$2:3', '--settings', path, '--sha256', digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"agent-relaunch lead '1:$2:3' {path} {digest}", self.send_calls())
+
+    def test_relaunch_arguments_are_checked_on_the_mac(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        base = ('agent', 'relaunch', 'lead', '1:$2:3')
+        for bad in [(), ('--settings',), ('--settings', 'relative.json'), ('--settings', '/a b.json'),
+                    ('--settings', '/a;b.json'), ('--settings', '/x.json', '--sha256', 'A' * 64),
+                    ('--settings', '/x.json', '--sha256', 'a' * 63), ('--settings', '/x.json', '--sha256'),
+                    ('--settings', '/x.json', '--bogus', 'a' * 64), ('--file', '/x.json')]:
+            self.assertNotEqual(self.run_cli(*base, *bad).returncode, 0, bad)
+        self.env.pop('TOKIWA_ACTOR')
+        result = self.run_cli(*base, '--settings', '/x.json')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('TOKIWA_ACTOR', result.stderr)
+        self.assertFalse((self.home / 'calls').exists())
+
     def test_answer_without_tokiwa_actor_is_refused(self):
         for actor in [None, '', 'bad;rm']:
             self.env.pop('TOKIWA_ACTOR', None)

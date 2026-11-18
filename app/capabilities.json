@@ -537,6 +537,12 @@
       }
     },
     {
+      "command": "agent relaunch",
+      "class": "run",
+      "example": ["agent", "relaunch", "lead", "1:$2:3", "--settings", "/srv/development/private/homes/workbench/grant.settings.json"],
+      "helper": "agent-relaunch"
+    },
+    {
       "command": "claim",
       "class": "control",
       "example": ["claim", "lead", "1:$2:3"],

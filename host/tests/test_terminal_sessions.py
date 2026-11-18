@@ -2781,3 +2781,233 @@ class AgentRead(ModelHelpers, Server):
         no_recipient = self.helper('agent-read', 'lead', self.identity, '-', '-', 'not base64!')
         self.assertEqual(no_recipient.returncode, 1)
         self.assertIn('Nothing was read.', no_recipient.stderr)
+
+
+RELAUNCH_AGENT = r'''
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
+/* A stand-in Claude Code for a relaunch. It appends its arguments to $FAKE_ARGS, one line, the arguments
+   separated by a tab. At its start it reports SessionStart through the real tokiwa-state, with the session id
+   of --resume or --session-id. A pasted /exit and Enter make it report SessionEnd and exit, unless
+   FAKE_STUCK is set. A settings path that holds `exit-at-start` makes it exit at once, and one that holds
+   `dialog` makes it show a dialog and report nothing. */
+static void report(const char *state, const char *session) {
+    char command[1024];
+    snprintf(command, sizeof command,
+             "printf '{\"session_id\":\"%s\"}' | python3 %s %s >/dev/null 2>&1", session, getenv("FAKE_STATE"), state);
+    system(command);
+}
+int main(int argc, char **argv) {
+    const char *session = "11111111-2222-3333-4444-555555555555", *settings = "";
+    FILE *log = fopen(getenv("FAKE_ARGS"), "a");
+    for (int i = 0; i < argc; i++) {
+        fprintf(log, "%s%s", i ? "\t" : "", argv[i]);
+        if ((!strcmp(argv[i], "--resume") || !strcmp(argv[i], "--session-id")) && i + 1 < argc) session = argv[i + 1];
+        if (!strcmp(argv[i], "--settings") && i + 1 < argc) settings = argv[i + 1];
+    }
+    fprintf(log, "\n");
+    fclose(log);
+    if (strstr(settings, "exit-at-start")) return 1;
+    struct termios t;
+    tcgetattr(0, &t);
+    cfmakeraw(&t);
+    tcsetattr(0, TCSANOW, &t);
+    printf("\033[?2004h");
+    if (strstr(settings, "dialog")) printf("Settings Error\r\n Enter to confirm\r\n");
+    else report("idle", session);
+    fflush(stdout);
+    char seen[8192] = "", buffer[1024];
+    ssize_t n;
+    while ((n = read(0, buffer, sizeof buffer - 1)) > 0) {
+        buffer[n] = 0;
+        if (strlen(seen) + n < sizeof seen) strcat(seen, buffer);
+        if (strstr(seen, "\033[200~/exit\033[201~\r") && !getenv("FAKE_STUCK")) {
+            report("ended", session);
+            return 0;
+        }
+    }
+    return 0;
+}
+'''
+
+SESSION = '11111111-2222-3333-4444-555555555555'
+
+
+class AgentRelaunch(Pty, ModelHelpers, Server):
+    """`agent-relaunch` restarts the Claude Code agent of one session with a settings file, or refuses."""
+
+    def setUp(self):
+        super().setUp()
+        if not shutil.which('cc'):
+            self.skipTest('the stand-in agent needs a C compiler')
+        self.tools = Path(self.temp.name) / 'tools'
+        self.tools.mkdir()
+        (self.tools / 'relaunch.c').write_text(RELAUNCH_AGENT)
+        (self.tools / 'agent.c').write_text(FAKE_AGENT)
+        subprocess.run(['cc', '-o', str(self.tools / 'claude'), str(self.tools / 'relaunch.c')], check=True)
+        subprocess.run(['cc', '-o', str(self.tools / 'codex'), str(self.tools / 'agent.c')], check=True)
+        self.args = Path(self.temp.name) / 'args.log'
+        self.settings = Path(self.temp.name) / 'grant.settings.json'
+        self.settings.write_text('{"permissions": {"allow": ["Bash(gh pr merge *)"]}}\n')
+        self.env.update(TOKIWA_RELAUNCH_EXIT_SECONDS='3', TOKIWA_RELAUNCH_START_SECONDS='5')
+        self.start('lead', 'claude --model opus --permission-mode auto "first task"')
+        self.identity = self.rows()['lead']['identity']
+        self.env['TOKIWA_ACTOR'] = 'worker-a'
+        self.assertEqual(self.helper('claim', 'lead', self.identity, 'replace').returncode, 0)
+
+    def start(self, name, command, stuck=False):
+        """A session whose shell runs `command` with the stand-in agent first on PATH, after its start report."""
+        self.assertEqual(self.helper('ensure', name).returncode, 0)
+        setup = (f'export PATH={self.tools}:$PATH FAKE_ARGS={self.args} FAKE_STATE={ROOT / "tokiwa-state"}'
+                 + (' FAKE_STUCK=1' if stuck else ''))
+        self.tm('send-keys', '-t', f'={name}:', f'{setup}; {command}', 'Enter')
+        for _ in range(250):
+            values = self.tm('display-message', '-p', '-t', f'={name}:',
+                             '#{pane_current_command} #{@tokiwa_agent_session}').stdout.split()
+            if values == ['claude', SESSION]:
+                return
+            time.sleep(.02)
+        self.fail('the stand-in agent did not start')
+
+    def relaunch(self, settings=None, digest='-', name='lead', identity=None):
+        return self.helper('agent-relaunch', name, identity or self.identity, str(settings or self.settings), digest)
+
+    def launches(self):
+        return [line.split('\t') for line in self.args.read_text().splitlines()] if self.args.exists() else []
+
+    def refused(self, result, sentence):
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(sentence, result.stderr)
+        time.sleep(.2)
+        self.assertEqual(len(self.launches()), 1)
+        self.assertEqual(self.tm('display-message', '-p', '-t', '=lead:', '#{pane_current_command}').stdout.strip(),
+                         'claude')
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+
+    def test_relaunch_keeps_the_session_the_pane_and_the_conversation(self):
+        pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()
+        digest = hashlib.sha256(self.settings.read_bytes()).hexdigest()
+        result = self.relaunch(digest=digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertEqual((reply['relaunched'], reply['session_id'], reply['settings'], reply['sha256']),
+                         (True, SESSION, str(self.settings), digest))
+        # The first prompt is not sent again; the options that set the model and the mode stay.
+        self.assertEqual(self.launches()[-1], ['claude', '--model', 'opus', '--permission-mode', 'auto',
+                                               '--resume', SESSION, '--settings', str(self.settings)])
+        self.assertEqual(self.rows()['lead']['identity'], self.identity)
+        self.assertEqual(self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip(), pane)
+        self.assertEqual(self.tm('list-buffers').stdout, '')
+        entry = json.loads((Path(self.env['TOKIWA_STATE']) / 'audit.log').read_text().splitlines()[-1])
+        self.assertEqual((entry['action'], entry['identity'], entry['actor']), ('relaunch', self.identity, 'worker-a'))
+
+    def test_a_second_relaunch_replaces_the_settings(self):
+        self.assertEqual(self.relaunch().returncode, 0)
+        other = Path(self.temp.name) / 'grant.r2.settings.json'
+        other.write_text('{}')
+        result = self.relaunch(other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.launches()[-1][-4:], ['--resume', SESSION, '--settings', str(other)])
+        self.assertEqual(self.launches()[-1].count('--settings'), 1)
+
+    def test_refused_while_the_agent_works(self):
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent', 'working:100')
+        self.refused(self.relaunch(), 'The agent is not idle. Nothing was changed.')
+
+    def test_refused_while_an_item_waits(self):
+        self.tm('set-option', '-t', '=lead:', '@tokiwa_agent_pending', 'e30=')
+        self.refused(self.relaunch(), 'An item waits for a person. Nothing was changed.')
+
+    def test_refused_while_a_client_is_attached(self):
+        self.attach_client('lead', self.identity, 'attach')
+        self.refused(self.relaunch(), 'A client is attached. Nothing was sent.')
+
+    def test_refused_for_an_actor_that_does_not_drive(self):
+        self.env['TOKIWA_ACTOR'] = 'worker-b'
+        self.refused(self.relaunch(), 'Only the driver can send.')
+
+    def test_refused_for_another_identity(self):
+        result = self.relaunch(identity='1:$9:1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Session identity changed.', result.stderr)
+        self.assertEqual(len(self.launches()), 1)
+
+    def test_refused_without_a_reported_session_id(self):
+        self.tm('set-option', '-u', '-t', '=lead:', '@tokiwa_agent_session')
+        self.refused(self.relaunch(), 'The agent has not reported its session id. Nothing was changed.')
+
+    def test_refused_for_a_settings_file_that_is_not_usable(self):
+        bad = Path(self.temp.name) / 'bad.json'
+        bad.write_text('{not json')
+        self.refused(self.relaunch(bad), 'The settings file is not a JSON object.')
+        self.refused(self.relaunch(Path(self.temp.name) / 'missing.json'), 'The settings file cannot be read.')
+        link = Path(self.temp.name) / 'link.json'
+        link.symlink_to(self.settings)
+        self.refused(self.relaunch(link), 'The settings path is not a regular file.')
+        self.refused(self.relaunch('relative.json'), 'Use an absolute settings path')
+        self.refused(self.relaunch(f'{self.temp.name}/with space.json'), 'Use an absolute settings path')
+        self.refused(self.relaunch(digest='0' * 64), 'The settings file does not have the expected SHA-256.')
+
+    def test_refused_for_an_option_that_a_relaunch_does_not_keep(self):
+        self.start('other', 'claude --dangerously-skip-permissions')
+        identity = self.rows()['other']['identity']
+        self.assertEqual(self.helper('claim', 'other', identity, 'replace').returncode, 0)
+        result = self.relaunch(name='other', identity=identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The Claude command has --dangerously-skip-permissions, which a relaunch does not keep.',
+                      result.stderr)
+        self.assertEqual(len(self.launches()), 2)
+
+    def test_refused_for_a_codex_pane(self):
+        self.assertEqual(self.helper('ensure', 'other').returncode, 0)
+        self.tm('send-keys', '-t', '=other:', f"{self.tools / 'codex'} {Path(self.temp.name) / 'codex.log'}", 'Enter')
+        for _ in range(150):
+            if self.tm('display-message', '-p', '-t', '=other:', '#{pane_current_command}').stdout.strip() == 'codex':
+                break
+            time.sleep(.02)
+        self.tm('set-option', '-t', '=other:', '@tokiwa_agent', 'idle:100')
+        identity = self.rows()['other']['identity']
+        self.assertEqual(self.helper('claim', 'other', identity, 'replace').returncode, 0)
+        result = self.relaunch(name='other', identity=identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Only Claude Code can be relaunched.', result.stderr)
+
+    def test_refused_when_another_pane_runs_an_agent(self):
+        self.tm('split-window', '-d', '-t', '=lead:', f'{self.tools / "codex"} {Path(self.temp.name) / "codex.log"}')
+        for _ in range(150):
+            commands = self.tm('list-panes', '-s', '-t', '=lead', '-F', '#{pane_current_command}').stdout.split()
+            if 'codex' in commands:
+                break
+            time.sleep(.02)
+        self.refused(self.relaunch(), 'Another pane of the session runs an agent. Nothing was changed.')
+
+    def test_an_agent_that_does_not_exit_is_left_running(self):
+        self.start('other', 'claude', stuck=True)
+        identity = self.rows()['other']['identity']
+        self.assertEqual(self.helper('claim', 'other', identity, 'replace').returncode, 0)
+        result = self.relaunch(name='other', identity=identity)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Claude Code did not exit after /exit.', result.stderr)
+        self.assertEqual(len(self.launches()), 2)
+        self.assertEqual(self.tm('display-message', '-p', '-t', '=other:', '#{pane_current_command}').stdout.strip(),
+                         'claude')
+
+    def test_an_agent_that_exits_at_its_start_is_reported_with_the_way_back(self):
+        failing = Path(self.temp.name) / 'exit-at-start.json'
+        failing.write_text('{}')
+        result = self.relaunch(failing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Claude Code exited after the relaunch.', result.stderr)
+        self.assertIn(f'claude --resume {SESSION}', result.stderr)
+        self.assertEqual(self.rows()['lead']['identity'], self.identity)
+
+    def test_a_dialog_after_the_start_is_a_failure(self):
+        dialog = Path(self.temp.name) / 'dialog.json'
+        dialog.write_text('{}')
+        result = self.relaunch(dialog)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Claude Code shows a dialog after the relaunch.', result.stderr)
