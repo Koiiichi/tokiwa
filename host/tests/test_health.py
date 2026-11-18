@@ -225,6 +225,26 @@ class CollectTests(unittest.TestCase):
             rows["Private disk"], "- used \u00b7 - inodes used \u00b7 -"
         )
 
+    def test_hostile_status_files_do_not_crash_health(self):
+        huge = '{"backup": {"entries": 1' + "0" * 400 + ', "age_s": NaN, "entries_limit": Infinity}}'
+        for content in [huge, "x" * (1024 * 1024 + 1)]:
+            self.tearDown()
+            self.setUp()
+            sample = self.status_rows(content)
+            self.assertEqual(sample["errors"], [])
+            self.assertIn("Root disk", dict(sample["rows"]))
+        self.tearDown()
+        self.setUp()
+        backup = dict(self.status_rows(huge)["rows"])
+        self.assertEqual(backup.get("Backup"), "- \u00b7 - of - files \u00b7 age - min \u00b7 - failures")
+        self.tearDown()
+        self.setUp()
+        folder = Path(self.temp.name) / "status-dir"
+        folder.mkdir()
+        sample = self.status_rows(None, name="status-dir")
+        self.assertNotIn("Backup", dict(sample["rows"]))
+        self.assertEqual(sample["errors"], [])
+
     def test_without_a_usable_status_file_the_rows_are_unchanged(self):
         baseline = [row[0] for row in self.status_rows(None)["rows"]]
         self.assertNotIn("Backup", baseline)

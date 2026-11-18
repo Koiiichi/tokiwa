@@ -1,6 +1,7 @@
 """Read host and workspace metrics without changing services or workloads."""
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ DISKS = [
 ]
 # The host publishes this file when it tracks backup and disk levels. Without it, no row shows.
 STORAGE_STATUS = "/var/lib/agent-platform-public/storage-status.json"
+STORAGE_STATUS_MAX = 1024 * 1024
 # The launcher starts the command of every connection with this prefix (`helper` in bin/tokiwa).
 CONNECTION = [b"sudo", b"-n", b"runuser", b"-u", b"agent-workspace"]
 
@@ -121,48 +123,59 @@ def stuck_connections():
 def storage_status_rows():
     """Return the Backup and Private disk rows from the host's storage status file.
 
-    The file is optional. A missing, unreadable or malformed file gives no rows and no error.
-    A value that the file lacks shows as a dash.
+    The file is optional. A missing, unreadable, oversized or malformed file gives no rows and no
+    error. A value that the file lacks, or that is not a finite number, shows as a dash.
     """
     path = os.environ.get("TOKIWA_STORAGE_STATUS") or STORAGE_STATUS
     try:
-        status = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+        with open(path, "rb") as handle:
+            data = handle.read(STORAGE_STATUS_MAX + 1)
+        if len(data) > STORAGE_STATUS_MAX:
+            return []
+        status = json.loads(data)
+        if not isinstance(status, dict):
+            return []
+
+        def section(value):
+            return value if isinstance(value, dict) else {}
+
+        def number(value, fmt):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return "-"
+            try:
+                if not math.isfinite(float(value)):
+                    return "-"
+                return fmt(value)
+            except (OverflowError, ValueError):
+                return "-"
+
+        def percent(value):
+            return number(value, lambda v: f"{100 * v:.1f}%")
+
+        def level(value):
+            return value.upper() if isinstance(value, str) and value else "-"
+
+        backup = section(status.get("backup"))
+        private = section(section(status.get("disks")).get("private"))
+        return [
+            [
+                "Backup",
+                f"{level(backup.get('level'))}"
+                f" \u00b7 {number(backup.get('entries'), lambda v: f'{v:g}')}"
+                f" of {number(backup.get('entries_limit'), lambda v: f'{v:g}')} files"
+                f" \u00b7 age {number(backup.get('age_s'), lambda v: f'{v / 60:.0f}')} min"
+                f" \u00b7 {number(backup.get('consecutive_failures'), lambda v: f'{v:g}')} failures",
+            ],
+            [
+                "Private disk",
+                f"{percent(private.get('used_fraction'))} used"
+                f" \u00b7 {percent(private.get('inodes_used_fraction'))} inodes used"
+                f" \u00b7 {level(private.get('level'))}",
+            ],
+        ]
+    except Exception:
+        # Health output must always come out.
         return []
-    if not isinstance(status, dict):
-        return []
-
-    def section(value):
-        return value if isinstance(value, dict) else {}
-
-    def number(value, fmt):
-        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-        return fmt(value) if ok else "-"
-
-    def percent(value):
-        return number(value, lambda v: f"{100 * v:.1f}%")
-
-    def level(value):
-        return value.upper() if isinstance(value, str) and value else "-"
-
-    backup = section(status.get("backup"))
-    private = section(section(status.get("disks")).get("private"))
-    return [
-        [
-            "Backup",
-            f"{level(backup.get('level'))}"
-            f" \u00b7 {number(backup.get('entries'), lambda v: f'{v:g}')}"
-            f" of {number(backup.get('entries_limit'), lambda v: f'{v:g}')} files"
-            f" \u00b7 age {number(backup.get('age_s'), lambda v: f'{v / 60:.0f}')} min"
-            f" \u00b7 {number(backup.get('consecutive_failures'), lambda v: f'{v:g}')} failures",
-        ],
-        [
-            "Private disk",
-            f"{percent(private.get('used_fraction'))} used"
-            f" \u00b7 {percent(private.get('inodes_used_fraction'))} inodes used"
-            f" \u00b7 {level(private.get('level'))}",
-        ],
-    ]
 
 
 def duration(seconds):
