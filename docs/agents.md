@@ -261,7 +261,9 @@ After the agent stopped, a failure says so and names the command line that start
 | `The relaunched agent did not report its start in time.` | The new line was typed. Read the session with `agent state` or attach. |
 | `The settings file changed during the relaunch.` | The agent runs with a file that is not the one that was checked. Relaunch again. |
 
-The audit log records `relaunch` with the actor.
+The same tmux queue that types `/exit` marks the agent `working`, so that `agent send` and a second relaunch refuse while Claude Code exits. When Claude Code does not exit, the agent stays `working`; `tokiwa interrupt` makes it idle again.
+
+The audit log records `relaunch` with the actor only after the relaunch is confirmed.
 
 ## Read an agent's transcript
 

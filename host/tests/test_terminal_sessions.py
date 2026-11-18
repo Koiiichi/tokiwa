@@ -2993,6 +2993,9 @@ class AgentRelaunch(Pty, ModelHelpers, Server):
         self.assertEqual(result.returncode, 1)
         self.assertIn('Claude Code did not exit after /exit.', result.stderr)
         self.assertEqual(len(self.launches()), 2)
+        # The agent stays marked busy, so that no send types into it; an interrupt makes it idle again.
+        self.assertTrue(self.tm('show-options', '-qv', '-t', '=other:', '@tokiwa_agent').stdout.startswith('working:'))
+        self.assertIn('The agent is not idle.', self.relaunch(name='other', identity=identity).stderr)
         self.assertEqual(self.tm('display-message', '-p', '-t', '=other:', '#{pane_current_command}').stdout.strip(),
                          'claude')
 
@@ -3004,6 +3007,9 @@ class AgentRelaunch(Pty, ModelHelpers, Server):
         self.assertIn('Claude Code exited after the relaunch.', result.stderr)
         self.assertIn(f'claude --resume {SESSION}', result.stderr)
         self.assertEqual(self.rows()['lead']['identity'], self.identity)
+        audit = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        actions = [json.loads(line)['action'] for line in audit.read_text().splitlines()] if audit.exists() else []
+        self.assertNotIn('relaunch', actions)
 
     def test_a_dialog_after_the_start_is_a_failure(self):
         dialog = Path(self.temp.name) / 'dialog.json'
