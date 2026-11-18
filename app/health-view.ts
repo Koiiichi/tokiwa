@@ -712,24 +712,35 @@ function storage(m: HealthViewModel): Row[] {
   return hostSection(m, "Storage", (host) => {
     if (!Array.isArray(host.storage) || !host.storage.length)
       throw new Error("no storage reading");
-    return host.storage.map((disk): Row => {
-      if (failure(disk) || !("used_bytes" in disk))
+    // The host adds these rows only when it publishes a storage status.
+    const extra = (m.sample?.rows ?? [])
+      .filter(([label]) => label === "Backup" || label === "Private disk")
+      .map(([label, value]): Row => ({
+        kind: "pair",
+        label: label + ":",
+        value,
+      }));
+    return [
+      ...host.storage.map((disk): Row => {
+        if (failure(disk) || !("used_bytes" in disk))
+          return {
+            kind: "bar",
+            label: disk.label,
+            value: missing(failure(disk) || "invalid reading"),
+            tone: "dim",
+          };
+        // Like df, count the root-reserved blocks as unavailable rather than free.
+        const percent =
+          (100 * disk.used_bytes) / (disk.used_bytes + disk.free_bytes);
         return {
           kind: "bar",
           label: disk.label,
-          value: missing(failure(disk) || "invalid reading"),
-          tone: "dim",
+          percent,
+          value: `${gib(disk.used_bytes)} of ${gib(disk.total_bytes)} GiB`,
         };
-      // Like df, count the root-reserved blocks as unavailable rather than free.
-      const percent =
-        (100 * disk.used_bytes) / (disk.used_bytes + disk.free_bytes);
-      return {
-        kind: "bar",
-        label: disk.label,
-        percent,
-        value: `${gib(disk.used_bytes)} of ${gib(disk.total_bytes)} GiB`,
-      };
-    });
+      }),
+      ...extra,
+    ];
   });
 }
 

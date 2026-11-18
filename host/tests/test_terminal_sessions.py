@@ -931,6 +931,165 @@ class ShellSettings(Server):
         self.assertEqual(prompt, 'tokiwa:\\W\\$ ')
         self.assertEqual(browser, '/opt/agent-platform/rootless/tokiwa-open')
 
+    def setUp(self):
+        super().setUp()
+        # A host with no cache root keeps the defaults, whatever the machine of the test has.
+        self.env.pop('TOKIWA_CACHE_ROOT', None)
+        self.env['TOKIWA_CACHE_ROOT_FILE'] = str(Path(self.temp.name) / 'no-such-root-file')
+
+    def type_into(self, name, line):
+        self.tm('send-keys', '-t', f'={name}:', line, 'Enter')
+
+    def shell_env(self, name):
+        """The environment of the shell of session NAME, as a dict, once the shell has started."""
+        out = Path(self.temp.name) / f'env-{name}'
+        self.type_into(name, f'env > {out}.part && mv {out}.part {out}')
+        for _ in range(200):
+            if out.exists():
+                break
+            time.sleep(.05)
+        self.assertTrue(out.exists(), self.screen_text(name))
+        return dict(line.split('=', 1) for line in out.read_text().splitlines() if '=' in line)
+
+    def screen_text(self, name):
+        return self.tm('capture-pane', '-p', '-J', '-t', f'={name}:').stdout
+
+    def assertNoCacheVariables(self, env):
+        """The shell has none of the cache variables, and keeps the values that it inherited."""
+        for name in ('TOKIWA_CACHE', 'TOKIWA_CACHE_ROOT', 'TOKIWA_CACHE_ROOT_FILE', 'TOKIWA_CACHE_MIN_FREE',
+                     'TOKIWA_SESSION', 'XDG_CACHE_HOME', 'UV_CACHE_DIR', 'PIP_CACHE_DIR', 'npm_config_cache',
+                     'TMPDIR', 'UV_LINK_MODE'):
+            self.assertEqual(env.get(name), os.environ.get(name) if name[:6] != 'TOKIWA' else None, name)
+
+    def use_root(self, **extra):
+        root = Path(self.temp.name) / 'cache-root'
+        root.mkdir()
+        self.env['TOKIWA_CACHE_ROOT'] = str(root)
+        self.env.update(extra)
+        return root
+
+    def test_a_new_session_gets_its_cache_variables(self):
+        root = self.use_root()
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        env = self.shell_env('worker-a')
+        cache = root / 'worker-a'
+        self.assertEqual(env['TOKIWA_CACHE'], str(cache))
+        self.assertEqual(env['XDG_CACHE_HOME'], str(cache / 'cache'))
+        self.assertEqual(env['UV_CACHE_DIR'], str(cache / 'cache/uv'))
+        self.assertEqual(env['PIP_CACHE_DIR'], str(cache / 'cache/pip'))
+        self.assertEqual(env['npm_config_cache'], str(cache / 'cache/npm'))
+        self.assertEqual(env['TMPDIR'], str(cache / 'tmp'))
+        self.assertEqual(env['UV_LINK_MODE'], 'copy')
+        for folder in ('cache', 'tmp', 'work'):
+            self.assertEqual((cache / folder).stat().st_mode & 0o777, 0o700)
+        tag = (cache / 'cache/CACHEDIR.TAG').read_text()
+        self.assertTrue(tag.startswith('Signature: 8a477f597d28d172789f06886806bc55\n'))
+        self.assertFalse((cache / 'tmp/CACHEDIR.TAG').exists())
+        self.assertFalse((cache / 'work/CACHEDIR.TAG').exists())
+        for name in ('TOKIWA_CACHE_ROOT', 'TOKIWA_CACHE_ROOT_FILE', 'TOKIWA_CACHE_MIN_FREE', 'TOKIWA_SESSION'):
+            self.assertNotIn(name, env)
+        self.assertNotIn('not available', self.screen_text('worker-a'))
+
+    def test_the_root_file_gives_the_root_and_the_variable_wins(self):
+        root = self.use_root()
+        other = Path(self.temp.name) / 'other-root'
+        other.mkdir()
+        Path(self.env['TOKIWA_CACHE_ROOT_FILE']).write_text(f'{other}\nsecond line\n')
+        del self.env['TOKIWA_CACHE_ROOT']
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        self.assertEqual(self.shell_env('worker-a')['TOKIWA_CACHE'], str(other / 'worker-a'))
+        self.env['TOKIWA_CACHE_ROOT'] = str(root)
+        self.assertEqual(self.helper('ensure', 'worker-b').returncode, 0)
+        self.assertEqual(self.shell_env('worker-b')['TOKIWA_CACHE'], str(root / 'worker-b'))
+
+    def test_an_existing_cache_tag_is_kept(self):
+        root = self.use_root()
+        (root / 'worker-a/cache').mkdir(parents=True)
+        (root / 'worker-a/cache/CACHEDIR.TAG').write_text('Signature: 8a477f597d28d172789f06886806bc55\nkept\n')
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        self.shell_env('worker-a')
+        self.assertIn('kept', (root / 'worker-a/cache/CACHEDIR.TAG').read_text())
+
+    def test_an_unusable_root_keeps_the_defaults_with_one_notice(self):
+        self.env['TOKIWA_CACHE_ROOT'] = '/nonexistent/x'
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        env = self.shell_env('worker-a')
+        screen = self.screen_text('worker-a')
+        self.assertNoCacheVariables(env)
+        notice = ('Tokiwa: the session cache is not available (no such folder). '
+                  'Temporary files and caches use the default places.')
+        self.assertEqual(screen.count('Tokiwa: the session cache is not available'), 1)
+        self.assertIn(notice, screen)
+
+    def test_a_root_with_odd_characters_is_refused(self):
+        self.env['TOKIWA_CACHE_ROOT'] = '/tmp/a b'
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        self.assertNoCacheVariables(self.shell_env('worker-a'))
+        self.assertEqual(self.screen_text('worker-a').count('Tokiwa: the session cache is not available'), 1)
+
+    def test_a_root_that_is_not_writable_is_refused(self):
+        root = self.use_root()
+        root.chmod(0o500)
+        try:
+            if os.access(root, os.W_OK):
+                self.skipTest('this user can write to every folder')
+            self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+            self.assertNoCacheVariables(self.shell_env('worker-a'))
+            self.assertIn('(not writable)', self.screen_text('worker-a'))
+        finally:
+            root.chmod(0o700)
+
+    def test_a_cache_or_tmp_folder_that_is_a_link_is_refused(self):
+        for folder in ('cache', 'tmp'):
+            with self.subTest(folder=folder):
+                root = Path(self.temp.name) / f'cache-root-{folder}'
+                target = Path(self.temp.name) / f'elsewhere-{folder}'
+                target.mkdir()
+                self.env['TOKIWA_CACHE_ROOT'] = str(root)
+                name = f'worker-{folder}'
+                (root / name).mkdir(parents=True)
+                (root / name / folder).symlink_to(target)
+                self.assertEqual(self.helper('ensure', name).returncode, 0)
+                self.assertNoCacheVariables(self.shell_env(name))
+                self.assertIn('(not writable)', self.screen_text(name))
+                self.assertEqual(list(target.iterdir()), [])
+
+    def test_a_tmp_folder_that_this_user_cannot_write_is_refused(self):
+        root = self.use_root()
+        (root / 'worker-a/tmp').mkdir(parents=True)
+        (root / 'worker-a/tmp').chmod(0o500)
+        try:
+            if os.access(root / 'worker-a/tmp', os.W_OK):
+                self.skipTest('this user can write to every folder')
+            self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+            self.assertNoCacheVariables(self.shell_env('worker-a'))
+            self.assertIn('(not writable)', self.screen_text('worker-a'))
+        finally:
+            (root / 'worker-a/tmp').chmod(0o700)
+
+    def test_a_nearly_full_disk_keeps_the_defaults(self):
+        self.use_root(TOKIWA_CACHE_MIN_FREE='1.0')
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        self.assertNoCacheVariables(self.shell_env('worker-a'))
+        self.assertIn('(disk nearly full)', self.screen_text('worker-a'))
+
+    def test_no_root_set_changes_nothing(self):
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        env = self.shell_env('worker-a')
+        self.assertNoCacheVariables(env)
+        self.assertNotIn('not available', self.screen_text('worker-a'))
+
+    def test_a_renamed_session_keeps_its_folder(self):
+        root = self.use_root()
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        identity = self.helper('snapshot').stdout
+        identity = next(r for r in json.loads(identity)['sessions'] if r['name'] == 'worker-a')['identity']
+        request = base64.b64encode(json.dumps({'to': 'worker-b', 'identity': identity}).encode()).decode()
+        self.assertEqual(self.helper('rename', 'worker-a', request).returncode, 0)
+        self.assertEqual(self.shell_env('worker-b')['TOKIWA_CACHE'], str(root / 'worker-a'))
+        self.assertEqual(self.helper('ensure', 'worker-a').returncode, 0)
+        self.assertEqual(self.shell_env('worker-a')['TOKIWA_CACHE'], str(root / 'worker-a'))
+
     def test_tokiwa_attention_rings_the_bell_of_its_own_pane(self):
         self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
         pane = self.tm('display-message', '-p', '-t', '=lead:', '#{pane_id}').stdout.strip()

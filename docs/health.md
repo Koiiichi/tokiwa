@@ -12,7 +12,7 @@ It does not change the host, its workloads or its service limits. The spend figu
 | Workstation | `Instance:` (the instance ID, type and region, and its state when it is not running), `Uptime:`, an amber `Stuck connection:` row for each [stuck connection](host.md#stuck-connections) (its PID, age and CPU share), `Authorization:` (days left) and the end time | `tokiwa spend`, `tokiwa health`, `health.json` |
 | Spend (estimate) | `Spent so far:` and, with a budget, a bar of it against the budget, `Forecast:`, `Month to date:`, and a note on what the estimate counts | `tokiwa spend`, `health.json` |
 | Workbench limits | `CPU` of the CPU quota, `Memory` of the memory limit, `Tasks` of the task limit, each as a bar | `tokiwa health`: the cgroup of `cloud-workbench.service` |
-| Storage | One bar for each disk that the host reports, used of total | `tokiwa health` |
+| Storage | One bar for each disk that the host reports, used of total. When the host publishes a storage status file, also a `Backup:` row (level, files of the limit, age, failures) and a `Private disk:` row (space and inodes used, level); a missing value shows `-` | `tokiwa health` |
 | Network · INTERFACE | `Received:` and `Sent:`: the rate now and the total since boot | `tokiwa health`: the interface of the default IPv4 route |
 
 The last line gives the time of the sample and its age, for example `Sampled 14:02:31 · 12s ago`. It adds the state when the state is not `live`. When the sample is older than 65 seconds or the last read failed, the line says `last known`, and the section titles and values say it too: `Workbench limits · last known`, `Storage · last known`, `Network · ens5 · last known`, a `Stuck connection:` row that ends with `· last known`, an `Uptime:` value that ends with `· at HH:MM` (with the date when the sample is from another day), and `Spend (estimate · last known)` with an `Instance:` value that ends with `· last known`. The values keep their quieter colour. The [problem band](interface.md#problem-band) under the header names a failure of the whole link; a failure of the Health read alone shows as one line at the top of Health.
@@ -32,6 +32,7 @@ A value that no read has given says `not read` while a failure speaks for the wh
 A bar and its figure turn amber at 80 % and soft orange at 95 %. The `Forecast:` row turns amber at 95 % of the budget and soft orange above the budget. The `Authorization:` row turns amber at 7 days left or fewer and soft orange below 1 day. A CPU, memory or task figure without a limit shows `(no quota)` or `(no limit)` and no bar.
 
 The host side of `tokiwa health` is [`workbench-health.py`](../host/workbench-health.py). See [Host](host.md).
+The script reads the optional storage status file from `TOKIWA_STORAGE_STATUS`, default `/var/lib/agent-platform-public/storage-status.json`. Without a readable JSON object there, it adds no row and no error.
 
 ## Sampling
 
