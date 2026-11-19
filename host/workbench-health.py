@@ -360,13 +360,14 @@ def collect():
             quota, period = (path / "cpu.max").read_text().split()
             cap = "unlimited" if quota == "max" else f"{int(quota) / int(period):g}"
             rows.append([label + " CPU", f"{cores:.2f} / {cap} cores"])
+            # Each reading runs in its own iteration, so that an unreadable task count keeps the RAM row.
             for title, used, maximum, fmt in [
-                ("RAM", memory_in_use(path), "memory.max", gib),
-                ("tasks", int((path / "pids.current").read_text()), "pids.max", str),
+                ("RAM", lambda: memory_in_use(path), "memory.max", gib),
+                ("tasks", lambda: int((path / "pids.current").read_text()), "pids.max", str),
             ]:
                 maximum = (path / maximum).read_text().strip()
                 cap = "unlimited" if maximum == "max" else fmt(int(maximum))
-                rows.append([label + " " + title, fmt(used) + " / " + cap])
+                rows.append([label + " " + title, fmt(used()) + " / " + cap])
             rows.append(
                 [
                     label + " swap cap",

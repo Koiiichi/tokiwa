@@ -159,6 +159,12 @@ class CollectTests(unittest.TestCase):
         sample = self.collect()
         self.assertEqual(dict(sample["rows"])["Workbench RAM"], "0.0 GiB / 24.0 GiB")
 
+    def test_an_unreadable_task_count_keeps_the_ram_row(self):
+        (self.group / "pids.current").unlink()
+        rows = dict(self.collect()["rows"])
+        self.assertEqual(rows["Workbench RAM"], "6.0 GiB / 24.0 GiB")
+        self.assertNotIn("Workbench tasks", rows)
+
     def test_unlimited_workbench_limits_are_null(self):
         (self.group / "cpu.max").write_text("max 100000\n")
         (self.group / "memory.max").write_text("max\n")
