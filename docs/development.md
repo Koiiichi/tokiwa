@@ -10,8 +10,8 @@ This page tells how to work on the Tokiwa repository: where the code is, how to 
 | [`bin/tokiwa`](../bin/tokiwa) | The launcher on the Mac: every AWS call and host command, and `tokiwa` without a command opens the app |
 | [`host/`](../host/) | The host side: `units/`, `start-workbench.sh`, `terminal-session.sh`, `workbench-health.py`, `tokiwa-open`, the rootless engine files, the host installer, `compose/` and `tests/` |
 | [`docs/`](./) | These pages, and `images/` |
-| [`DESIGN.md`](../DESIGN.md) | The colours, layout and components of the interface |
-| [`PRODUCT.md`](../PRODUCT.md) | The users and the purpose of the product |
+
+The design system, the product notes, and the spec and plan of each feature live on the [`dev-notes`](https://github.com/Koiiichi/tokiwa/tree/dev-notes) branch.
 
 ## Run the app from the checkout
 
@@ -127,7 +127,7 @@ await t.dispose();
 | `backend.attachCommand` | The transport command of an attached session. `["/bin/sleep", "30"]` keeps a transport open; `["/bin/zsh", "-f"]` gives a shell. |
 | `t.dispose()` | Close the renderer. Wait for `app.shells[i].child.exited` so that no process stays. |
 
-[`app/landing-fixture.ts`](../app/landing-fixture.ts) and [`app/health-fixture.ts`](../app/health-fixture.ts) hold fixed snapshots and a fixed Health reading. `health-capture.ts` and `review-capture.ts` draw views with the test renderer and write them as text to `~/.local/state/tokiwa/captures/` (or `$TOKIWA_CAPTURE_DIR`). `error-capture.ts` draws the four error states (expired sign-in, network failure, component failure, recovery) with a fake backend and writes `<scene>-<view>-<width>x<height>.txt` to `error-states/` in the same folder. The saved frames are in `docs/superpowers/captures/2026-11-15-tui-error-states/`:
+[`app/landing-fixture.ts`](../app/landing-fixture.ts) and [`app/health-fixture.ts`](../app/health-fixture.ts) hold fixed snapshots and a fixed Health reading. `health-capture.ts` and `review-capture.ts` draw views with the test renderer and write them as text to `~/.local/state/tokiwa/captures/` (or `$TOKIWA_CAPTURE_DIR`). `error-capture.ts` draws the four error states (expired sign-in, network failure, component failure, recovery) with a fake backend and writes `<scene>-<view>-<width>x<height>.txt` to `error-states/` in the same folder. The saved frames are on the `dev-notes` branch, in `docs/superpowers/captures/2026-11-15-tui-error-states/`:
 
 ```sh
 (cd app && ./node_modules/bun/bin/bun.exe health-capture.ts)
