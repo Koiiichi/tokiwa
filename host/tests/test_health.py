@@ -254,6 +254,17 @@ class CollectTests(unittest.TestCase):
                 rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": scratch}))["rows"])
                 self.assertEqual(rows["Scratch"], row)
 
+    def test_an_old_scratch_survey_shows_its_age(self):
+        now = health.time.time()
+        old = {"bytes": 1024**3, "folders": 2, "level": "ok", "surveyed_at": now - 40 * 3600}
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": old}))["rows"])
+        self.assertEqual(rows["Scratch"], "OK \u00b7 1.0 GiB in 2 folders \u00b7 surveyed 40 h ago")
+        self.tearDown()
+        self.setUp()
+        fresh = dict(old, surveyed_at=now - 3600)
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": fresh}))["rows"])
+        self.assertEqual(rows["Scratch"], "OK \u00b7 1.0 GiB in 2 folders")
+
     def test_a_status_without_scratch_has_no_scratch_row(self):
         rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}}))["rows"])
         self.assertNotIn("Scratch", rows)

@@ -16,6 +16,7 @@ DISKS = [
 ]
 # The host publishes this file when it tracks backup and disk levels. Without it, no row shows.
 STORAGE_STATUS = "/var/lib/agent-platform-public/storage-status.json"
+SCRATCH_STALE_HOURS = 36
 STORAGE_STATUS_MAX = 1024 * 1024
 # The launcher starts the command of every connection with this prefix (`helper` in bin/tokiwa).
 CONNECTION = [b"sudo", b"-n", b"runuser", b"-u", b"agent-workspace"]
@@ -190,14 +191,16 @@ def storage_status_rows():
         ]
         if isinstance(status.get("scratch"), dict):
             scratch = status["scratch"]
-            rows.append(
-                [
-                    "Scratch",
-                    f"{level(scratch.get('level'))}"
-                    f" \u00b7 {number(scratch.get('bytes'), lambda v: f'{v / 1024**3:.1f} GiB')}"
-                    f" in {number(scratch.get('folders'), lambda v: f'{v:g}')} folders",
-                ]
+            row = (
+                f"{level(scratch.get('level'))}"
+                f" \u00b7 {number(scratch.get('bytes'), lambda v: f'{v / 1024**3:.1f} GiB')}"
+                f" in {number(scratch.get('folders'), lambda v: f'{v:g}')} folders"
             )
+            # The host measures scratch once a day; a figure older than a day and a half did not refresh.
+            age = number(scratch.get("surveyed_at"), lambda v: (time.time() - v) / 3600)
+            if isinstance(age, float) and age > SCRATCH_STALE_HOURS:
+                row += f" \u00b7 surveyed {age:.0f} h ago"
+            rows.append(["Scratch", row])
         return rows
     except Exception:
         # Health output must always come out.
