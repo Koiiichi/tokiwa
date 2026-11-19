@@ -136,7 +136,7 @@ def stuck_connections():
 
 
 def storage_status_rows():
-    """Return the Backup and Private disk rows from the host's storage status file.
+    """Return the Backup, Private disk and Scratch rows from the host's storage status file.
 
     The file is optional. A missing, unreadable, oversized or malformed file gives no rows and no
     error. A value that the file lacks, or that is not a finite number, shows as a dash.
@@ -172,7 +172,7 @@ def storage_status_rows():
 
         backup = section(status.get("backup"))
         private = section(section(status.get("disks")).get("private"))
-        return [
+        rows = [
             [
                 "Backup",
                 f"{level(backup.get('level'))}"
@@ -188,6 +188,17 @@ def storage_status_rows():
                 f" \u00b7 {level(private.get('level'))}",
             ],
         ]
+        if isinstance(status.get("scratch"), dict):
+            scratch = status["scratch"]
+            rows.append(
+                [
+                    "Scratch",
+                    f"{level(scratch.get('level'))}"
+                    f" \u00b7 {number(scratch.get('bytes'), lambda v: f'{v / 1024**3:.1f} GiB')}"
+                    f" in {number(scratch.get('folders'), lambda v: f'{v:g}')} folders",
+                ]
+            )
+        return rows
     except Exception:
         # Health output must always come out.
         return []

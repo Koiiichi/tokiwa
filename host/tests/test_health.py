@@ -240,6 +240,25 @@ class CollectTests(unittest.TestCase):
         )
         self.assertEqual(sample["errors"], [])
 
+    def test_storage_status_adds_a_scratch_row(self):
+        gib = 1024**3
+        cases = [
+            ({"bytes": int(21.3 * gib), "folders": 14, "level": "ok"}, "OK \u00b7 21.3 GiB in 14 folders"),
+            ({"bytes": 0, "folders": 0, "level": "ok"}, "OK \u00b7 0.0 GiB in 0 folders"),
+            ({"bytes": "many", "folders": 14, "level": "warn"}, "WARN \u00b7 - in 14 folders"),
+        ]
+        for scratch, row in cases:
+            with self.subTest(scratch=scratch):
+                self.tearDown()
+                self.setUp()
+                rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": scratch}))["rows"])
+                self.assertEqual(rows["Scratch"], row)
+
+    def test_a_status_without_scratch_has_no_scratch_row(self):
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}}))["rows"])
+        self.assertNotIn("Scratch", rows)
+        self.assertIn("Backup", rows)
+
     def test_missing_status_values_show_a_dash(self):
         sample = self.status_rows(json.dumps({"backup": {"level": None}, "disks": {}}))
         rows = dict(sample["rows"])
