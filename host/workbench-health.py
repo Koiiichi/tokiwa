@@ -75,12 +75,27 @@ def network_counters():
     return name, counters, time.monotonic()
 
 
+def memory_in_use(path):
+    """Return the bytes that the cgroup uses, without its idle page cache.
+
+    memory.current also counts file cache that the kernel frees as soon as a program needs
+    memory, so a group near its limit can have most of that limit free. Without memory.stat,
+    all charged memory counts.
+    """
+    current = int((path / "memory.current").read_text())
+    try:
+        idle = int(pairs((path / "memory.stat").read_text())["inactive_file"])
+    except (OSError, KeyError, ValueError):
+        return current
+    return max(current - idle, 0)
+
+
 def workbench_limits(path, cores):
     return {
         "unit": "cloud-workbench.service",
         "cpu_used_cores": cores,
         "cpu_quota_cores": quota_cores((path / "cpu.max").read_text()),
-        "memory_bytes": int((path / "memory.current").read_text()),
+        "memory_bytes": memory_in_use(path),
         "memory_max_bytes": limit((path / "memory.max").read_text()),
         "tasks": int((path / "pids.current").read_text()),
         "tasks_max": limit((path / "pids.max").read_text()),
@@ -346,17 +361,12 @@ def collect():
             cap = "unlimited" if quota == "max" else f"{int(quota) / int(period):g}"
             rows.append([label + " CPU", f"{cores:.2f} / {cap} cores"])
             for title, used, maximum, fmt in [
-                ("RAM", "memory.current", "memory.max", gib),
-                ("tasks", "pids.current", "pids.max", str),
+                ("RAM", memory_in_use(path), "memory.max", gib),
+                ("tasks", int((path / "pids.current").read_text()), "pids.max", str),
             ]:
                 maximum = (path / maximum).read_text().strip()
                 cap = "unlimited" if maximum == "max" else fmt(int(maximum))
-                rows.append(
-                    [
-                        label + " " + title,
-                        fmt(int((path / used).read_text())) + " / " + cap,
-                    ]
-                )
+                rows.append([label + " " + title, fmt(used) + " / " + cap])
             rows.append(
                 [
                     label + " swap cap",

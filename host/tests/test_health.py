@@ -82,7 +82,9 @@ class CollectTests(unittest.TestCase):
         for name, value in {
             "cpu.stat": "usage_usec 1000000\n",
             "cpu.max": "600000 100000\n",
-            "memory.current": str(6 * 1024**3),
+            # 10 GiB charged, of which 4 GiB is idle page cache that the kernel frees first.
+            "memory.current": str(10 * 1024**3),
+            "memory.stat": "anon 5368709120\nfile 5368709120\ninactive_file 4294967296\n",
             "memory.max": str(24 * 1024**3),
             "memory.swap.max": "0",
             "pids.current": "212",
@@ -139,6 +141,23 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(workbench["memory_bytes"], 6 * 1024**3)
         self.assertEqual(workbench["memory_max_bytes"], 24 * 1024**3)
         self.assertEqual((workbench["tasks"], workbench["tasks_max"]), (212, 4096))
+
+    def test_ram_leaves_out_idle_page_cache(self):
+        sample = self.collect()
+        self.assertEqual(dict(sample["rows"])["Workbench RAM"], "6.0 GiB / 24.0 GiB")
+        self.assertEqual(sample["host"]["workbench"]["memory_bytes"], 6 * 1024**3)
+
+    def test_ram_without_memory_stat_counts_all_charged_memory(self):
+        (self.group / "memory.stat").unlink()
+        sample = self.collect()
+        self.assertEqual(dict(sample["rows"])["Workbench RAM"], "10.0 GiB / 24.0 GiB")
+        self.assertEqual(sample["host"]["workbench"]["memory_bytes"], 10 * 1024**3)
+        self.assertEqual(sample["errors"], [])
+
+    def test_ram_is_never_negative(self):
+        (self.group / "memory.stat").write_text(f"inactive_file {20 * 1024**3}\n")
+        sample = self.collect()
+        self.assertEqual(dict(sample["rows"])["Workbench RAM"], "0.0 GiB / 24.0 GiB")
 
     def test_unlimited_workbench_limits_are_null(self):
         (self.group / "cpu.max").write_text("max 100000\n")

@@ -29,7 +29,7 @@ A value that no read has given says `not read` while a failure speaks for the wh
 | `configuration is invalid` | `health.json` has an error. The Spend section shows the error line. |
 | `the launcher has no spend command; install the updated launcher` | The launcher rejected `spend`. |
 
-A bar and its figure turn amber at 80 % and soft orange at 95 %. The `Forecast:` row turns amber at 95 % of the budget and soft orange above the budget. The `Authorization:` row turns amber at 7 days left or fewer and soft orange below 1 day. A CPU, memory or task figure without a limit shows `(no quota)` or `(no limit)` and no bar.
+`Memory` counts the memory that programs use, without the idle file cache that the kernel frees first (`memory.current` minus `inactive_file` of `memory.stat`). The raw cgroup figure stays near the limit on a busy host, because the kernel fills free memory with cache. A bar and its figure turn amber at 80 % and soft orange at 95 %. The `Forecast:` row turns amber at 95 % of the budget and soft orange above the budget. The `Authorization:` row turns amber at 7 days left or fewer and soft orange below 1 day. A CPU, memory or task figure without a limit shows `(no quota)` or `(no limit)` and no bar.
 
 The host side of `tokiwa health` is [`workbench-health.py`](../host/workbench-health.py). See [Host](host.md).
 The script reads the optional storage status file from `TOKIWA_STORAGE_STATUS`, default `/var/lib/agent-platform-public/storage-status.json`. Without a readable JSON object there, it adds no row and no error.
