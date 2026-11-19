@@ -240,6 +240,36 @@ class CollectTests(unittest.TestCase):
         )
         self.assertEqual(sample["errors"], [])
 
+    def test_storage_status_adds_a_scratch_row(self):
+        gib = 1024**3
+        cases = [
+            ({"bytes": int(21.3 * gib), "folders": 14, "level": "ok"}, "OK \u00b7 21.3 GiB in 14 folders"),
+            ({"bytes": 0, "folders": 0, "level": "ok"}, "OK \u00b7 0.0 GiB in 0 folders"),
+            ({"bytes": "many", "folders": 14, "level": "warn"}, "WARN \u00b7 - in 14 folders"),
+        ]
+        for scratch, row in cases:
+            with self.subTest(scratch=scratch):
+                self.tearDown()
+                self.setUp()
+                rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": scratch}))["rows"])
+                self.assertEqual(rows["Scratch"], row)
+
+    def test_an_old_scratch_survey_shows_its_age(self):
+        now = health.time.time()
+        old = {"bytes": 1024**3, "folders": 2, "level": "ok", "surveyed_at": now - 40 * 3600}
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": old}))["rows"])
+        self.assertEqual(rows["Scratch"], "OK \u00b7 1.0 GiB in 2 folders \u00b7 surveyed 40 h ago")
+        self.tearDown()
+        self.setUp()
+        fresh = dict(old, surveyed_at=now - 3600)
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}, "scratch": fresh}))["rows"])
+        self.assertEqual(rows["Scratch"], "OK \u00b7 1.0 GiB in 2 folders")
+
+    def test_a_status_without_scratch_has_no_scratch_row(self):
+        rows = dict(self.status_rows(json.dumps({"backup": {}, "disks": {}}))["rows"])
+        self.assertNotIn("Scratch", rows)
+        self.assertIn("Backup", rows)
+
     def test_missing_status_values_show_a_dash(self):
         sample = self.status_rows(json.dumps({"backup": {"level": None}, "disks": {}}))
         rows = dict(sample["rows"])

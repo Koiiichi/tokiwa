@@ -16,6 +16,7 @@ DISKS = [
 ]
 # The host publishes this file when it tracks backup and disk levels. Without it, no row shows.
 STORAGE_STATUS = "/var/lib/agent-platform-public/storage-status.json"
+SCRATCH_STALE_HOURS = 36
 STORAGE_STATUS_MAX = 1024 * 1024
 # The launcher starts the command of every connection with this prefix (`helper` in bin/tokiwa).
 CONNECTION = [b"sudo", b"-n", b"runuser", b"-u", b"agent-workspace"]
@@ -136,7 +137,7 @@ def stuck_connections():
 
 
 def storage_status_rows():
-    """Return the Backup and Private disk rows from the host's storage status file.
+    """Return the Backup, Private disk and Scratch rows from the host's storage status file.
 
     The file is optional. A missing, unreadable, oversized or malformed file gives no rows and no
     error. A value that the file lacks, or that is not a finite number, shows as a dash.
@@ -172,7 +173,7 @@ def storage_status_rows():
 
         backup = section(status.get("backup"))
         private = section(section(status.get("disks")).get("private"))
-        return [
+        rows = [
             [
                 "Backup",
                 f"{level(backup.get('level'))}"
@@ -188,6 +189,19 @@ def storage_status_rows():
                 f" \u00b7 {level(private.get('level'))}",
             ],
         ]
+        if isinstance(status.get("scratch"), dict):
+            scratch = status["scratch"]
+            row = (
+                f"{level(scratch.get('level'))}"
+                f" \u00b7 {number(scratch.get('bytes'), lambda v: f'{v / 1024**3:.1f} GiB')}"
+                f" in {number(scratch.get('folders'), lambda v: f'{v:g}')} folders"
+            )
+            # The host measures scratch once a day; a figure older than a day and a half did not refresh.
+            age = number(scratch.get("surveyed_at"), lambda v: (time.time() - v) / 3600)
+            if isinstance(age, float) and age > SCRATCH_STALE_HOURS:
+                row += f" \u00b7 surveyed {age:.0f} h ago"
+            rows.append(["Scratch", row])
+        return rows
     except Exception:
         # Health output must always come out.
         return []
