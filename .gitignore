@@ -33,3 +33,9 @@ __pycache__/
 node_modules/
 node_modules
 !host/tests/fixtures/transcripts/*.jsonl
+
+# Development notes live on the dev-notes branch.
+/DESIGN.md
+/PRODUCT.md
+/.impeccable/
+/docs/superpowers/

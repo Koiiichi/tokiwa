@@ -3,7 +3,7 @@
 The Tokiwa app is a terminal program on the Mac that lists the sessions on the host, attaches them in embedded terminal views and shows the health of the host.
 It does not run models or read what a program in a session wants. A status glyph reports what the app observes: output, a quiet screen, a bell, an ended transport or ended processes.
 
-For colours, spacing and the drawing of each part, see [DESIGN.md](../DESIGN.md). For projects and the actions on them, see [Sessions and projects](sessions-and-projects.md).
+For projects and the actions on them, see [Sessions and projects](sessions-and-projects.md).
 
 ## Screen layout
 
@@ -426,4 +426,3 @@ When the text is right after **Repaint view**, the emulator held the right text 
 - [Architecture](architecture.md)
 - [Transport](transport.md)
 - [Host](host.md)
-- [DESIGN.md](../DESIGN.md)

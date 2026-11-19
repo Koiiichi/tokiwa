@@ -83,7 +83,6 @@ Health shows the host's CPU, memory, storage, network and workbench limits, samp
 - [Configuration](docs/configuration.md): the host settings, environment variables, options and files.
 - [Host](docs/host.md): the service and its sandbox, installed files, Docker and the admin route.
 - [Development](docs/development.md): the repository layout, running the app from a checkout and the tests.
-- [Design](DESIGN.md): colours, layout and components.
 
 ## Offline checks
 
