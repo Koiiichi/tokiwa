@@ -85,6 +85,8 @@ The estimate uses the list prices in `health.json` and the inventory that `tokiw
 
 The estimate counts nothing else. It does not count data transfer, snapshots, S3 storage (for example the workstation backups), provisioned IOPS or throughput, or tax. The note under `Month to date:` names what is counted and what is not. Spend before the current month counts only through `prior_spend_usd`.
 
+When the spend read itself fails for its own reason, the Spend section shows the reason once, as `Spend read failed: REASON` under its title, and `Instance:`, `Spent so far:`, `Forecast:` and `Month to date:` say `unavailable`.
+
 The estimate is `not available` with the reason in these cases:
 
 | Reason | Cause |

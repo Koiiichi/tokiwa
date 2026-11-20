@@ -292,16 +292,13 @@ test("the spend bar keeps the bar thresholds at 80 and 95 percent", () => {
   expect(barTone(115)).toBe("critical");
 });
 
-test("without a spend reading every Spend row says why", () => {
+test("without a spend reading the Spend section says why once", () => {
   const rows = spendRows(
     healthLines(fixtureModel({ spend: undefined, spendError: "offline" }), 96),
   ).map(lineText);
+  expect(rows.filter((r) => r.includes("offline"))).toEqual(["  Spend read failed: offline"]);
   for (const label of ["Spent so far:", "Forecast:", "Month to date:"])
-    expect(
-      rows.some(
-        (r) => r.includes(label) && r.includes("not available (offline)"),
-      ),
-    ).toBe(true);
+    expect(rows.some((r) => r.includes(label) && r.includes("unavailable"))).toBe(true);
 });
 
 test("bars change to warning at 80 percent and critical at 95 percent", () => {
@@ -360,13 +357,31 @@ test("missing readings and failed parts give a reason, never a zero", () => {
     ),
   );
   expect(all).toContain("not available (no health reading yet)");
-  expect(all).toContain("not available (AWS authentication failed)");
   expect(all).not.toMatch(/\$0\.00|0% /);
   const partial = structuredClone(fixtureSample);
   partial.host!.network = { error: "PermissionError" };
   expect(text(healthLines(fixtureModel({ sample: partial }), 96))).toContain(
     "not available (PermissionError)",
   );
+});
+
+test("a failed spend read shows its reason once and the values as unavailable", () => {
+  const all = healthLines(
+    fixtureModel({
+      spend: undefined,
+      spendError: "AWS authentication failed. Run aws sso login --profile worker-profile.",
+    }),
+    96,
+  ).map(lineText);
+  const joined = all.join("\n");
+  // The launcher's message appears once, as a note under the Spend title, never on each row.
+  expect(joined.split("AWS authentication failed").length - 1).toBe(1);
+  expect(joined).toContain(
+    "Spend read failed: AWS authentication failed. Run aws sso login --profile worker-profile.",
+  );
+  for (const label of ["Instance:", "Spent so far:", "Forecast:", "Month to date:"])
+    expect(all.find((line) => line.includes(label))).toMatch(new RegExp(`${label} +unavailable`));
+  expect(joined).not.toContain("not available (AWS");
 });
 
 test("last-known Health sections say so on their titles", () => {
@@ -439,7 +454,8 @@ test("a component spend failure keeps its reason", () => {
       96,
     ),
   );
-  expect(all).toContain(`not available (${reason})`);
+  expect(all).toContain(`Spend read failed: ${reason}`);
+  expect(all.split(reason).length - 1).toBe(1);
 });
 
 test("a stuck connection shows as an amber row with its PID, age and CPU share", () => {

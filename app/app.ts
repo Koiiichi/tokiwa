@@ -231,6 +231,17 @@ export function awsEndpoint(
   return { host: `ssm.${region}.amazonaws.com`, port: 443 };
 }
 const AWS_ENDPOINT = awsEndpoint();
+/** The AWS profile of the launcher's host settings (`profile=`), or "" when the file or the line is missing. */
+export function awsProfile(
+  file = process.env.TOKIWA_HOST_CONFIG ??
+    join(homedir(), ".config", "tokiwa", "host.env"),
+) {
+  try {
+    return readFileSync(file, "utf8").match(/^profile=([A-Za-z0-9._:+-]+)$/m)?.[1] ?? "";
+  } catch {
+    return "";
+  }
+}
 /** Time one TCP connection to the AWS endpoint, in ms; reject on failure or after 3 s. */
 export function reachAws(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -385,6 +396,8 @@ export class App {
   pendingText?: TextRenderable;
   /** The view that runs the AWS sign-in. A failed sign-in stays open, so its message can be read. */
   signInShell?: Shell;
+  /** After a sign-in: `refreshing` until a fresh read succeeds, `failed` when the first read after it fails. */
+  afterSignIn?: "refreshing" | "failed";
   /** The recovery that the band's first key hint offers, and the width of that hint in cells. */
   bandAction?: "sign-in" | "retry";
   bandActionWidth = 0;
@@ -1835,12 +1848,14 @@ export class App {
   readFailed(source: Source, error: unknown): Failure {
     const failure = classify(source, error, this.now());
     this.sources[source].fail(failure);
+    if (this.afterSignIn === "refreshing") this.afterSignIn = "failed";
     return failure;
   }
   /** A read of one source succeeded: its failure ends. */
   readSucceeded(source: Source) {
     const wasGlobal = this.currentError()?.scope === "global";
     this.sources[source].succeed(this.now());
+    if (this.currentError()?.scope !== "global") this.afterSignIn = undefined;
     // One good read shows that the link works: the other sources read at once.
     if (wasGlobal && this.currentError()?.scope !== "global") this.recover();
   }
@@ -1886,6 +1901,13 @@ export class App {
       ? syncedText(state.lastSuccess, this.now())
       : undefined;
     const synced = read ? `Last synced ${read}.` : "Nothing was read yet.";
+    if (state.scope === "global" && this.afterSignIn) {
+      const lead = this.afterSignIn === "refreshing"
+        ? "Signed in. Reading the workstation again."
+        : "The refresh after sign-in failed.";
+      const fits = [`${lead} ${synced}`, lead].find((text) => text.length <= room);
+      return fits ?? lead.slice(0, Math.max(0, room - 1)) + "…";
+    }
     const wording: string[] = (() => {
       switch (state.kind) {
         case "signed-out":
@@ -1922,8 +1944,12 @@ export class App {
       health: "Health",
       spend: "Spend",
     };
+    // The profile and the command help when the built-in sign-in fails.
+    const profile = state.recovery === "sign-in" ? awsProfile() : "";
     const recovery = {
-      "sign-in": "l runs tokiwa login in a local view",
+      "sign-in": profile
+        ? `l signs in, or run aws sso login --profile ${profile}`
+        : "l signs in in a local view",
       retry: "u reads again",
       none: "Fix it outside the app. Tokiwa reads again every 30 s",
     }[state.recovery];
@@ -1935,6 +1961,7 @@ export class App {
           : "nothing was read yet",
       ],
       ["Affected", state.affected.map((s) => names[s]).join(", ")],
+      ...(profile ? [["Profile", profile]] : []),
       ["Recovery", recovery],
     ].flatMap(([key, value]) =>
       wrapText(value, Math.max(8, inner - 14)).map(
@@ -1984,9 +2011,12 @@ export class App {
       this.bandSub.visible = global && !signing;
       this.bandTitle.fg =
         state.kind === "setup" ? theme.critical : theme.warning;
+      const refreshing = global && this.afterSignIn === "refreshing";
       this.bandTitle.content = signing
         ? "▲ Signing in… finish in the browser"
-        : `▲ ${state.title}`;
+        : refreshing
+          ? "▲ Refreshing…"
+          : `▲ ${state.title}`;
       // Indented two cells under the title, which follows the ▲ glyph and a space.
       this.bandSub.content = `  ${this.bandSubText(
         state,
@@ -2094,6 +2124,7 @@ export class App {
       return;
     }
     if (this.signInShell) this.discardView(this.signInShell);
+    this.afterSignIn = undefined;
     const shell = this.startShell(
       "aws-sign-in",
       false,
@@ -2117,6 +2148,9 @@ export class App {
       }
       this.signInShell = undefined;
       this.discardView(shell);
+      // The stale warning stays until a fresh read succeeds; until then the band says Refreshing….
+      this.afterSignIn = "refreshing";
+      this.drawProblem();
       this.recover();
     });
   }
@@ -5264,7 +5298,10 @@ function spendFailure(error: unknown) {
   const message = String((error as Error)?.message ?? error);
   if (/^Launcher spend exited 2:/.test(message))
     return "the launcher has no spend command; install the updated launcher";
-  return message.replace(/^Launcher spend exited \d+: /, "").slice(0, 300);
+  return message
+    .replace(/^Launcher spend exited \d+: /, "")
+    .replace(/^Tokiwa: /, "")
+    .slice(0, 300);
 }
 /** Parse the command line. `--live-health` remains accepted; sampling is the default. */
 export function runOptions(argv: string[]) {

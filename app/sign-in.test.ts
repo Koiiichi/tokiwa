@@ -266,3 +266,70 @@ test("a click on the sign-in hint closes the shortcuts sheet, so the sign-in vie
     await close(t, app);
   }
 });
+
+/** An app whose reads fail with EXPIRED until the test opens the gate; then they succeed or fail as state says. */
+async function openGated() {
+  const t = await createTestRenderer({ width: 100, height: 30 });
+  let release = () => {};
+  const state = {
+    message: EXPIRED as string | undefined,
+    gate: undefined as Promise<void> | undefined,
+  };
+  const backend = new BackendClient("/fixture/tokiwa", async () => {
+    if (state.gate) await state.gate;
+    if (state.message) throw new Error(state.message);
+    return JSON.stringify({ sessions: landingSessions });
+  });
+  backend.loginCommand = () => ["/bin/sh", "-c", "exit 0"];
+  const app = new App(t.renderer, { backend });
+  await pause();
+  await t.renderOnce();
+  const hold = () => {
+    state.gate = new Promise((resolve) => (release = () => resolve()));
+  };
+  return { t, app, state, hold, open: () => release() };
+}
+
+test("after a sign-in the band says Refreshing… until a fresh read succeeds", async () => {
+  const { t, app, state, hold, open } = await openGated();
+  try {
+    hold();
+    state.message = undefined;
+    app.signIn();
+    for (let i = 0; i < 100 && app.shells.length; i++) await pause(20);
+    await t.renderOnce();
+    expect(t.captureCharFrame()).toContain("▲ Refreshing…");
+    expect(t.captureCharFrame()).not.toContain("▲ AWS sign-in expired");
+    open();
+    for (let i = 0; i < 100 && app.currentError(); i++) await pause(20);
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(frame).not.toContain("Refreshing…");
+    expect(frame).not.toContain("sign-in expired");
+  } finally {
+    open();
+    await close(t, app);
+  }
+});
+
+test("a failed refresh after a sign-in keeps the last known state and says so", async () => {
+  const { t, app, state, hold, open } = await openGated();
+  try {
+    hold();
+    app.signIn();
+    for (let i = 0; i < 100 && app.shells.length; i++) await pause(20);
+    await t.renderOnce();
+    expect(t.captureCharFrame()).toContain("▲ Refreshing…");
+    open();  // the reads still fail with EXPIRED
+    for (let i = 0; i < 100 && t.captureCharFrame().includes("Refreshing…"); i++) {
+      await pause(20);
+      await t.renderOnce();
+    }
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("▲ AWS sign-in expired");
+    expect(frame).toContain("The refresh after sign-in failed.");
+  } finally {
+    open();
+    await close(t, app);
+  }
+});

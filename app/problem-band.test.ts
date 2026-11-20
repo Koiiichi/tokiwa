@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { readFileSync } from "node:fs";
@@ -241,7 +244,34 @@ test("a read that succeeds after an expired sign-in starts the other read at onc
   }
 });
 
+test("the details name the AWS profile and the sign-in command", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "tokiwa-profile-"));
+  const settings = join(folder, "host.env");
+  writeFileSync(settings, "instance=i-0123456789abcdef0\nprofile=worker-profile\nregion=us-east-1\n");
+  const before = process.env.TOKIWA_HOST_CONFIG;
+  process.env.TOKIWA_HOST_CONFIG = settings;
+  const { t, app, state } = await open(undefined);
+  try {
+    state.error = launcherFailure(AUTH_TEXT, "auth");
+    await app.refreshSessions();
+    app.toggleDetails();
+    await pause();
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("Profile       worker-profile");
+    expect(frame).toContain("Recovery      l signs in, or run aws sso login --profile worker-profile");
+  } finally {
+    if (before === undefined) delete process.env.TOKIWA_HOST_CONFIG;
+    else process.env.TOKIWA_HOST_CONFIG = before;
+    rmSync(folder, { recursive: true, force: true });
+    await close(t, app);
+  }
+});
+
 test("the details show one copy of a failure that both reads report", async () => {
+  // No host settings file: the details name no profile.
+  const before = process.env.TOKIWA_HOST_CONFIG;
+  process.env.TOKIWA_HOST_CONFIG = join(tmpdir(), "tokiwa-no-such-host.env");
   const { t, app, state } = await open(undefined);
   try {
     state.error = launcherFailure(AUTH_TEXT, "auth");
@@ -255,14 +285,15 @@ test("the details show one copy of a failure that both reads report", async () =
     expect(frame.split("Tokiwa: AWS authentication failed").length - 1).toBe(1);
     expect(frame).toContain("sessions      --snapshot exit 1 · auth");
     expect(frame).toContain("health        health exit 1 · auth");
-    expect(frame).toContain(
-      "Recovery      l runs tokiwa login in a local view",
-    );
+    expect(frame).toContain("Recovery      l signs in in a local view");
     expect(frame).toContain("Last synced");
     expect(frame).toContain("Affected      Workspace, Health, Spend");
     expect(frame).not.toContain("Launcher");
     expect(frame).not.toContain("getcwd");
+    expect(frame).not.toContain("Profile");
   } finally {
+    if (before === undefined) delete process.env.TOKIWA_HOST_CONFIG;
+    else process.env.TOKIWA_HOST_CONFIG = before;
     await close(t, app);
   }
 });
