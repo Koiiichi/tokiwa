@@ -13,7 +13,7 @@ test("landing, focus, shortcuts and search captures stay readable at 156x40, 100
       "workspaces/workbench",
       "◇ claude-test",
       "· nightly      exited",
-      "○ setup        disconnected",
+      "○ setup        view closed",
       "◆ setup2",
       "◇ tools¹",
       "● EC2",

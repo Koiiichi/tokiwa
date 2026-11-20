@@ -318,6 +318,7 @@ const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
 
 const missing = (reason: string) => `not available (${reason})`;
 const NOT_READ = "not read";
+const UNAVAILABLE = "unavailable";
 const LAST_KNOWN = "last known";
 /** The text of a value that no read has given: `not read` under a global failure, else the reason. */
 const absent = (m: HealthViewModel, reason: string) =>
@@ -462,7 +463,8 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
     rows.push({
       kind: "pair",
       label: "Instance:",
-      value: absent(m, m.spendError || "no AWS reading yet"),
+      // A failed AWS read names its reason once, under the Spend title.
+      value: m.spendError ? (m.globalFailure ? NOT_READ : UNAVAILABLE) : absent(m, "no AWS reading yet"),
       tone: "dim",
     });
   const host = m.sample?.host;
@@ -545,6 +547,10 @@ function spend(m: HealthViewModel): Row[] {
     return unavailable("configuration is invalid");
   }
   if (!m.spend) {
+    if (m.spendError && !m.globalFailure) {
+      rows.push({ kind: "note", text: `Spend read failed: ${m.spendError}`, tone: "dim", at: "indent" });
+      return unavailable(m.spendError, UNAVAILABLE);
+    }
     const reason = m.spendError || "no AWS reading yet";
     return unavailable(reason, absent(m, reason));
   }

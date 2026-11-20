@@ -164,7 +164,7 @@ The prefix rule keeps the redraw from completing a tmux command that the user st
 
 After a detach, or after the session itself ended, the app closes the view and reads the session list again. The footer says what happened. A transport can end some seconds after a detach: if the keyboard was still in that view, it returns to the list on that row; if you are already in the list, your row stays selected. Any other view stays open.
 
-A transport that ended any other way, such as a dropped connection, keeps its view, so the connection log stays readable, and its row shows `○ disconnected`. After a minute the row shows the session on the host again; the view stays until `d` closes it. Enter on the row attaches the session again with the identity of the last snapshot. The app never reconnects on its own.
+A transport that ended any other way, such as a dropped connection, keeps its view, so the connection log stays readable, and its row shows `○ view closed`. After a minute the row shows the session on the host again; the view stays until `d` closes it. Enter on the row attaches the session again with the identity of the last snapshot. The app never reconnects on its own.
 
 ## Clipboard writes
 

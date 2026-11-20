@@ -221,7 +221,7 @@ export const STATUS_WORD: Record<RowState, string> = {
   output: "",
   quiet: "",
   "needs-you": "needs you",
-  disconnected: "disconnected",
+  disconnected: "view closed",
   exited: "exited",
   starting: "starting",
   unknown: "",
@@ -231,7 +231,7 @@ export const LEGEND: { glyph: string; label: string; tone: Tone }[] = [
   ...(["output", "quiet", "needs-you", "disconnected", "exited"] as const).map(
     (state) => ({
       glyph: STATUS_GLYPH[state],
-      label: state === "needs-you" ? "needs you" : state,
+      label: STATUS_WORD[state] || state,
       tone: STATUS_TONE[state],
     }),
   ),
@@ -354,7 +354,7 @@ const STATE_GUIDE: Record<RowState, (name: string) => string> = {
     `quiet · the screen of ${name} did not change since the last read`,
   "needs-you": (name) =>
     `needs you · ${name} asked for a person, or rang the bell while no client viewed it`,
-  disconnected: () => "disconnected · this app's view ended; enter reconnects",
+  disconnected: () => "view closed · this app's view ended; enter reconnects",
   exited: (name) => `exited · every process of ${name} ended`,
   starting: (name) => `starting · the workstation creates ${name}`,
   unknown: (name) =>
@@ -366,7 +366,7 @@ const STATE_SHORT: Record<RowState, (name: string) => string> = {
   output: () => "output · the screen changed",
   quiet: () => "quiet · no change since the last read",
   "needs-you": (name) => `needs you · ${name} is waiting for a person`,
-  disconnected: () => "disconnected · enter reconnects",
+  disconnected: () => "view closed · enter reconnects",
   exited: () => "exited · every process ended",
   starting: () => "starting",
   unknown: () => "no reading yet",

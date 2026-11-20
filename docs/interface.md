@@ -81,7 +81,7 @@ While a failure of the whole link is active, one band of two rows under the head
 
 | First row | Second row | Cause | Key |
 | --- | --- | --- | --- |
-| `▲ AWS sign-in expired` | `Live status unavailable. Last synced {when}.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band is one row: `Signing in… finish in the browser`. |
+| `▲ AWS sign-in expired` | `Live status unavailable. Last synced {when}.` | The launcher reported that the AWS sign-in expired or did not complete. | `l` signs in. While the sign-in runs, the band is one row: `Signing in… finish in the browser`. After the sign-in, the band says `▲ Refreshing…` with `Signed in. Reading the workstation again.` until a fresh read succeeds; if a read that started after the sign-in fails with the sign-in, the band names the failure again with `The refresh after sign-in failed.`, and the last known state stays; another failure, for example a stopped workstation, shows its own guidance. |
 | `▲ AWS cannot be reached from this Mac`, `▲ An AWS request failed`, `▲ An AWS request did not finish` | `Showing the last known state from {when}. Retrying every 30 s.` | The launcher reported a network failure in its AWS access check, a read took longer than 90 seconds, a request failed after the access check passed, or the workbench check ended with a status other than Failed. The workstation state is unknown. | `u` retries. |
 | `▲ The workstation is stopped` | `Start it in AWS, then press u. Last synced {when}.` | The launcher found the host in another state than running, for example `stopped`. | `u` retries. |
 | `▲ The workbench server is not ready` | `Tokiwa retries every 30 s. Last synced {when}.` | The workbench check on the host returned Failed. | `u` retries. |
@@ -99,7 +99,8 @@ Each key hint at the right of the band is also a button. A click on `l sign in` 
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Last synced   Nov 13 21:20 · 41h ago                                     │
 │ Affected      Workspace, Health, Spend                                   │
-│ Recovery      l runs tokiwa login in a local view                        │
+│ Profile       profile-a                                                  │
+│ Recovery      l signs in, or run aws sso login --profile profile-a       │
 │                                                                          │
 │ sessions      --snapshot exit 1 · auth · 14:20                           │
 │ health        health exit 1 · auth · 14:20                               │
@@ -109,7 +110,7 @@ Each key hint at the right of the band is also a button. A click on `l sign in` 
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The facts come first. Then one row per failed source gives its launcher command, exit code, the category or kind, and the time. Then one copy of the launcher's own text, the last six lines, without the `Launcher … exited N:` prefix. Recovery is tracked for each source. After a sign-in succeeds, or when a read of any source succeeds while a failure of the whole link is active, the app reads each source that is not live at once: the sessions, Health, and spend in that Health read. The band clears when one source succeeds. Each source stays `last known` until its own read succeeds. The details box closes, and a bottom-bar notice about the cleared failure ends. A failure notice also ends when the same action succeeds on a retry. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
+The facts come first. For an expired sign-in, `Profile` names the `profile=` of the host settings file, and `Recovery` gives the command that signs in without the app; without a profile, `Recovery` says `l runs tokiwa login in a local view`. Then one row per failed source gives its launcher command, exit code, the category or kind, and the time. Then one copy of the launcher's own text, the last six lines, without the `Launcher … exited N:` prefix. Recovery is tracked for each source. After a sign-in succeeds, or when a read of any source succeeds while a failure of the whole link is active, the app reads each source that is not live at once: the sessions, Health, and spend in that Health read. The band clears when one source succeeds. Each source stays `last known` until its own read succeeds. The details box closes, and a bottom-bar notice about the cleared failure ends. A failure notice also ends when the same action succeeds on a retry. The app also writes each new failure, to the error log with its source, kind, command, exit code and raw message. See [Files](configuration.md#files).
 
 ## Session list
 
@@ -158,7 +159,7 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 | `◆` | Mint, throbs | Output. An attached view printed in the last 2 seconds, or a pane screen changed between the last two live snapshots of the session. |
 | `◇` | Dim | Quiet. No pane screen changed since the last read. |
 | `◈` | Amber; dim on a row of a stale snapshot with no connected view | Needs you. A program in the session ran `tokiwa-attention`, or a window rang the bell while no client viewed it. Bringing the session forward clears it; an attach anywhere clears the mark of `tokiwa-attention`, and `tokiwa-attention --clear` clears it from inside. |
-| `○` | Amber | Disconnected. The connection of this app's view dropped. After a minute the row shows the session on the host again. Enter attaches it again. |
+| `○` | Amber | View closed. This app's view of the session ended, for example because its connection dropped; the session itself can still run. After a minute the row shows the session on the host again. Enter attaches it again. |
 | `·` | Dim | Exited. Every pane of the session ended, or a local shell ended. |
 | (empty) | — | No reading yet, the snapshot did not include the pane activity, or the snapshot is not live (a read failed or is older than 90 s). A row with an attached, connected view keeps its own glyph, and `◈` stays. After a stale period, `◆` and `◇` return only after two live reads, 5 s apart. |
 | `¹` | Dim | After the name: the number of clients attached elsewhere. |

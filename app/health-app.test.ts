@@ -180,9 +180,8 @@ test("an older launcher without a spend command says why, with no band", async (
     app.drawHealth();
     await t.renderOnce();
     const frame = t.captureCharFrame();
-    expect(frame).toContain(
-      "Spent so far:   not available (the launcher has no spend command",
-    );
+    expect(frame).toContain("Spent so far:   unavailable");
+    expect(frame).toContain("Spend read failed: the launcher has no spend command");
     expect(frame).not.toContain("not read");
     expect(app.sources.spend.failure?.kind).toBe("failed");
     expect(app.currentError()).toBeUndefined();

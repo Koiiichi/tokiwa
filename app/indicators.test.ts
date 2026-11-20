@@ -132,7 +132,7 @@ test("a session that asks for a person needs you until it is brought forward, th
   }
 });
 
-test("a transport that ends shows the session as disconnected", async () => {
+test("a transport that ends shows the session as view closed", async () => {
   const w = await workspace();
   w.transports.setup = ["/bin/sh", "-c", "exit 0"];
   try {
@@ -140,7 +140,7 @@ test("a transport that ends shows the session as disconnected", async () => {
     for (let i = 0; i < 50 && !w.app.shells[0].exited; i++) await pause(20);
     w.app.updateActivity();
     await w.t.renderOnce();
-    expect(w.row("setup")).toMatch(/○ setup +disconnected/);
+    expect(w.row("setup")).toMatch(/○ setup +view closed/);
   } finally {
     await w.dispose();
   }
@@ -161,11 +161,11 @@ test("a dropped view's row returns to its session state after a minute", async (
   try {
     await w.attach("setup");
     await ended(w);
-    expect(w.row("setup")).toMatch(/○ setup +disconnected/);
+    expect(w.row("setup")).toMatch(/○ setup +view closed/);
     w.app.shells[0].endedAt = w.app.now() - 61000;
     w.app.updateActivity();
     await w.t.renderOnce();
-    expect(w.row("setup")).not.toContain("disconnected");
+    expect(w.row("setup")).not.toContain("view closed");
     expect(w.app.shells).toHaveLength(1);
   } finally {
     await w.dispose();
@@ -179,7 +179,7 @@ test("a detach closes the view and returns to the list", async () => {
     await w.attach("setup");
     await ended(w);
     expect(w.app.shells).toEqual([]);
-    expect(w.row("setup")).not.toContain("disconnected");
+    expect(w.row("setup")).not.toContain("view closed");
     const frame = w.t.captureCharFrame();
     expect(frame).toContain("No session attached");
     expect(frame).toContain("detached setup · it keeps running");
@@ -213,7 +213,7 @@ test("the word detached in old output does not close the view", async () => {
     await w.attach("setup");
     await ended(w);
     expect(w.app.shells).toHaveLength(1);
-    expect(w.row("setup")).toMatch(/○ setup +disconnected/);
+    expect(w.row("setup")).toMatch(/○ setup +view closed/);
   } finally {
     await w.dispose();
   }
@@ -231,7 +231,7 @@ test("d closes the view of a dropped connection", async () => {
     await pause();
     await w.t.renderOnce();
     expect(w.app.shells).toEqual([]);
-    expect(w.row("setup")).not.toContain("disconnected");
+    expect(w.row("setup")).not.toContain("view closed");
   } finally {
     await w.dispose();
   }

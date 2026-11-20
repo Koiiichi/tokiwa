@@ -76,7 +76,7 @@ test("the Status group is a column of the sheet: each glyph in the tone of its s
       "◆  output",
       "◇  quiet",
       "◈  needs you",
-      "○  disconnected",
+      "○  view closed",
       "·  exited",
       "¹  other clients",
     ])

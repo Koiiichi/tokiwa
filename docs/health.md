@@ -19,7 +19,7 @@ The last line gives the time of the sample and its age, for example `Sampled 14:
 
 The spend reading is current for 30 minutes after a successful read. After that, or after a failed read, its values stay and the title says `last known`.
 
-A value that no read has given says `not read` while a failure speaks for the whole link (the sign-in is gone, the network is down, the host is stopped or the launcher is too old for the app). A launcher that lacks only the spend command is no such failure: the Spend rows say `not available` with that reason. Without such a failure, missing data shows as `not available` with the reason, never as zero:
+A value that no read has given says `not read` while a failure speaks for the whole link (the sign-in is gone, the network is down, the host is stopped or the launcher is too old for the app). A launcher that lacks only the spend command is no such failure: the Spend section says why once, and its rows say `unavailable`. Without such a failure, missing data shows as `not available` with the reason, never as zero:
 
 | Reason | Cause |
 | --- | --- |
@@ -84,6 +84,8 @@ The estimate uses the list prices in `health.json` and the inventory that `tokiw
 | `Forecast:` | Spent so far plus the cost from now to `authorization_end` (or to the end of the month without it), with the host running and the same volumes and addresses. It shows the date, its share of `budget_usd` and the condition `if the host keeps running`. |
 
 The estimate counts nothing else. It does not count data transfer, snapshots, S3 storage (for example the workstation backups), provisioned IOPS or throughput, or tax. The note under `Month to date:` names what is counted and what is not. Spend before the current month counts only through `prior_spend_usd`.
+
+When the spend read itself fails for its own reason, the Spend section shows the reason once, as `Spend read failed: REASON` under its title, and `Instance:`, `Spent so far:`, `Forecast:` and `Month to date:` say `unavailable`.
 
 The estimate is `not available` with the reason in these cases:
 

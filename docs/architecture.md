@@ -181,7 +181,7 @@ The app keeps a small amount of state on the Mac.
 | Event | Effect |
 | --- | --- |
 | A detach | The session keeps running on the host. The app closes the view |
-| A connection drops | The session keeps running on the host. The view stays, and its row shows `○ disconnected` for a minute; Enter or `r` attaches it again, and `d` closes the view |
+| A connection drops | The session keeps running on the host. The view stays, and its row shows `○ view closed` for a minute; Enter or `r` attaches it again, and `d` closes the view |
 | The app quits | Remote sessions keep running; local shells end. The app asks first when a program runs in a local shell |
 | The service stops | Every session ends (`KillMode=control-group`). Nothing restarts the service |
 | The tmux server is down | Every helper call fails; no call starts a new server |
