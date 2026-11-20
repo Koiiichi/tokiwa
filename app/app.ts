@@ -237,7 +237,9 @@ export function awsProfile(
     join(homedir(), ".config", "tokiwa", "host.env"),
 ) {
   try {
-    return readFileSync(file, "utf8").match(/^profile=([A-Za-z0-9._:+-]+)$/m)?.[1] ?? "";
+    // The launcher keeps the last profile= line, so the app names the same one.
+    const found = [...readFileSync(file, "utf8").matchAll(/^profile=([A-Za-z0-9._:+-]+)$/gm)];
+    return found.at(-1)?.[1] ?? "";
   } catch {
     return "";
   }
@@ -398,6 +400,8 @@ export class App {
   signInShell?: Shell;
   /** After a sign-in: `refreshing` until a fresh read succeeds, `failed` when the first read after it fails. */
   afterSignIn?: "refreshing" | "failed";
+  /** When the last successful sign-in ended; only a read that starts later can fail the refresh. */
+  signInDoneAt = 0;
   /** The recovery that the band's first key hint offers, and the width of that hint in cells. */
   bandAction?: "sign-in" | "retry";
   bandActionWidth = 0;
@@ -1845,10 +1849,21 @@ export class App {
     };
   }
   /** Record a failed read of one source and return its classified failure. */
-  readFailed(source: Source, error: unknown): Failure {
+  readFailed(source: Source, error: unknown, started?: number): Failure {
     const failure = classify(source, error, this.now());
     this.sources[source].fail(failure);
-    if (this.afterSignIn === "refreshing") this.afterSignIn = "failed";
+    // Only a read that started after the sign-in tests the new credentials; an older read that
+    // fails now says nothing about them. A read with no known start counts as older.
+    if (
+      this.afterSignIn === "refreshing" &&
+      started !== undefined &&
+      started >= this.signInDoneAt &&
+      this.currentError()?.scope === "global"
+    )
+      this.afterSignIn = "failed";
+    // The refresh note belongs to an expired sign-in only; another problem ends it.
+    const kind = this.currentError()?.kind;
+    if (this.afterSignIn && kind && kind !== "signed-out") this.afterSignIn = undefined;
     return failure;
   }
   /** A read of one source succeeded: its failure ends. */
@@ -1901,7 +1916,7 @@ export class App {
       ? syncedText(state.lastSuccess, this.now())
       : undefined;
     const synced = read ? `Last synced ${read}.` : "Nothing was read yet.";
-    if (state.scope === "global" && this.afterSignIn) {
+    if (state.scope === "global" && state.kind === "signed-out" && this.afterSignIn) {
       const lead = this.afterSignIn === "refreshing"
         ? "Signed in. Reading the workstation again."
         : "The refresh after sign-in failed.";
@@ -1945,11 +1960,12 @@ export class App {
       spend: "Spend",
     };
     // The profile and the command help when the built-in sign-in fails.
-    const profile = state.recovery === "sign-in" ? awsProfile() : "";
+    // Read only while the box shows: drawProblem runs several times a second.
+    const profile = state.recovery === "sign-in" && this.detailsOpen ? awsProfile() : "";
     const recovery = {
       "sign-in": profile
         ? `l signs in, or run aws sso login --profile ${profile}`
-        : "l signs in in a local view",
+        : "l runs tokiwa login in a local view",
       retry: "u reads again",
       none: "Fix it outside the app. Tokiwa reads again every 30 s",
     }[state.recovery];
@@ -2011,7 +2027,8 @@ export class App {
       this.bandSub.visible = global && !signing;
       this.bandTitle.fg =
         state.kind === "setup" ? theme.critical : theme.warning;
-      const refreshing = global && this.afterSignIn === "refreshing";
+      const refreshing =
+        global && state.kind === "signed-out" && this.afterSignIn === "refreshing";
       this.bandTitle.content = signing
         ? "▲ Signing in… finish in the browser"
         : refreshing
@@ -2124,7 +2141,6 @@ export class App {
       return;
     }
     if (this.signInShell) this.discardView(this.signInShell);
-    this.afterSignIn = undefined;
     const shell = this.startShell(
       "aws-sign-in",
       false,
@@ -2136,6 +2152,7 @@ export class App {
       return;
     }
     this.signInShell = shell;
+    this.afterSignIn = undefined;
     this.active = this.shells.indexOf(shell);
     this.listFocused = false;
     this.show("shell");
@@ -2149,7 +2166,8 @@ export class App {
       this.signInShell = undefined;
       this.discardView(shell);
       // The stale warning stays until a fresh read succeeds; until then the band says Refreshing….
-      this.afterSignIn = "refreshing";
+      this.signInDoneAt = this.now();
+      this.afterSignIn = this.currentError()?.kind === "signed-out" ? "refreshing" : undefined;
       this.drawProblem();
       this.recover();
     });
@@ -2196,7 +2214,7 @@ export class App {
       });
     } catch (e) {
       if (this.disposed) return;
-      const failure = this.readFailed("sessions", e);
+      const failure = this.readFailed("sessions", e, started);
       this.record("remote-sessions-error", {
         error: failure.detail || failure.summary,
         ...this.receiptFreshness("sessions"),
@@ -3099,27 +3117,29 @@ export class App {
     if (this.sampling || this.disposed || this.history.stopped) return;
     this.sampling = true;
     let readFailed = false;
+    const started = this.now();
     await this.history.sample(async () => {
       try {
         return await this.backend.health();
       } catch (e) {
         readFailed = true;
-        this.readFailed("health", e);
+        this.readFailed("health", e, started);
         throw e;
       }
     });
     if (this.history.gap) {
       // A sample that the history rejects (a stale timestamp) never failed in the wrapper above.
-      if (!readFailed) this.readFailed("health", this.history.error);
+      if (!readFailed) this.readFailed("health", this.history.error, started);
     } else this.readSucceeded("health");
     if (!this.disposed && this.now() - this.spendAt >= SPEND_REFRESH_MS) {
       this.spendAt = this.now();
+      const spendStarted = this.now();
       try {
         this.spend = await this.backend.spend();
         this.spendError = "";
         this.readSucceeded("spend");
       } catch (e) {
-        this.readFailed("spend", e);
+        this.readFailed("spend", e, spendStarted);
         // The last reading stays; `sources.spend` says that it is not current.
         this.spendError = spendFailure(e);
       }

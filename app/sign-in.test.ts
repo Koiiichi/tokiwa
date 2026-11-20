@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { App } from "./app";
-import { BackendClient } from "./backend";
+import { BackendClient, healthSample } from "./backend";
 import { landingSessions } from "./landing-fixture";
 import { fixtureSample, fixtureSpend } from "./health-fixture";
 
@@ -328,6 +328,115 @@ test("a failed refresh after a sign-in keeps the last known state and says so", 
     const frame = t.captureCharFrame();
     expect(frame).toContain("▲ AWS sign-in expired");
     expect(frame).toContain("The refresh after sign-in failed.");
+  } finally {
+    open();
+    await close(t, app);
+  }
+});
+
+/** An app whose reads each decide at their start whether they fail, then wait for the gate. */
+async function openTimed(login = "exit 0") {
+  const t = await createTestRenderer({ width: 100, height: 30 });
+  let release = () => {};
+  const state = {
+    error: EXPIRED as string | undefined,
+    gate: undefined as Promise<void> | undefined,
+  };
+  const backend = new BackendClient("/fixture/tokiwa", async () => {
+    const error = state.error;
+    if (state.gate) await state.gate;
+    if (error) throw new Error(error);
+    return JSON.stringify({ sessions: landingSessions });
+  });
+  backend.loginCommand = () => ["/bin/sh", "-c", login];
+  backend.health = async () => {
+    const error = state.error;
+    if (state.gate) await state.gate;
+    if (error) throw new Error(error);
+    return healthSample({ ...fixtureSample, sampled_at: Date.now() / 1000 });
+  };
+  const app = new App(t.renderer, { backend });
+  await pause();
+  await t.renderOnce();
+  const hold = () => {
+    state.gate = new Promise((resolve) => (release = () => resolve()));
+  };
+  return { t, app, state, hold, open: () => release() };
+}
+
+test("a read that started before the sign-in finished does not count as a failed refresh", async () => {
+  const { t, app, state, hold, open } = await openTimed();
+  try {
+    hold();
+    const early = app.refreshSessions();  // starts with the old, expired sign-in
+    await pause();
+    state.error = undefined;  // reads that start from now on see the new sign-in
+    app.signIn();
+    for (let i = 0; i < 100 && app.shells.length; i++) await pause(20);
+    const seen: (string | undefined)[] = [];
+    const record = app.readFailed.bind(app);
+    app.readFailed = (...args: Parameters<typeof record>) => {
+      const failure = record(...args);
+      seen.push(app.afterSignIn);
+      return failure;
+    };
+    open();
+    await early;
+    for (let i = 0; i < 100 && app.currentError(); i++) await pause(20);
+    expect(seen.length).toBeGreaterThan(0);  // the early read did fail
+    expect(seen).not.toContain("failed");
+    expect(app.currentError()).toBeUndefined();
+  } finally {
+    open();
+    await close(t, app);
+  }
+});
+
+test("a failed refresh that finds another problem shows that problem's own guidance", async () => {
+  const { t, app, state, hold, open } = await openTimed();
+  try {
+    hold();
+    state.error = "The host is stopped. No restart was requested.";
+    app.signIn();
+    for (let i = 0; i < 100 && app.shells.length; i++) await pause(20);
+    open();
+    for (let i = 0; i < 100 && app.currentError()?.kind !== "stopped"; i++) await pause(20);
+    await pause();
+    await t.renderOnce();
+    const frame = t.captureCharFrame();
+    expect(frame).toContain("▲ The workstation is stopped");
+    expect(frame).toContain("Start it in AWS, then press u.");
+    expect(frame).not.toContain("The refresh after sign-in failed.");
+  } finally {
+    open();
+    await close(t, app);
+  }
+});
+
+test("a sign-in that fails never shows Refreshing…", async () => {
+  const { t, app } = await openTimed("exit 1");
+  try {
+    app.signIn();
+    for (let i = 0; i < 100 && !app.shells[0]?.exited; i++) await pause(20);
+    await pause();
+    await t.renderOnce();
+    expect(app.afterSignIn).toBeUndefined();
+    expect(t.captureCharFrame()).not.toContain("Refreshing…");
+  } finally {
+    await close(t, app);
+  }
+});
+
+test("a refused sign-in keeps the running refresh", async () => {
+  const { t, app, hold, open } = await openTimed();
+  try {
+    hold();
+    app.signIn();
+    for (let i = 0; i < 100 && app.shells.length; i++) await pause(20);
+    expect(app.afterSignIn).toBe("refreshing");
+    for (let i = 0; i < 4; i++) app.startShell(`shell-${i}`, false);
+    app.signIn();  // refused: four views are open
+    expect(app.afterSignIn).toBe("refreshing");
   } finally {
     open();
     await close(t, app);

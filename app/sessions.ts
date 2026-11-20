@@ -231,7 +231,7 @@ export const LEGEND: { glyph: string; label: string; tone: Tone }[] = [
   ...(["output", "quiet", "needs-you", "disconnected", "exited"] as const).map(
     (state) => ({
       glyph: STATUS_GLYPH[state],
-      label: state === "needs-you" ? "needs you" : state,
+      label: STATUS_WORD[state] || state,
       tone: STATUS_TONE[state],
     }),
   ),
