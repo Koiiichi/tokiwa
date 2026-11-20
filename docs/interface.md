@@ -51,6 +51,8 @@ Until a session is attached, the right side shows `No session attached`, a line 
 
 The breadcrumb names the view. Until the first session read of the host ends, its diamond cycles through `◇ ◈ ◆ ◈`. With `TOKIWA_REDUCED_MOTION=1` it stays still.
 
+The terminal's window or tab title names the session in the pane, for example `web-lead · tokiwa`, and says `tokiwa` while no session is in the pane. When the app closes, it gives the title back to the terminal.
+
 The status at the right shows the link to the host as a dot, for example `● EC2`. A state other than `connected` follows the dot as a word. The word shows the link first (`signed out`, `offline`), then the workstation (`stopped`, `not ready`). A read that failed for its own reason, for example an invalid Health response, never changes the word. Health names this Mac in its Workstation section.
 
 | Status | Meaning |
