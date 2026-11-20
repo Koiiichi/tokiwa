@@ -2408,9 +2408,29 @@ export class App {
    * The link to the workstation as a dot and a word: ● connected, ◐ reconnecting, ○ signed out
    * or offline, ◌ before the first read. Connected needs no word. Health names this Mac.
    */
+  /** The title that the terminal last got; a redraw writes the title only when it changes. */
+  terminalTitle?: string;
+  /** Name the session in the pane in the terminal's tab, for example `web-lead · tokiwa`. */
+  drawTitle() {
+    const shell = this.shells[this.active];
+    const name = shell?.remoteName ?? shell?.name;
+    const title = name ? `${name} · tokiwa` : "tokiwa";
+    if (title === this.terminalTitle) return;
+    // The renderer refuses a title outside its running phase; the next redraw tries again.
+    if (this.setTitle(title)) this.terminalTitle = title;
+  }
+  setTitle(title: string) {
+    try {
+      this.renderer.setTerminalTitle(title);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   drawHeader() {
     if (this.disposed) return;
     this.drawLocation();
+    this.drawTitle();
     const state = this.hostState();
     const glyph =
       state === "connected"
@@ -5296,6 +5316,8 @@ export class App {
     this.renderer.keyInput.off("keypress", this.key);
     this.renderer.off("resize", this.resize);
     for (const s of this.shells) s.adapter.closeTransport();
+    // An empty title gives the tab back to the terminal's own title.
+    this.setTitle("");
     this.record("closed");
   }
   close() {

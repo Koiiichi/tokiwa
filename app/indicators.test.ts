@@ -647,3 +647,32 @@ test("an attach starts its transport in the home folder", async () => {
     await w.dispose();
   }
 });
+
+test("the terminal tab names the session in the pane, and says tokiwa with none", async () => {
+  const w = await workspace();
+  const titles: string[] = [];
+  w.app.renderer.setTerminalTitle = (title: string) => void titles.push(title);
+  try {
+    w.app.updateActivity();
+    expect(titles.at(-1) ?? "tokiwa").toBe("tokiwa");
+    await w.attach("web-lead");
+    w.app.updateActivity();
+    expect(titles.at(-1)).toBe("web-lead · tokiwa");
+    await w.attach("setup");
+    w.app.updateActivity();
+    expect(titles.at(-1)).toBe("setup · tokiwa");
+    // A redraw with no change writes no new title.
+    const count = titles.length;
+    w.app.updateActivity();
+    w.app.updateActivity();
+    expect(titles).toHaveLength(count);
+    for (const shell of [...w.app.shells]) w.app.discardView(shell);
+    w.app.updateActivity();
+    expect(titles.at(-1)).toBe("tokiwa");
+    // On exit the app hands the title back to the terminal.
+    w.app.cleanup();
+    expect(titles.at(-1)).toBe("");
+  } finally {
+    await w.dispose();
+  }
+});
