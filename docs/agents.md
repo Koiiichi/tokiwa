@@ -210,7 +210,9 @@ Of the Claude Code hooks of Tokiwa, this is the only synchronous one: Claude Cod
 
 A task in the command line of `create --run`, for example `create --run 'claude "TASK"'`, has no label: the agent gets `TASK` as its first prompt, as if the owner typed it. The `run` class gates it, because the line is a shell command. The labelled way to give a task is `agent send` after the agent is idle, as [Drive a session](#drive-a-session) does.
 
-Codex runs its hooks only from the first prompt of a session, so a new Codex session reports no state and `agent send` refuses it with `The agent is not idle.` Start Codex with a first prompt that is not the task, for example `create --run 'codex "Reply with the single word ready."'`, and send the task with `agent send` after it is idle.
+Codex runs its hooks only from the first prompt of a session, so a new Codex session reports no state and `agent send` refuses it with `The agent is not idle.` Start Codex with a first prompt that is not the task, for example `create --run 'codex --no-daemon "Reply with the single word ready."'`, and send the task with `agent send` after it is idle. To resume a conversation, use `codex resume --no-daemon SESSION_ID "PROMPT"`.
+
+Start each Codex session on the host with `--no-daemon`. Without it, the Codex window hands its commands to the shared Codex background server of the account. That server keeps the environment of the session that started it, so the commands lack the session's own `TOKIWA_CACHE` and `TMPDIR`, and the Codex sandbox does not let them write to the session's cache folder; a write there fails with `Read-only file system`. A restart of the Codex window does not restart the server. With `--no-daemon`, the window runs the commands with its own environment. The flag turns off Codex's remote control and the continuation of a turn after the window closes; in a Tokiwa session the window stays open in tmux.
 
 ## Relaunch an agent with a settings file
 
