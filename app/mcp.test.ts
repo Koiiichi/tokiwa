@@ -260,10 +260,13 @@ test("a control tool needs --allow control, and a run tool needs --allow run", a
   expect(freeze.annotations?.destructiveHint).toBe(true);
 });
 
-test("tokiwa_cp needs --allow control and passes an absolute local path or a remote path", async () => {
+test("tokiwa_cp needs --allow files and passes an absolute local path or a remote path", async () => {
   const none = await connect(() => "");
   expect(await names(none.client)).not.toContain("tokiwa_cp");
-  const { calls, call, client } = await connect(() => '{"path": "/x"}', { allow: ["control"] });
+  // Session control alone gives no file access on the Mac.
+  const control = await connect(() => "", { allow: ["control"] });
+  expect(await names(control.client)).not.toContain("tokiwa_cp");
+  const { calls, call, client } = await connect(() => '{"path": "/x"}', { allow: ["files"] });
   expect(await names(client)).toContain("tokiwa_cp");
   await call("tokiwa_cp", { source: "/Users/me/report.pdf", destination: "lead:docs/" });
   await call("tokiwa_cp", { source: "host:/srv/out.json", destination: "/Users/me/", force: true });
@@ -302,6 +305,8 @@ test("--allow takes control and run, and refuses anything else", () => {
   expect(parseAllow([])).toEqual([]);
   expect(parseAllow(["--allow", "control"])).toEqual(["control"]);
   expect(parseAllow(["--allow", "control,run"])).toEqual(["control", "run"]);
+  expect(parseAllow(["--allow", "files"])).toEqual(["files"]);
+  expect(parseAllow(["--allow", "control,run,commands,answer,files"])).toHaveLength(5);
   for (const bad of [
     ["--allow"],
     ["--allow", "human"],
@@ -317,7 +322,7 @@ test("--allow takes commands, and refuses a class that does not exist", () => {
     "control",
   ]);
   expect(() => parseAllow(["--allow", "shell"])).toThrow(
-    "Use tokiwa mcp, or tokiwa mcp --allow with control, run, commands or answer, joined by commas.",
+    "Use tokiwa mcp, or tokiwa mcp --allow with control, run, commands, answer or files, joined by commas.",
   );
 });
 

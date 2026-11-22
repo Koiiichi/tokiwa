@@ -1440,7 +1440,7 @@ esac
         self.assertEqual(self.run_payload(), {'entry': 'review-pr', 'args': {'pr': '$(id);x'}})
 
     def test_help_names_each_class_of_mcp(self):
-        self.assertIn('mcp [--allow control,run,commands,answer] [--actor NAME]', self.run_cli('--help').stdout)
+        self.assertIn('mcp [--allow control,run,commands,answer,files] [--actor NAME]', self.run_cli('--help').stdout)
 
     def test_commands_is_plain(self):
         result = self.run_cli('commands')
@@ -1637,6 +1637,40 @@ class Copy(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('does not exist', result.stderr)
         self.assertEqual(list(self.local.iterdir()), [])
+
+    def test_an_mcp_copy_uses_only_the_default_folder_on_this_mac(self):
+        self.env['TOKIWA_VIA'] = 'mcp'
+        secret = self.home / '.aws'
+        secret.mkdir()
+        (secret / 'credentials').write_bytes(b'key')
+        result = self.run_cli('cp', str(secret / 'credentials'), 'lead:')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('An MCP copy can use only', result.stderr)
+        self.assertEqual(self.s3_calls(), [])
+        # The default folder exists after the refusal, so the owner can see where copies go.
+        allowed = self.home / 'Tokiwa/transfers'
+        self.assertTrue(allowed.is_dir())
+        (allowed / 'ok.txt').write_bytes(b'ok')
+        self.assertEqual(self.run_cli('cp', str(allowed / 'ok.txt'), 'lead:').returncode, 0)
+        # A link inside the folder that leads out of it is refused after it is followed.
+        (allowed / 'creds').symlink_to(secret / 'credentials')
+        self.assertIn('An MCP copy can use only', self.run_cli('cp', str(allowed / 'creds'), 'lead:').stderr)
+
+    def test_an_mcp_download_goes_only_into_a_listed_folder(self):
+        self.env['TOKIWA_VIA'] = 'mcp'
+        self.remote(b'new', {'kind': 'file', 'name': 'a.txt', 'files': 1, 'mode': 0o644})
+        result = self.run_cli('cp', 'lead:a.txt', str(self.local))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('An MCP copy can use only', result.stderr)
+        self.assertEqual(list(self.local.iterdir()), [])
+        (self.home / '.config/tokiwa/transfer-dirs').write_text(f'# folders for MCP copies\n{self.local}\n')
+        self.assertEqual(self.run_cli('cp', 'lead:a.txt', str(self.local)).returncode, 0, )
+        self.assertEqual((self.local / 'a.txt').read_bytes(), b'new')
+
+    def test_a_copy_from_the_command_line_has_no_folder_limit(self):
+        source = self.home / 'anywhere.txt'
+        source.write_bytes(b'x')
+        self.assertEqual(self.run_cli('cp', str(source), 'lead:').returncode, 0)
 
     def test_usage_errors_make_no_aws_call(self):
         cases = [

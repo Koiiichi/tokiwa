@@ -53,13 +53,13 @@ export interface Table {
 }
 
 /** The classes that --allow can add. Read tools need no flag; human commands are never tools. */
-const OPT_IN = ["control", "run", "commands", "answer"];
+const OPT_IN = ["control", "run", "commands", "answer", "files"];
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 const USAGE =
-  "Use tokiwa mcp, or tokiwa mcp --allow with control, run, commands or answer, joined by commas.";
+  "Use tokiwa mcp, or tokiwa mcp --allow with control, run, commands, answer or files, joined by commas.";
 
 /**
- * Read `[--allow control,run,commands,answer] [--actor NAME]` from the arguments of `tokiwa mcp`.
+ * Read `[--allow control,run,commands,answer,files] [--actor NAME]` from the arguments of `tokiwa mcp`.
  * Each option appears at most once, in either order.
  */
 export function parseOptions(argv: string[]) {
@@ -82,7 +82,7 @@ export function parseOptions(argv: string[]) {
   return { allow: allow ?? [], actor };
 }
 
-/** Read `--allow control,run,commands,answer` from the arguments of `tokiwa mcp`. */
+/** Read `--allow control,run,commands,answer,files` from the arguments of `tokiwa mcp`. */
 export function parseAllow(argv: string[]) {
   return parseOptions(argv).allow;
 }

@@ -119,11 +119,12 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
   status        Check AWS access, host state and the workbench server
   --check       Same as status
   login         Sign in to AWS with the profile of the host settings
-  mcp [--allow control,run,commands,answer] [--actor NAME]
+  mcp [--allow control,run,commands,answer,files] [--actor NAME]
                 Run the MCP server for local agents: read tools, and with --allow the tools
                 that change sessions (control), run a command line on the host (run),
-                run an entry of the owner's command list (commands) or answer an agent's
-                question (answer). --actor sets TOKIWA_ACTOR for the tools that need an actor
+                run an entry of the owner's command list (commands), answer an agent's
+                question (answer) or copy files in the listed folders of this Mac (files).
+                --actor sets TOKIWA_ACTOR for the tools that need an actor
   shell         Open or select a terminal without the dashboard
   admin         Open the existing administrator shell
 
@@ -448,16 +449,16 @@ PY_RUN
   while [[ $# -gt 0 ]]; do
    case $1 in
     --allow)
-     [[ -z $allow_seen && $# -ge 2 && $2 =~ ^(control|run|commands|answer)(,(control|run|commands|answer)){0,3}$ ]] \
+     [[ -z $allow_seen && $# -ge 2 && $2 =~ ^(control|run|commands|answer|files)(,(control|run|commands|answer|files)){0,4}$ ]] \
       && IFS=, read -ra picked <<<"$2" \
       && [[ $(printf '%s\n' "${picked[@]}" | sort -u | wc -l) -eq ${#picked[@]} ]] \
-      || fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands or answer, joined by commas, each once.'
+      || fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands, answer or files, joined by commas, each once.'
      allow_seen=1; shift 2 ;;
     --actor)
      [[ -z $actor_seen && $# -ge 2 && $2 =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] \
       || fail 'Use mcp [--allow CLASSES] [--actor NAME]: NAME is 1 to 64 letters, digits, dots, colons, hyphens or underscores.'
      actor_seen=1; shift 2 ;;
-    *) fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands or answer, joined by commas, each once.' ;;
+    *) fail 'Use mcp [--allow CLASSES] [--actor NAME]: CLASSES are control, run, commands, answer or files, joined by commas, each once.' ;;
    esac
   done
   ;;
@@ -700,6 +701,24 @@ def sha256_of(path):
             size += len(chunk)
     return digest.hexdigest(), size
 
+def allowed(given, direction, listing, default):
+    """Refuse a local path of an MCP copy outside the folders that the owner listed."""
+    try:
+        lines = Path(listing).read_text().splitlines()
+        folders = [os.path.expanduser(l.strip()) for l in lines if l.strip() and not l.strip().startswith("#")]
+    except FileNotFoundError:
+        os.makedirs(default, mode=0o700, exist_ok=True)
+        folders = [default]
+    given = Path(given)
+    real = Path(os.path.realpath(given))
+    if direction == "down" and not real.is_dir():
+        real = Path(os.path.realpath(given.parent))
+    for folder in folders:
+        root = Path(os.path.realpath(folder))
+        if folder.startswith("/") and (real == root or real.is_relative_to(root)):
+            return
+    sys.exit(f"An MCP copy can use only the folders that {listing} lists (without the file: {default}). Nothing was copied.")
+
 def check(given):
     given = Path(given)
     real = Path(os.path.realpath(given))
@@ -831,7 +850,7 @@ def place(report, target, part, force):
     print(json.dumps({"path": str(target), "kind": report["kind"], "files": files, "bytes": size, "sha256": sha256}))
 
 step = sys.argv[1]
-{"check": check, "stream": stream, "prepare": prepare, "place": place}[step](*sys.argv[2:])
+{"allowed": allowed, "check": check, "stream": stream, "prepare": prepare, "place": place}[step](*sys.argv[2:])
 PY_CP
   quote() { python3 -I -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$@"; }
   field() { python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"; }
@@ -847,6 +866,11 @@ PY_CP
   cp_id=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
   pipe=/opt/agent-platform/rootless/tokiwa-s3-pipe.py
   ready='systemctl is-active --quiet cloud-workbench.service user@2200.service'
+  # An agent through the MCP server reaches only the folders that the owner listed on this Mac; a
+  # person at the command line or in the app reaches every folder.
+  if [[ $via == mcp ]]; then
+   python3 -I -c "$cp_program" allowed "$cp_local" "$cp_direction" "$HOME/.config/tokiwa/transfer-dirs" "$HOME/Tokiwa/transfers" || exit 1
+  fi
   if [[ $cp_direction == up ]]; then
    facts=$(python3 -I -c "$cp_program" check "$cp_local") || exit 1
    paste_key=inputs/transfers/$cp_id
