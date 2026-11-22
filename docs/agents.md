@@ -9,6 +9,7 @@ A local agent reaches Tokiwa in one of two ways: the `tokiwa` command, for an ag
 | `answer` | an answer to an agent's question, `agent answer` | yes | only with `tokiwa mcp --allow answer` |
 | `run` | a command that runs on the host, `create --run`, `agent relaunch` | yes | only with `tokiwa mcp --allow run` |
 | `commands` | an entry of the owner's command list, run on the host | yes | only with `tokiwa mcp --allow commands` |
+| `files` | a copy between this Mac and the host, `cp` | yes | only with `tokiwa mcp --allow files`, and only in the listed folders of this Mac |
 | `human` | sign-in, `secret`, `admin`, an attached view | yes, for a person | never |
 
 The checks are in the host helper, so they are the same for both: each argument, and the identity of the session that a command names. Tokiwa does not decide which agent may run what. The agent's own tool approves each command or tool call, as it does for `git`; see [Trust](#trust).
@@ -47,7 +48,7 @@ command = "HOME/.local/bin/tokiwa"
 args = ["mcp"]
 ```
 
-Add `--allow control`, `--allow run`, `--allow commands`, `--allow answer` or a list such as `--allow control,commands` after `mcp` to offer those tools. `--actor NAME` sets `TOKIWA_ACTOR` for the server's calls, and so names the caller of `tokiwa_agent_send`, `tokiwa_agent_answer`, `tokiwa_claim` and `tokiwa_release`. It takes 1 to 64 letters, digits, dots, colons, hyphens or underscores, and it replaces a value that the client passes down. Without it, the calls use the `TOKIWA_ACTOR` of the server's environment, for example a value that the client passes down. Only when that environment has no valid actor do those four tools refuse, with the launcher's message. The server refuses a bad option and does not start. The server marks them as destructive, so a client that asks before such tools asks before each call. A running agent sees the tools after it starts again or reconnects its MCP servers.
+Add `--allow control`, `--allow run`, `--allow commands`, `--allow answer`, `--allow files` or a list such as `--allow control,commands` after `mcp` to offer those tools. `--actor NAME` sets `TOKIWA_ACTOR` for the server's calls, and so names the caller of `tokiwa_agent_send`, `tokiwa_agent_answer`, `tokiwa_claim` and `tokiwa_release`. It takes 1 to 64 letters, digits, dots, colons, hyphens or underscores, and it replaces a value that the client passes down. Without it, the calls use the `TOKIWA_ACTOR` of the server's environment, for example a value that the client passes down. Only when that environment has no valid actor do those four tools refuse, with the launcher's message. The server refuses a bad option and does not start. The server marks them as destructive, so a client that asks before such tools asks before each call. A running agent sees the tools after it starts again or reconnects its MCP servers.
 
 ## Tools
 
@@ -80,7 +81,6 @@ With `--allow control`:
 | `tokiwa_release` | `name`, `identity` | The output of `tokiwa release`. |
 | `tokiwa_end` | `name`, `identity` | The output of `tokiwa end`, which refuses while a client that can type is attached. The tool has no `--attached-ok`. |
 | `tokiwa_create` | `name`, `dir`, `project` | The output of `tokiwa create NAME --dir DIR --subfolder NAME --project PROJECT`: a session with a shell, in its own folder inside the project folder. Take `dir` from the projects of `tokiwa_sessions`. |
-| `tokiwa_cp` | `source`, `destination`, optional `force` | The output of `tokiwa cp --json [--force] SOURCE DESTINATION`: `path`, `kind`, `files`, `bytes` and `sha256`. A local side must be an absolute path. See [Copy a file or a directory](#copy-a-file-or-a-directory). |
 
 With `--allow answer`:
 
@@ -93,6 +93,12 @@ With `--allow run`:
 | Tool | Input | Result |
 | --- | --- | --- |
 | `tokiwa_launch` | `name`, `dir`, `project`, `command` | The same, with `--run COMMAND`: the command line is typed into the new session's shell. |
+
+With `--allow files`:
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `tokiwa_cp` | `source`, `destination`, optional `force` | The output of `tokiwa cp --json [--force] SOURCE DESTINATION`: `path`, `kind`, `files`, `bytes` and `sha256`. A local side must be an absolute path. See [Copy a file or a directory](#copy-a-file-or-a-directory). |
 
 With `--allow commands`:
 
@@ -364,7 +370,7 @@ The launcher waits up to 40 seconds for a `run` or `run-status` call to end on t
 
 ## Copy a file or a directory
 
-`tokiwa cp [--force] [--json] SOURCE DEST` (core, class `control`) copies one file or directory between this Mac and the host, in either direction. The MCP tool is `tokiwa_cp`, with `--allow control`; it always gives the JSON form and accepts only an absolute path on this Mac, since the folder of the server is not the caller's. A copy may take up to one hour; the other calls stop after 90 seconds. One side is local, relative to the current folder; the other is `SESSION:PATH`, where PATH is relative to the folder of the session's active pane, or `host:/PATH`. Write a local name that holds a colon as `./NAME`, as with `scp`.
+`tokiwa cp [--force] [--json] SOURCE DEST` (core, class `files`) copies one file or directory between this Mac and the host, in either direction. The MCP tool is `tokiwa_cp`, with `--allow files`; it always gives the JSON form and accepts only an absolute path on this Mac, since the folder of the server is not the caller's. A copy through the MCP server also uses only the folders of this Mac that `~/.config/tokiwa/transfer-dirs` lists, one absolute path or `~/` path on each line, after every link is followed. Without that file the one folder is `~/Tokiwa/transfers`, which the first such copy creates. A copy from the command line or the app has no such limit. A copy may take up to one hour; the other calls stop after 90 seconds. One side is local, relative to the current folder; the other is `SESSION:PATH`, where PATH is relative to the folder of the session's active pane, or `host:/PATH`. Write a local name that holds a colon as `./NAME`, as with `scp`.
 
 ```sh
 tokiwa cp report.pdf worker-a:docs/
@@ -399,7 +405,7 @@ Tokiwa trusts each program that can run it as it trusts you. The command and the
 
 `--allow commands` alone gives no free command line. The tool runs only what the owner listed on the host, with arguments of the shape that the entry fixes, and `tokiwa_launch` stays in the `run` class. But an entry runs as `agent-workspace`, the same user as the sessions, so a listed command has the trust of a command that you type in a session. It can reach the model sign-ins and the saved secrets through the processes of the sessions, also with `home: none`, which hides them only from a read by path. List only commands that you would run in a session; see [the command list](host.md#the-command-list).
 
-Allow the read commands and tools without a question if you like. Keep each `control`, `answer`, `run` and `commands` command asking: an agent that reads a screen can meet text that tries to steer it, so your approval is the check before it changes a session.
+Allow the read commands and tools without a question if you like. Keep each `control`, `answer`, `run`, `commands` and `files` command asking: an agent that reads a screen can meet text that tries to steer it, so your approval is the check before it changes a session.
 
 A mode that approves on its own, such as Claude Code's auto mode, runs a command that you asked for without a question. An `ask` rule keeps the question in every mode. In Claude Code, add the control commands to `permissions.ask` in `~/.claude/settings.json`:
 

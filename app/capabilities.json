@@ -5,6 +5,7 @@
     "answer": "Answers an agent's question. The MCP server offers its tool only with --allow answer.",
     "run": "Runs a command on the host. The MCP server offers it only with --allow run.",
     "commands": "Runs an entry of the owner's command list on the host. The MCP server offers its tool only with --allow commands.",
+    "files": "Reads and writes files on this Mac and on the host. The MCP server offers its tool only with --allow files, and a copy through it uses only the folders that ~/.config/tokiwa/transfer-dirs lists on this Mac.",
     "human": "Needs a person or a terminal: a browser sign-in, hidden input, a root shell or an attached view. Never an MCP tool."
   },
   "patterns": {
@@ -641,7 +642,7 @@
     },
     {
       "command": "cp",
-      "class": "control",
+      "class": "files",
       "example": ["cp", "--json", "/etc/hosts", "lead:docs/"],
       "helper": "transfer-in",
       "tool": {

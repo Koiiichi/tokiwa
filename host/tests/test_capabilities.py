@@ -94,6 +94,11 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(by_name['tokiwa_commands'][0]['class'], 'read')
         self.assertEqual(by_name['tokiwa_run_status'][0]['class'], 'read')
 
+    def test_the_copy_tool_has_its_own_class(self):
+        effective = {t['name']: t.get('class', c['class']) for c, t in TOOLS}
+        self.assertEqual(effective['tokiwa_cp'], 'files')
+        self.assertEqual({n for n, k in effective.items() if k == 'files'}, {'tokiwa_cp'})
+
     def test_agent_tools_follow_the_layer_split(self):
         effective = {t['name']: t.get('class', c['class']) for c, t in TOOLS}
         for name in ['tokiwa_state', 'tokiwa_agent_state', 'tokiwa_agent_wait', 'tokiwa_agent_read']:
@@ -112,7 +117,8 @@ class Capabilities(unittest.TestCase):
 
     def test_mcp_accepts_answer_and_actor(self):
         self.stub_app()
-        for args in [('--allow', 'answer'), ('--allow', 'control,answer'), ('--actor', 'worker-a'),
+        for args in [('--allow', 'answer'), ('--allow', 'control,answer'), ('--actor', 'worker-a'), ('--allow', 'files'),
+                     ('--allow', 'control,run,commands,answer,files'),
                      ('--allow', 'answer', '--actor', 'a.b:c_d-1'), ('--actor', 'w', '--allow', 'run,answer')]:
             result = self.run_cli('mcp', *args)
             self.assertEqual((result.returncode, result.stdout), (0, 'app mcp ' + ' '.join(args)), (args, result.stderr))
