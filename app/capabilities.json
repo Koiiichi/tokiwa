@@ -639,6 +639,10 @@
       "class": "human"
     },
     {
+      "command": "cp",
+      "class": "control"
+    },
+    {
       "command": "commands",
       "class": "read",
       "example": ["commands"],

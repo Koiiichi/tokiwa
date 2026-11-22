@@ -114,7 +114,7 @@ dir agent-workspace agent-workspace 700 /srv/development/private/peermesh
 
 # The helpers and the units.
 for file in start-workbench.sh terminal-session.sh tokiwa-open; do place 0755 "$file" "$rootless/$file"; done
-for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft tokiwa-run.py tokiwa-input.py; do place 0644 "$file" "$rootless/$file"; done
+for file in agent-hooks.py tokiwa-bashrc workbench-health.py workspace-metadata.nft tokiwa-run.py tokiwa-input.py tokiwa-transfer.py tokiwa-s3-pipe.py; do place 0644 "$file" "$rootless/$file"; done
 # The command list starts empty; the owner edits it, and a later install never replaces it.
 place_once 0644 commands.json /etc/tokiwa/commands.json
 # The input key pair. The launcher encrypts message text to the certificate; only root holds the key.

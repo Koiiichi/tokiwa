@@ -27,10 +27,11 @@ audit() {
  [[ $via =~ ^(cli|mcp|app)$ ]] || via=unknown
  # The caller names itself, for example an orchestrator's session; a malformed name is left out.
  valid_actor "$actor" || actor=
- # $4 is the earlier driver that a claim replaced, and $5 the id of the pending item that an answer named.
- python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" "$actor" "${4:-}" "${5:-}" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
+ # $4 is the earlier driver that a claim replaced, $5 the id of the pending item that an answer named, and
+ # $6 a JSON object of facts that the action adds, for example the files of a transfer.
+ python3 - "$state/audit.log" "$1" "$name" "${2:-}" "$via" "${3:-}" "$actor" "${4:-}" "${5:-}" "${6:-}" <<'PY_AUDIT' || printf 'The action was not logged.\n' >&2
 import json, os, sys, time
-path, action, name, identity, via, run, actor, replaced, pending = sys.argv[1:10]
+path, action, name, identity, via, run, actor, replaced, pending, detail = sys.argv[1:11]
 os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
 entry = {'at': int(time.time()), 'action': action, 'name': name, 'identity': identity, 'via': via}
 if run:
@@ -41,6 +42,8 @@ if replaced:
     entry['replaced'] = replaced
 if pending:
     entry['pending'] = pending
+if detail:
+    entry.update(json.loads(detail))
 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), 'a') as f:
     f.write(json.dumps(entry) + '\n')
 PY_AUDIT
@@ -48,6 +51,29 @@ PY_AUDIT
 mode=${1:-shell}
 name=${2:-}
 extra=${3:-}
+if [[ $mode == transfer-in || $mode == transfer-out ]]; then
+ # One file or directory of `tokiwa cp`. The transfer program checks its arguments and every path
+ # as this user; the stream is stdin (in) or stdout (out), so nothing else may print to stdout.
+ shift
+ name=
+ transfer=(env TOKIWA_WORKDIR="$workdir" TOKIWA_SOCKET="$socket" python3 -I "$(dirname "$0")/tokiwa-transfer.py")
+ if [[ $mode == transfer-in ]]; then
+  [[ $# -eq 7 ]] || fail 'Use transfer-in DEST KIND NAME SHA256 SIZE MODE FORCE.'
+  result=$("${transfer[@]}" receive "$@") || exit 1
+  printf '%s\n' "$result"
+  audit transfer-in '' '' '' '' "$(printf '%s' "$result" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({k: r[k] for k in ("path", "kind", "files", "bytes", "sha256")}))')"
+ else
+  [[ $# -eq 1 ]] || fail 'Use transfer-out SOURCE.'
+  # stdout stays the stream on descriptor 3; stderr is kept for the report, then passed on.
+  status=0
+  { errors=$("${transfer[@]}" send "$1" 2>&1 >&3 3>&-) || status=$?; } 3>&1
+  printf '%s\n' "$errors" >&2
+  (( status == 0 )) || exit "$status"
+  report=$(printf '%s\n' "$errors" | sed -n 's/^tokiwa-transfer //p' | tail -n 1)
+  audit transfer-out '' '' '' '' "$(printf '%s' "$report" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"source": sys.argv[1], "kind": r["kind"], "files": r["files"]}))' "$1")"
+ fi
+ exit 0
+fi
 [[ $# -le 3 || ( ( $mode == capture || $mode == agent-read ) && $# -le 6 ) || ( ( $mode == agent-wait || $mode == end || $mode == claim ) && $# -le 4 ) || ( ( $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image ) && $# -le 5 ) ]] || fail 'Too many arguments.'
 case "$mode" in
  new|attach|view|ensure|project|end|create|rename|capture|interrupt|freeze|resume|state|claim|release|agent-state|agent-wait|agent-send|agent-read|agent-answer|agent-relaunch|paste-image) valid_name "$name" || fail 'Use a session name of 1 to 48 letters, digits, hyphens or underscores. Start with a letter or digit.' ;;

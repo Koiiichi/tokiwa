@@ -98,6 +98,8 @@ systemctl start cloud-workbench.service
 | `tokiwa-run.py` | `/opt/agent-platform/rootless/tokiwa-run.py` | 0644 | The command runner. Run Command starts it as root with `python3 -I`. See [The command list](#the-command-list). |
 | `commands.json` | `/etc/tokiwa/commands.json` | 0644 | The owner's command list. The installer copies an empty list (`{"entries": {}}`) only when no file exists, and never replaces it. |
 | `tokiwa-input.py` | `/opt/agent-platform/rootless/tokiwa-input.py` | 0644 | Decrypts message text. Run Command starts it as root with `python3 -I`. See [Encrypted input](#encrypted-input). |
+| `tokiwa-transfer.py` | `/opt/agent-platform/rootless/tokiwa-transfer.py` | 0644 | Receives or sends the file or directory of a copy, as the session user. See [Copy a file or a directory](#copy-a-file-or-a-directory). |
+| `tokiwa-s3-pipe.py` | `/opt/agent-platform/rootless/tokiwa-s3-pipe.py` | 0644 | Moves the bytes of a copy between S3 and `tokiwa-transfer.py`. Run Command starts it as root with `python3 -I`. |
 | `input-key.pem` | `/etc/tokiwa/input-key.pem` | 0600 | The private key for message text. The installer makes it with `openssl req -x509 -newkey rsa:3072 -nodes -days 3650` only when the file is absent, so the certificate that the Mac pinned stays valid. |
 | `input-cert.pem` | `/etc/tokiwa/input-cert.pem` | 0644 | The certificate of that key. The Mac encrypts message text to it. |
 | `tokiwa-attention` | `/usr/local/bin/tokiwa-attention` | 0755 | Marks the session that runs it as waiting for a person, so it shows `needs you` also while a client has it open, and rings the bell. An attach clears the mark; `--clear` removes it from inside. |
@@ -374,9 +376,42 @@ On success the helper exits 0 and prints one line, `{"path": "ROOT/NAME/tmp/past
 | `The image could not be downloaded to the host. Nothing was pasted.` | `curl` failed or hit the limit. |
 | `The image on the host does not match the image on the Mac. Nothing was pasted.` | The byte count or the hash is wrong. |
 
+## Copy a file or a directory
+
+`tokiwa cp` (see [Local agents](agents.md#copy-a-file-or-a-directory)) moves one file or directory through the bucket of `paste_bucket`. Two programs do the host's part:
+
+- [`tokiwa-s3-pipe.py`](../host/tokiwa-s3-pipe.py) runs as root, with the host role, which reads `inputs/*` and writes `results/*` of that bucket. `get` streams the object `inputs/transfers/<32 hex>` into the stdin of the helper; `put` streams the stdout of the helper into `results/transfers/<32 hex>` and adds the bytes and the SHA-256 to the helper's report. It refuses any other key. Root opens no path that the caller chose. The launcher deletes the object after the copy: the host role cannot delete.
+- `terminal-session.sh transfer-in DEST KIND NAME SHA256 SIZE MODE FORCE` and `terminal-session.sh transfer-out SOURCE` run [`tokiwa-transfer.py`](../host/tokiwa-transfer.py) as the session user, which does every path check and every file read and write.
+
+```sh
+tokiwa-s3-pipe.py get REGION BUCKET KEY -- terminal-session.sh transfer-in DEST KIND NAME SHA256 SIZE MODE FORCE
+tokiwa-s3-pipe.py put REGION BUCKET KEY -- terminal-session.sh transfer-out SOURCE
+```
+
+DEST and SOURCE are an absolute path or `SESSION:PATH`, where PATH is relative to the folder of the session's active pane. After every link is followed, the path must be inside the workbench folder or the session cache root. The private volume, with the home folders, the credentials and Tokiwa's state, is outside both, so a copy never reads or writes it.
+
+A received file or directory is written under a temporary name on the target disk, checked by byte count and SHA-256, and then put in place with one rename. A directory travels as a tar stream: the helper unpacks it with the `data` filter of Python's `tarfile`, which refuses absolute names, links that leave the folder and device files and drops setuid, setgid and sticky bits. It also refuses an entry outside NAME or with a `..` part, and a link whose target leaves NAME, for example the `bin/python` link of a virtual environment. No owner, ACL or extended attribute is copied. Files belong to the session user; on the state disk they get the default ACLs of the disk.
+
+A copy holds at most 10 GB and 10,000 entries. The helper refuses a copy that would leave the target disk with less than 20 % free space, the level at which the deploy guard stops. A large directory belongs in the session cache: the hourly backup of the state disk fails above 100,000 files.
+
+An existing target is refused. `FORCE` 1 replaces an existing file with one rename. A directory is never replaced. A link as the destination file is refused: name the file that it points to. A DEST that ends with `/` must be an existing folder. On failure the helper exits 1, prints one sentence and leaves no file. The sentences end with `Nothing was copied.`, for example:
+
+| Sentence | Cause |
+| --- | --- |
+| `The path is outside the workbench folder and the session cache. Nothing was copied.` | The resolved path is in neither folder. |
+| `PATH exists. Use --force to replace it. Nothing was copied.` | The target file exists and `FORCE` is 0. |
+| `PATH exists. A directory is never replaced. Nothing was copied.` | The target is a directory, or the copy is one. |
+| `The copy on the host does not match the source. Nothing was copied.` | The byte count or the hash is wrong. |
+| `The disk of FOLDER would have less than 20 % free space. Nothing was copied.` | The copy would cross the free-space limit. |
+| `The directory holds an entry outside NAME. Nothing was copied.` | A tar entry is outside NAME or has a `..` part. |
+| `No session named NAME.` | `SESSION:PATH` names no session. |
+| `PATH is a link. Name the file that it points to. Nothing was copied.` | DEST is a link. |
+
+Two limits remain. The checks and the writes are separate steps, so a program of the session user that swaps a folder for a link between them can move a write; the helper runs as that same user, so it gains only what the service sandbox of the sessions would otherwise stop. And a call that Run Command ends at its timeout, or a host that stops, can leave a hidden `.tokiwa-cp-*` file or folder in the target folder.
+
 ## Audit log
 
-The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send`, `answer` and `relaunch`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
+The helper records each control action after it succeeds: `create`, `end`, `rename`, `project`, `move-project`, `forget-project`, `name`, `interrupt`, `freeze`, `resume`, `claim`, `release`, `send`, `answer`, `relaunch`, `transfer-in` and `transfer-out`. A `transfer-in` line also has `path`, `kind`, `files`, `bytes` and `sha256`; a `transfer-out` line has `source`, `kind` and `files`. Each line of `~/.tokiwa/audit.log` of the workbench user (mode 600) is one JSON object:
 
 ```json
 {"at": 1794280000, "action": "freeze", "name": "review-a", "identity": "2171359:$33:1794270951", "via": "mcp"}

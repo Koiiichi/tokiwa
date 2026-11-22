@@ -361,6 +361,20 @@ At most 4 runs are active at one time. A start has one 12-second deadline: when 
 
 The launcher waits up to 40 seconds for a `run` or `run-status` call to end on the host. A call that the host refused fails with the host's own line, which ends `Nothing was run.` A `run` call that failed in another way (`Failed` without that line, `TimedOut`, `Cancelled`, or no end after 40 seconds) says `The run call returned STATUS. A run may have started: use tokiwa run-status with its id.` The run log on the host has the id. A `run-status` call that failed says `The run-status call returned STATUS. Nothing was changed.`
 
+## Copy a file or a directory
+
+`tokiwa cp [--force] [--json] SOURCE DEST` (core, class `control`) copies one file or directory between this Mac and the host, in either direction. It has no MCP tool. One side is local, relative to the current folder; the other is `SESSION:PATH`, where PATH is relative to the folder of the session's active pane, or `host:/PATH`. Write a local name that holds a colon as `./NAME`, as with `scp`.
+
+```sh
+tokiwa cp report.pdf worker-a:docs/
+tokiwa cp ./fixtures host:/srv/development/cache/sessions/worker-a/tmp/
+tokiwa cp worker-a:out/results.json .
+```
+
+When DEST is an existing folder, the source goes into it under its own name, as with `cp`. An existing target stays: `--force` replaces a file, and a directory is never replaced. A link as the destination file is refused, and a DEST that ends with `/` must be an existing folder. A directory that holds a link out of its own tree is refused. The result is one line, for example `Copied 1 file, 12 bytes, to host:/srv/development/cache/sessions/worker-a/tmp/report.pdf (sha256 9f86d081884c).`; with `--json`, one object with `path`, `kind`, `files`, `bytes` and `sha256`. A refusal is one sentence on stderr and exit status 1.
+
+The bytes travel through the bucket of `paste_bucket` (see [Configuration](configuration.md#host-settings)): the launcher uploads to `inputs/transfers/` or the host writes to `results/transfers/`, and the launcher deletes the object on every exit once it exists. Both sides check the byte count and the SHA-256 before the target gets its final name, so a failure leaves no partial file. A copy holds at most 10 GB and 10,000 entries. On the host it can read and write only the workbench folder and the session cache; [Copy a file or a directory](host.md#copy-a-file-or-a-directory) gives the checks. A download leaves at least 1 GB free on this Mac. A directory download needs Python 3.12 or newer on this Mac. Run Command history keeps the paths of each copy, not its contents.
+
 ## Limits
 
 **Sign-in.** Each call needs a live AWS sign-in, and an agent cannot sign in. After the sign-in expires, each call returns `The AWS sign-in expired. Ask the owner to press l in Tokiwa or run tokiwa login.`

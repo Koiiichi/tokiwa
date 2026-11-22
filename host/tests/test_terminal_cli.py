@@ -1,6 +1,9 @@
 """Check CLI routing without AWS calls or provider requests."""
 import base64
+import io
 import json
+import tarfile
+import hashlib
 import os
 import pty
 import re
@@ -38,6 +41,9 @@ case "$*" in
  *s3api\ delete-object*) [ -z "${TEST_VDEL_FAIL:-}" ] || { echo 'versioned delete failed' >&2; exit 1; } ;;
  *s3\ presign*) echo 'https://example-bucket.s3.us-east-1.amazonaws.com/inputs/clipboard/key.png?X-Amz-Signature=sig0' ;;
  *s3\ rm*) [ -z "${TEST_RM_FAIL:-}" ] || { echo 'delete failed' >&2; exit 1; } ;;
+ *s3\ cp\ -\ s3://*) cat > "$HOME/uploaded" ;;
+ *s3\ cp\ s3://*) [ -z "${TEST_DOWNLOAD_FAIL:-}" ] || exit 1; for target; do :; done; [ "$target" != --only-show-errors ] || target=$(printf '%s\n' "$@" | tail -2 | head -1); cp "$HOME/remote-fixture" "$target" ;;
+ *s3api\ head-object*) echo "${TEST_VERSION-v123}" ;;
  *send-command*)
   if [ -n "${TEST_SEND_FAIL:-}" ] && [[ $* == *paste-image* ]]; then
    echo 'Error when retrieving token from sso: Token has expired and refresh failed' >&2; exit 255
@@ -55,6 +61,11 @@ case "$*" in
    # The host input certificate; the key stays here so that a test can decrypt what was sealed.
    [ -e "$HOME/host-input-cert.pem" ] || openssl req -x509 -newkey rsa:2048 -nodes -keyout "$HOME/host-input-key.pem" -out "$HOME/host-input-cert.pem" -subj /CN=tokiwa-input -days 1 >/dev/null 2>&1
    cat "$HOME/host-input-cert.pem"
+  elif [[ $last == *'tokiwa-s3-pipe.py get '* ]]; then
+   # Act as the host: report the bytes that were uploaded, or the SHA-256 that a test sets.
+   python3 -c 'import hashlib,json,os,sys; d=open(sys.argv[1],"rb").read(); print(json.dumps({"path": "/srv/development/cache/sessions/lead/tmp/a.txt", "kind": "file", "files": 1, "bytes": len(d), "sha256": os.environ.get("TEST_REPORTED_SHA") or hashlib.sha256(d).hexdigest()}))' "$HOME/uploaded"
+  elif [[ $last == *'tokiwa-s3-pipe.py put '* ]]; then
+   cat "$HOME/remote-report.json"
   elif [[ $last == *'terminal-session.sh paste-image '* ]]; then
    echo '{"path": "/home/agent/.cache/tokiwa/lead/tmp/paste-20261118T000000Z-abcd1234.png"}'
   elif [ -n "${TEST_FETCH_FAIL:-}" ] && [[ $last == *'terminal-session.sh agent-wait '* ]]; then
@@ -1436,6 +1447,215 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(self.sent(), r'tokiwa-run\.py commands(?!\s+[A-Za-z0-9+/=])')
         self.assertFalse((self.home / 'recipient.pem').exists())
+
+
+class Copy(unittest.TestCase):
+    """`tokiwa cp` moves one file or directory through the bucket and deletes the object on every exit."""
+
+    # The stand-in AWS CLI and the runner of TerminalCLI, without running its tests again here.
+    tearDown = TerminalCLI.tearDown
+    run_cli = TerminalCLI.run_cli
+    s3_calls = TerminalCLI.s3_calls
+
+    def setUp(self):
+        TerminalCLI.setUp(self)
+        with open(self.home / '.config/tokiwa/host.env', 'a') as config:
+            config.write('paste_bucket=example-bucket\n')
+        self.local = self.home / 'local'
+        self.local.mkdir()
+
+    def call_lines(self):
+        path = self.home / 'calls'
+        return path.read_text().splitlines() if path.exists() else []
+
+    def send_line(self):
+        return [line for line in self.call_lines() if 'send-command' in line][-1]
+
+    def deleted_key(self):
+        deletes = [line for line in self.call_lines() if 'delete-object' in line or ' s3 rm ' in line]
+        self.assertEqual(len(deletes), 1, deletes)
+        return deletes[0]
+
+    def remote(self, data, report):
+        (self.home / 'remote-fixture').write_bytes(data)
+        report = dict(report, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        (self.home / 'remote-report.json').write_text(json.dumps(report))
+
+    def test_upload_of_a_file_streams_it_runs_the_root_pipe_and_deletes_the_object(self):
+        source = self.local / 'report.txt'
+        source.write_bytes(b'report bytes')
+        source.chmod(0o640)
+        result = self.run_cli('cp', str(source), 'lead:docs/')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / 'uploaded').read_bytes(), b'report bytes')
+        upload = [line for line in self.call_lines() if ' s3 cp - ' in line][0]
+        key = re.search(r's3://example-bucket/(inputs/transfers/[0-9a-f]{32}) ', upload).group(1)
+        send = self.send_line()
+        sha = hashlib.sha256(b'report bytes').hexdigest()
+        self.assertIn(f'tokiwa-s3-pipe.py get us-east-1 example-bucket {key} -- sudo -n runuser -u agent-workspace', send)
+        self.assertIn(f'terminal-session.sh transfer-in lead:docs/ file report.txt {sha} 12 640 0', send)
+        self.assertIn('"executionTimeout": ["120"]', send)
+        self.assertIn(f'delete-object --bucket example-bucket --key {key} --version-id v123', self.deleted_key())
+        self.assertEqual(result.stdout,
+                         f'Copied 1 file, 12 bytes, to host:/srv/development/cache/sessions/lead/tmp/a.txt (sha256 {sha[:12]}).\n')
+
+    def test_upload_of_a_directory_sends_a_tar_stream_and_json_on_request(self):
+        top = self.local / 'fixtures'
+        (top / 'sub').mkdir(parents=True)
+        (top / 'sub/a.txt').write_bytes(b'a')
+        result = self.run_cli('cp', '--json', str(top), 'host:/srv/development/cache/sessions/lead/tmp/')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['files'], 1)
+        with tarfile.open(self.home / 'uploaded') as archive:
+            self.assertEqual(sorted(m.name for m in archive.getmembers()), ['fixtures', 'fixtures/sub', 'fixtures/sub/a.txt'])
+            self.assertTrue(all(m.uid == 0 and m.uname == '' for m in archive.getmembers()))
+        # host:/PATH reaches the host as the absolute path alone.
+        self.assertIn(' transfer-in /srv/development/cache/sessions/lead/tmp/ dir fixtures ', self.send_line())
+
+    def test_upload_refused_by_the_host_passes_the_sentence_and_deletes_the_object(self):
+        source = self.local / 'a.txt'
+        source.write_bytes(b'x')
+        self.env.update(TEST_STATUS='Failed',
+                        TEST_STDERR='The path is outside the workbench folder and the session cache. Nothing was copied.')
+        result = self.run_cli('cp', str(source), 'host:/etc/a.txt')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('outside the workbench folder', result.stderr)
+        self.assertIn('inputs/transfers/', self.deleted_key())
+
+    def test_upload_fails_when_the_host_reports_another_sha256(self):
+        source = self.local / 'a.txt'
+        source.write_bytes(b'x')
+        self.env.update(TEST_REPORTED_SHA='0' * 64)
+        result = self.run_cli('cp', str(source), 'lead:')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('different SHA-256', result.stderr)
+
+    def test_upload_refuses_a_missing_source_before_any_s3_call(self):
+        result = self.run_cli('cp', str(self.local / 'missing'), 'lead:')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('does not exist', result.stderr)
+        self.assertEqual(self.s3_calls(), [])
+
+    def test_download_of_a_file_checks_it_places_it_and_deletes_the_object(self):
+        self.remote(b'{"ok": true}', {'kind': 'file', 'name': 'out.json', 'files': 1, 'mode': 0o600})
+        result = self.run_cli('cp', 'lead:out/out.json', str(self.local))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.local / 'out.json'
+        self.assertEqual(target.read_bytes(), b'{"ok": true}')
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        send = self.send_line()
+        key = re.search(r'tokiwa-s3-pipe\.py put us-east-1 example-bucket (results/transfers/[0-9a-f]{32}) -- ', send).group(1)
+        self.assertIn('terminal-session.sh transfer-out lead:out/out.json', send)
+        self.assertIn(f'--key {key} --version-id v123', self.deleted_key())
+        self.assertEqual([p.name for p in self.local.iterdir()], ['out.json'])
+
+    def test_download_keeps_an_existing_file_unless_forced(self):
+        self.remote(b'new', {'kind': 'file', 'name': 'a.txt', 'files': 1, 'mode': 0o644})
+        target = self.local / 'a.txt'
+        target.write_bytes(b'old')
+        result = self.run_cli('cp', 'lead:a.txt', str(target))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Use --force to replace it', result.stderr)
+        self.assertEqual(target.read_bytes(), b'old')
+        self.assertEqual(self.run_cli('cp', '--force', 'lead:a.txt', str(target)).returncode, 0)
+        self.assertEqual(target.read_bytes(), b'new')
+
+    def test_download_that_does_not_match_leaves_nothing(self):
+        self.remote(b'right', {'kind': 'file', 'name': 'a.txt', 'files': 1, 'mode': 0o644})
+        (self.home / 'remote-fixture').write_bytes(b'wrong')
+        result = self.run_cli('cp', 'lead:a.txt', str(self.local))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('does not match the source', result.stderr)
+        self.assertEqual(list(self.local.iterdir()), [])
+        self.assertIn('results/transfers/', self.deleted_key())
+
+    def test_download_of_a_directory_unpacks_it(self):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w', format=tarfile.PAX_FORMAT) as archive:
+            for name, data in (('results', None), ('results/a.txt', b'a')):
+                info = tarfile.TarInfo(name)
+                if data is None:
+                    info.type, info.mode = tarfile.DIRTYPE, 0o755
+                    archive.addfile(info)
+                else:
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+        self.remote(buffer.getvalue(), {'kind': 'dir', 'name': 'results', 'files': 2, 'mode': 0o755})
+        result = self.run_cli('cp', 'lead:results', str(self.local))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.local / 'results/a.txt').read_bytes(), b'a')
+        self.assertEqual([p.name for p in self.local.iterdir()], ['results'])
+
+    def run_in(self, folder, *args):
+        return subprocess.run(['bash', str(CLI), *args], check=False, env=self.env, capture_output=True,
+                              text=True, timeout=30, cwd=folder)
+
+    def test_relative_local_paths_are_relative_to_the_current_folder(self):
+        (self.local / 'here.txt').write_bytes(b'from the current folder')
+        (self.home / 'here.txt').write_bytes(b'from home')
+        result = self.run_in(self.local, 'cp', 'here.txt', 'lead:')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / 'uploaded').read_bytes(), b'from the current folder')
+        self.remote(b'down', {'kind': 'file', 'name': 'down.txt', 'files': 1, 'mode': 0o644})
+        self.assertEqual(self.run_in(self.local, 'cp', 'lead:down.txt', '.').returncode, 0)
+        self.assertEqual((self.local / 'down.txt').read_bytes(), b'down')
+        self.assertFalse((self.home / 'down.txt').exists())
+
+    def tar_of(self, entries):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w', format=tarfile.PAX_FORMAT) as archive:
+            for name, kind, linkname in entries:
+                info = tarfile.TarInfo(name)
+                info.type, info.linkname, info.mode = kind, linkname, 0o755
+                archive.addfile(info)
+        return buffer.getvalue()
+
+    def test_download_refuses_links_that_leave_the_copied_tree(self):
+        (self.local / 'secretdir').mkdir()
+        for linkname in ('../secretdir', '/etc'):
+            with self.subTest(linkname=linkname):
+                data = self.tar_of([('results', tarfile.DIRTYPE, ''), ('results/esc', tarfile.SYMTYPE, linkname)])
+                self.remote(data, {'kind': 'dir', 'name': 'results', 'files': 2, 'mode': 0o755})
+                result = self.run_cli('cp', 'lead:results', str(self.local))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('outside results', result.stderr)
+                self.assertEqual(sorted(p.name for p in self.local.iterdir()), ['secretdir'])
+
+    def test_download_refuses_a_size_over_the_limit_before_it_downloads(self):
+        self.remote(b'x', {'kind': 'file', 'name': 'big', 'files': 1, 'mode': 0o644})
+        report = json.loads((self.home / 'remote-report.json').read_text())
+        report['bytes'] = 11 * 1024**3
+        (self.home / 'remote-report.json').write_text(json.dumps(report))
+        result = self.run_cli('cp', 'lead:big', str(self.local))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('at most 10 GB', result.stderr)
+        self.assertEqual([line for line in self.call_lines() if ' s3 cp s3://' in line], [])
+
+    def test_download_into_a_missing_folder_with_a_slash_is_refused(self):
+        self.remote(b'x', {'kind': 'file', 'name': 'a.txt', 'files': 1, 'mode': 0o644})
+        result = self.run_cli('cp', 'lead:a.txt', f'{self.local}/missing/')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('does not exist', result.stderr)
+        self.assertEqual(list(self.local.iterdir()), [])
+
+    def test_usage_errors_make_no_aws_call(self):
+        cases = [
+            ('cp',), ('cp', 'a'), ('cp', 'a', 'b'), ('cp', 'lead:a', 'host:/b'), ('cp', '--bad', 'a', 'lead:'),
+            ('cp', 'a', 'lead:', 'extra'),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('cp', result.stderr)
+        self.assertEqual(self.call_lines(), [])
+
+    def test_without_a_bucket_it_says_how_to_set_it_up(self):
+        config = self.home / '.config/tokiwa/host.env'
+        config.write_text(config.read_text().replace('paste_bucket=example-bucket\n', ''))
+        result = self.run_cli('cp', 'a', 'lead:')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('File transfer is not set up. Set paste_bucket=', result.stderr)
 
 
 if __name__ == '__main__':

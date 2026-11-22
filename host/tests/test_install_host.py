@@ -86,6 +86,8 @@ class HostInstall(unittest.TestCase):
     def test_installer_places_tokiwa_input(self):
         out = self.install().stdout
         self.assertIn('install -D -m 0644 tokiwa-input.py /opt/agent-platform/rootless/tokiwa-input.py', out)
+        for name in ('tokiwa-transfer.py', 'tokiwa-s3-pipe.py'):
+            self.assertIn(f'install -D -m 0644 {name} /opt/agent-platform/rootless/{name}', out)
 
     def test_installer_makes_the_input_key_once(self):
         out = self.install().stdout
