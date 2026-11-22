@@ -168,10 +168,13 @@ export class BackendClient {
     for (const child of this.children) child.kill();
     this.children.clear();
   }
+  /** A copy moves up to 10 GB over the Mac's own link, so it gets more time than any other call. */
+  static readonly COPY_TIMEOUT_MS = 3600000;
   constructor(
     readonly launcher = join(process.env.HOME!, ".local/bin/tokiwa"),
     private runner?: Runner,
     private timeoutMs = 90000,
+    private copyTimeoutMs = BackendClient.COPY_TIMEOUT_MS,
   ) {}
   async call(args: string[]): Promise<string> {
     if (this.runner) return this.runner(args);
@@ -204,10 +207,11 @@ export class BackendClient {
     }
     this.children.add(p);
     let timedOut = false;
+    const limit = command === "cp" ? this.copyTimeoutMs : this.timeoutMs;
     const timer = setTimeout(() => {
       timedOut = true;
       p.kill();
-    }, this.timeoutMs);
+    }, limit);
     try {
       const [out, err, code] = await Promise.all([
         new Response(p.stdout).text(),
@@ -218,7 +222,7 @@ export class BackendClient {
         throw new Error("The response exceeds the size limit.");
       if (timedOut)
         throw new LauncherError(
-          "The launcher exceeded 90 seconds.",
+          command === "cp" ? "The copy exceeded one hour." : "The launcher exceeded 90 seconds.",
           command,
           "timeout",
           null,

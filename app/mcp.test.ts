@@ -260,6 +260,25 @@ test("a control tool needs --allow control, and a run tool needs --allow run", a
   expect(freeze.annotations?.destructiveHint).toBe(true);
 });
 
+test("tokiwa_cp needs --allow control and passes an absolute local path or a remote path", async () => {
+  const none = await connect(() => "");
+  expect(await names(none.client)).not.toContain("tokiwa_cp");
+  const { calls, call, client } = await connect(() => '{"path": "/x"}', { allow: ["control"] });
+  expect(await names(client)).toContain("tokiwa_cp");
+  await call("tokiwa_cp", { source: "/Users/me/report.pdf", destination: "lead:docs/" });
+  await call("tokiwa_cp", { source: "host:/srv/out.json", destination: "/Users/me/", force: true });
+  expect(calls).toEqual([
+    ["cp", "--json", "/Users/me/report.pdf", "lead:docs/"],
+    ["cp", "--json", "--force", "host:/srv/out.json", "/Users/me/"],
+  ]);
+  // A relative local path would depend on the folder of the server: refused before a call.
+  for (const source of ["report.pdf", "./report.pdf", "~/report.pdf", "a\nb"]) {
+    const refused = await call("tokiwa_cp", { source, destination: "lead:" });
+    expect(refused.isError).toBe(true);
+  }
+  expect(calls).toHaveLength(2);
+});
+
 test("a control tool fills its launcher command and refuses bad input before a call", async () => {
   const { calls, call } = await connect(() => "frozen", {
     table: fixture,
