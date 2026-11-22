@@ -152,7 +152,7 @@ The app runs as `bun app.ts` from [`app/run`](../app/run). It holds two kinds of
 
 | Class | File | Use | Limits |
 | --- | --- | --- | --- |
-| `BackendClient` | [`backend.ts`](../app/backend.ts) | Runs the launcher once per read or change and parses its stdout | 90 s per call; 100000 characters of output |
+| `BackendClient` | [`backend.ts`](../app/backend.ts) | Runs the launcher once per read or change and parses its stdout | 90 s per call, one hour for `cp`; 100000 characters of output |
 | `PtyAdapter` | [`pty.ts`](../app/pty.ts) | Runs `tokiwa attach NAME IDENTITY` in a PTY for each remote view; runs local shells | Four views in all |
 
 The app reads in the background on fixed timers. Each kind of read has at most one call in flight.

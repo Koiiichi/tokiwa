@@ -289,3 +289,13 @@ test("a timeout and a missing launcher are typed", async () => {
   expect(timed.reason).toBe("timeout");
   expect(timed.message).toBe("The launcher exceeded 90 seconds.");
 });
+test("a copy gets its own long time limit and its own message", async () => {
+  const slow = stub("exec sleep 5");
+  const copy = await new BackendClient(slow, undefined, 100, 150)
+    .call(["cp", "--json", "/a", "lead:"])
+    .catch((e) => e);
+  expect(copy.reason).toBe("timeout");
+  expect(copy.message).toBe("The copy exceeded one hour.");
+  // The default limit of a copy is one hour.
+  expect(BackendClient.COPY_TIMEOUT_MS).toBe(3600000);
+});

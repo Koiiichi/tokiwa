@@ -80,6 +80,7 @@ With `--allow control`:
 | `tokiwa_release` | `name`, `identity` | The output of `tokiwa release`. |
 | `tokiwa_end` | `name`, `identity` | The output of `tokiwa end`, which refuses while a client that can type is attached. The tool has no `--attached-ok`. |
 | `tokiwa_create` | `name`, `dir`, `project` | The output of `tokiwa create NAME --dir DIR --subfolder NAME --project PROJECT`: a session with a shell, in its own folder inside the project folder. Take `dir` from the projects of `tokiwa_sessions`. |
+| `tokiwa_cp` | `source`, `destination`, optional `force` | The output of `tokiwa cp --json [--force] SOURCE DESTINATION`: `path`, `kind`, `files`, `bytes` and `sha256`. A local side must be an absolute path. See [Copy a file or a directory](#copy-a-file-or-a-directory). |
 
 With `--allow answer`:
 
@@ -363,7 +364,7 @@ The launcher waits up to 40 seconds for a `run` or `run-status` call to end on t
 
 ## Copy a file or a directory
 
-`tokiwa cp [--force] [--json] SOURCE DEST` (core, class `control`) copies one file or directory between this Mac and the host, in either direction. It has no MCP tool. One side is local, relative to the current folder; the other is `SESSION:PATH`, where PATH is relative to the folder of the session's active pane, or `host:/PATH`. Write a local name that holds a colon as `./NAME`, as with `scp`.
+`tokiwa cp [--force] [--json] SOURCE DEST` (core, class `control`) copies one file or directory between this Mac and the host, in either direction. The MCP tool is `tokiwa_cp`, with `--allow control`; it always gives the JSON form and accepts only an absolute path on this Mac, since the folder of the server is not the caller's. A copy may take up to one hour; the other calls stop after 90 seconds. One side is local, relative to the current folder; the other is `SESSION:PATH`, where PATH is relative to the folder of the session's active pane, or `host:/PATH`. Write a local name that holds a colon as `./NAME`, as with `scp`.
 
 ```sh
 tokiwa cp report.pdf worker-a:docs/

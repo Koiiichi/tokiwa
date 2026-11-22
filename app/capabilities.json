@@ -13,7 +13,8 @@
     "project": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,47}){0,5}$",
     "directory": "^/[^\\u0000-\\u001f\\u007f]{0,500}$",
     "run_id": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$",
-    "entry": "^[a-z][a-z0-9_-]{0,47}$"
+    "entry": "^[a-z][a-z0-9_-]{0,47}$",
+    "copy_path": "^(/|host:/|[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}:)[^\\u0000-\\u001f\\u007f]{0,1000}$"
   },
   "capabilities": [
     {
@@ -640,7 +641,19 @@
     },
     {
       "command": "cp",
-      "class": "control"
+      "class": "control",
+      "example": ["cp", "--json", "/etc/hosts", "lead:docs/"],
+      "helper": "transfer-in",
+      "tool": {
+        "name": "tokiwa_cp",
+        "description": "Copy one file or one directory between this Mac and the Tokiwa host, in either direction, and return JSON with path, kind, files, bytes and sha256. One side is an absolute path on this Mac; the other is SESSION:PATH, relative to the folder of a session from tokiwa_sessions, or host:/PATH. On the host a copy reads and writes only the workbench folder and the session cache. An existing target stays unless force replaces a file; a directory is never replaced. At most 10 GB and 10,000 entries; a large copy can take minutes.",
+        "argv": ["cp", "--json", "{force?--force}", "{source}", "{destination}"],
+        "args": {
+          "source": { "type": "string", "pattern": "copy_path" },
+          "destination": { "type": "string", "pattern": "copy_path" },
+          "force": { "type": "flag" }
+        }
+      }
     },
     {
       "command": "commands",
