@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# The folder of the caller, for the relative local path of tokiwa cp.
+caller_dir=$PWD
 cd "$HOME"
 export PATH="$HOME/.local/lib/cloud-access:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export AWS_PAGER=''
@@ -16,12 +18,14 @@ run_offset=
 wait_timeout=600
 # One cleanup for every private temporary folder: the plain text of a message, and the key of a sealed result.
 input_dir= work= paste_file= paste_sha= paste_size= paste_bucket= paste_key= paste_version=
+# A copy: its direction, its local and remote sides, and the temporary download file next to the target.
+cp_force=0 cp_json=0 cp_direction= cp_local= cp_remote= cp_part=
 # The image object of paste-image is deleted on every exit once its upload started. On a versioned
 # bucket a plain delete only adds a delete marker, so the uploaded version is deleted by its id. If that
 # delete fails, or the bucket gave no version id, the plain delete runs. A failed delete is silent, so
 # that it never hides the first error.
 cleanup() {
- [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf "$work"
+ [[ -z $input_dir ]] || rm -rf "$input_dir"; [[ -z $work ]] || rm -rf "$work"; [[ -z $cp_part ]] || rm -f "$cp_part"
  if [[ -n $paste_key ]]; then
   if [[ -n $paste_version && $paste_version != None && $paste_version != null ]] \
    && aws_call s3api delete-object --bucket "$paste_bucket" --key "$paste_key" --version-id "$paste_version" >/dev/null 2>&1; then :
@@ -95,6 +99,10 @@ Open the dashboard. Use attach NAME to enter a terminal directly.
                 Find the latest lines that hold TEXT in a session's whole scrollback, with context, as JSON
   capture NAME IDENTITY [LINES]
                 Read the last lines of a session as JSON (1 to 200, default 60), encrypted on the way; only that exact session
+  cp [--force] [--json] SOURCE DEST
+                Copy a file or a directory between this Mac and the host. One side is SESSION:PATH, relative
+                to the folder of the session, or host:/PATH. An existing target stays unless --force replaces
+                a file. At most 10 GB and 10,000 files
   commands      List the entries of the owner's command list on the host, as JSON
   run ENTRY [NAME=VALUE]...
                 Run an entry of the command list on the host; the result is encrypted on the way
@@ -402,6 +410,33 @@ PY_RUN
   if [[ $# -eq 2 && $2 == --json ]]; then mode=--snapshot; name=
   else [[ $# -le 1 ]] || fail 'Use sessions or sessions --json.'; fi ;;
  health|spend|dashboard|--snapshot|shell|admin|list|status|--check|login|audit) [[ $# -le 1 ]] || fail 'Too many arguments.' ;;
+ cp)
+  shift
+  while [[ ${1:-} == --* ]]; do
+   case $1 in
+    --force) cp_force=1 ;;
+    --json) cp_json=1 ;;
+    *) fail 'Use cp [--force] [--json] SOURCE DEST.' ;;
+   esac
+   shift
+  done
+  [[ $# -eq 2 && -n $1 && -n $2 ]] || fail 'Use cp [--force] [--json] SOURCE DEST.'
+  # The remote side is host:/PATH or SESSION:PATH. A local name with a colon is written ./NAME, as with scp.
+  remote_side() {
+   if [[ $1 =~ ^host:(/.*)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"
+   elif [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}: ]]; then printf '%s' "$1"
+   else return 1; fi
+  }
+  if from=$(remote_side "$1"); then
+   ! remote_side "$2" >/dev/null || fail 'One side of cp is on this Mac and one is on the host.'
+   cp_direction=down cp_remote=$from cp_local=$2
+  elif to=$(remote_side "$2"); then
+   cp_direction=up cp_remote=$to cp_local=$1
+  else
+   fail 'One side of cp is on the host: SESSION:PATH or host:/PATH.'
+  fi
+  [[ $cp_local == /* ]] || cp_local=$caller_dir/$cp_local
+  name= ;;
  mcp)
   # --allow adds the tools that change a session (control), run a command line on the host (run),
   # run an entry of the owner's command list (commands) or answer an agent's question (answer):
@@ -449,6 +484,7 @@ done < "$config"
 [[ -z $account || $account =~ ^[0-9]{12}$ ]] || fail "$config: account= must be a 12-digit AWS account ID."
 [[ -z $paste_bucket || $paste_bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "$config: paste_bucket= must be an S3 bucket name."
 [[ $mode != paste-image || -n $paste_bucket ]] || fail 'Image paste is not set up. Set paste_bucket= in ~/.config/tokiwa/host.env.'
+[[ $mode != cp || -n $paste_bucket ]] || fail 'File transfer is not set up. Set paste_bucket= in ~/.config/tokiwa/host.env.'
 if [[ -n $end ]]; then
  # An end time with an offset, for example 2026-12-31T23:59:00-08:00. After it, Tokiwa starts no connection.
  end_epoch=$(python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); assert t.tzinfo; print(int(t.timestamp()))' "$end" 2>/dev/null) \
@@ -542,7 +578,7 @@ case "$mode" in
  --check) mode=status ;;
  --snapshot) mode=snapshot ;;
 esac
-if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
+if [[ $mode == cp || $mode == status || $mode == sessions || $mode == snapshot || $mode == project || $mode == health || $mode == end || $mode == claim || $mode == release || $mode == create || $mode == relabel || $mode == forget-project || $mode == name || $mode == rename || $mode == capture || $mode == secrets || $mode == secret-remove || $mode == interrupt || $mode == freeze || $mode == resume || $mode == state || $mode == agent-state || $mode == agent-wait || $mode == agent-send || $mode == agent-answer || $mode == agent-relaunch || $mode == paste-image || $mode == agent-read || $mode == audit || $mode == digest || $mode == commands || $mode == run || $mode == run-status || $mode == input-cert ]]; then
  remote="systemctl is-active --quiet cloud-workbench.service user@2200.service && $helper $mode"
  [[ $mode != health ]] || remote="$helper health"
  if [[ -n $name ]]; then
@@ -595,7 +631,7 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  # Submit command line $1 to Run Command and wait for its end. Sets id and status.
  submit() {
   local parameters
-  parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["30"]}))' "$1")
+  parameters=$(python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":[sys.argv[2]]}))' "$1" "${exec_timeout:-30}")
   id=$(aws_call ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript --parameters "$parameters" --query Command.CommandId --output text) || fail 'The host check could not be submitted.'
   status=Pending
   local attempt
@@ -609,6 +645,248 @@ if [[ $mode == status || $mode == sessions || $mode == snapshot || $mode == proj
  # A wait call holds the host for up to 20 seconds, so it gets the same time.
  tries=15
  [[ $sealed == 0 && $mode != agent-wait && $mode != agent-relaunch && $mode != paste-image ]] || tries=40
+ if [[ $mode == cp ]]; then
+  # One file or directory through the bucket: inputs/transfers/ toward the host, results/transfers/ from
+  # it. The cleanup deletes the object on every exit, as it does for an image paste. On the host, root
+  # moves the bytes between the object and the helper, and the helper does every path check.
+  read -r -d '' cp_program <<'PY_CP' || true
+import hashlib, json, os, shutil, stat, sys, tarfile, tempfile
+from pathlib import Path
+MAX_BYTES = 10 * 1024**3
+MAX_FILES = 10000
+# A stream is the content plus, for a directory, the tar headers: about 1.5 KB for each entry.
+STREAM_LIMIT = MAX_BYTES + 64 * 1024**2
+# The room that a download leaves free on this Mac.
+MARGIN = 1024**3
+CHUNK = 1024 * 1024
+LIMIT = "A transfer holds at most 10 GB. Nothing was copied."
+
+def count_tree(top):
+    entries, total = 1, 0
+    for folder, dirs, files in os.walk(top):
+        for entry in dirs + files:
+            path = Path(folder) / entry
+            info = path.lstat()
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                sys.exit(f"{path} is not a file, a folder or a link. Nothing was copied.")
+            entries += 1
+            total += info.st_size if stat.S_ISREG(info.st_mode) else 0
+            if entries > MAX_FILES:
+                sys.exit(f"The directory holds more than {MAX_FILES} entries. Nothing was copied.")
+            if total > MAX_BYTES:
+                sys.exit(LIMIT)
+    return entries, total
+
+def plain_member(member):
+    member.uid = member.gid = 0
+    member.uname = member.gname = ""
+    return member
+
+class Hashing:
+    def __init__(self, out):
+        self.out, self.size, self.digest = out, 0, hashlib.sha256()
+    def write(self, data):
+        self.size += len(data)
+        self.digest.update(data)
+        return self.out.write(data)
+    def flush(self):
+        self.out.flush()
+
+def sha256_of(path):
+    digest, size = hashlib.sha256(), 0
+    with open(path, "rb") as stream:
+        while chunk := stream.read(CHUNK):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+def check(given):
+    given = Path(given)
+    real = Path(os.path.realpath(given))
+    if not real.exists():
+        sys.exit(f"{given} does not exist. Nothing was copied.")
+    name = given.name or real.name
+    if "\n" in name:
+        sys.exit("The name has a line break. Nothing was copied.")
+    if real.is_file():
+        size = real.stat().st_size
+        if size > MAX_BYTES:
+            sys.exit(LIMIT)
+        facts = {"kind": "file", "name": name, "files": 1, "mode": real.stat().st_mode & 0o777, "size": size}
+    elif real.is_dir():
+        entries, total = count_tree(real)
+        facts = {"kind": "dir", "name": name, "files": entries, "mode": real.stat().st_mode & 0o777, "size": total}
+    else:
+        sys.exit(f"{given} is not a file or a folder. Nothing was copied.")
+    print(json.dumps(facts))
+
+def stream(given, facts, sent):
+    facts = json.loads(facts)
+    out = Hashing(sys.stdout.buffer)
+    real = os.path.realpath(given)
+    if facts["kind"] == "file":
+        with open(real, "rb") as source:
+            while chunk := source.read(CHUNK):
+                out.write(chunk)
+    else:
+        with tarfile.open(fileobj=out, mode="w|", format=tarfile.PAX_FORMAT) as archive:
+            archive.add(real, arcname=facts["name"], filter=plain_member)
+    out.flush()
+    Path(sent).write_text(json.dumps({"bytes": out.size, "sha256": out.digest.hexdigest()}))
+
+def within(name, path):
+    return (path == name or path.startswith(name + "/")) and ".." not in path.split("/")
+
+def link_within(name, member):
+    # The data filter keeps a link inside the staging folder only; NAME is one level deeper.
+    if member.issym():
+        if member.linkname.startswith("/"):
+            return False
+        return within(name, os.path.normpath(os.path.join(os.path.dirname(member.name), member.linkname)))
+    if member.islnk():
+        return within(name, os.path.normpath(member.linkname))
+    return True
+
+def prepare(report, given, force):
+    report, dest = json.loads(report), Path(given)
+    name, kind = report["name"], report["kind"]
+    if not name or "/" in name or name in (".", "..") or "\n" in name:
+        sys.exit("The host sent a name that is not valid. Nothing was copied.")
+    if report["bytes"] > STREAM_LIMIT:
+        sys.exit(LIMIT)
+    real = Path(os.path.realpath(dest))
+    if real.is_dir():
+        folder, target = real, real / name
+    else:
+        if given.endswith("/"):
+            sys.exit(f"The folder {dest} does not exist. Nothing was copied.")
+        # A link as the target could name a file on another disk or anywhere on this Mac.
+        if dest.is_symlink():
+            sys.exit(f"{dest} is a link. Name the file that it points to. Nothing was copied.")
+        folder = Path(os.path.realpath(dest.parent))
+        if not folder.is_dir():
+            sys.exit(f"The folder {dest.parent} does not exist. Nothing was copied.")
+        target = folder / dest.name
+    if os.path.lexists(target):
+        if kind == "dir" or target.is_dir():
+            sys.exit(f"{target} exists. A directory is never replaced. Nothing was copied.")
+        if force != "1":
+            sys.exit(f"{target} exists. Use --force to replace it. Nothing was copied.")
+        if target.is_symlink() or not target.is_file():
+            sys.exit(f"{target} is not a regular file. Nothing was copied.")
+    if kind == "dir" and not hasattr(tarfile, "data_filter"):
+        sys.exit("A directory needs Python 3.12 or newer on this Mac. Nothing was copied.")
+    if shutil.disk_usage(folder).free < report["bytes"] * (2 if kind == "dir" else 1) + MARGIN:
+        sys.exit(f"This Mac has no room for {report['bytes']} bytes in {folder}. Nothing was copied.")
+    descriptor, part = tempfile.mkstemp(prefix=".tokiwa-cp-", suffix=".part", dir=folder)
+    os.close(descriptor)
+    print(part)
+    print(target)
+
+def place(report, target, part, force):
+    report, target = json.loads(report), Path(target)
+    sha256, size = sha256_of(part)
+    if (sha256, size) != (report["sha256"], report["bytes"]):
+        sys.exit("The copy on this Mac does not match the source. Nothing was copied.")
+    if report["kind"] == "file":
+        os.chmod(part, report["mode"] & 0o777)
+        try:
+            if force == "1" and os.path.lexists(target):
+                os.replace(part, target)
+            else:
+                # A link fails when the target appeared meanwhile, so no file is overwritten.
+                os.link(part, target)
+                os.unlink(part)
+        except FileExistsError:
+            sys.exit(f"{target} exists. Use --force to replace it. Nothing was copied.")
+        except OSError as error:
+            sys.exit(f"{target} could not be written: {error.strerror}. Nothing was copied.")
+        files = 1
+    else:
+        name = report["name"]
+        staging = Path(tempfile.mkdtemp(prefix=".tokiwa-cp-", dir=target.parent))
+        try:
+            with tarfile.open(part, "r:") as archive:
+                members = archive.getmembers()
+                if len(members) > MAX_FILES:
+                    sys.exit(f"The directory holds more than {MAX_FILES} entries. Nothing was copied.")
+                for member in members:
+                    if not within(name, member.name) or not link_within(name, member):
+                        sys.exit(f"The directory holds an entry outside {name}, or a link out of it. Nothing was copied.")
+                # The data filter refuses absolute names, links that leave the folder and device files,
+                # and drops setuid, setgid and sticky bits (Python 3.12, PEP 706).
+                archive.extractall(staging, filter="data")
+            top = staging / name
+            if top.is_symlink() or not top.is_dir():
+                sys.exit(f"The stream does not hold a directory named {name}. Nothing was copied.")
+            if os.path.lexists(target):
+                sys.exit(f"{target} exists. A directory is never replaced. Nothing was copied.")
+            os.rename(top, target)
+        except (tarfile.TarError, OSError) as error:
+            sys.exit(f"The directory could not be unpacked: {error}. Nothing was copied.")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        os.unlink(part)
+        files = len(members)
+    print(json.dumps({"path": str(target), "kind": report["kind"], "files": files, "bytes": size, "sha256": sha256}))
+
+step = sys.argv[1]
+{"check": check, "stream": stream, "prepare": prepare, "place": place}[step](*sys.argv[2:])
+PY_CP
+  quote() { python3 -I -c 'import shlex,sys; print(" ".join(shlex.quote(x) for x in sys.argv[1:]))' "$@"; }
+  field() { python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"; }
+  cp_refused() {
+   local errors refusal
+   errors=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardErrorContent --output text) || errors=
+   refusal=$(printf '%s\n' "$errors" | sed -E '/^[[:space:]]*$/d; /^failed to run commands: exit status [0-9]+$/d' | tail -n 1)
+   fail "${refusal:-The copy returned $status. Nothing was copied.}"
+  }
+  # The bucket keeps versions; the cleanup deletes the uploaded version by its id when it has one.
+  cp_version() { paste_version=$(aws_call s3api head-object --bucket "$paste_bucket" --key "$paste_key" --query VersionId --output text 2>/dev/null) || paste_version=; }
+  work=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tokiwa-cp.XXXXXX") || fail 'A copy needs a temporary folder. Nothing was copied.'
+  cp_id=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  pipe=/opt/agent-platform/rootless/tokiwa-s3-pipe.py
+  ready='systemctl is-active --quiet cloud-workbench.service user@2200.service'
+  if [[ $cp_direction == up ]]; then
+   facts=$(python3 -I -c "$cp_program" check "$cp_local") || exit 1
+   paste_key=inputs/transfers/$cp_id
+   python3 -I -c "$cp_program" stream "$cp_local" "$facts" "$work/sent.json" | aws_call s3 cp - "s3://$paste_bucket/$paste_key" --only-show-errors \
+    || fail 'The upload to S3 failed. Nothing was copied.'
+   cp_version
+   sent=$(<"$work/sent.json")
+   cp_bytes=$(field "$sent" bytes) cp_sha=$(field "$sent" sha256)
+   args=$(quote "$cp_remote" "$(field "$facts" kind)" "$(field "$facts" name)" "$cp_sha" "$cp_bytes" \
+    "$(printf '%03o' "$(field "$facts" mode)")" "$cp_force")
+   remote="$ready && python3 -I $pipe get $region $paste_bucket $paste_key -- $helper transfer-in $args"
+   # The copy from S3 to the host runs at tens of MB/s; the slow leg, from this Mac, is already done.
+   exec_timeout=$(( 120 + cp_bytes / 20000000 ))
+  else
+   paste_key=results/transfers/$cp_id
+   remote="$ready && python3 -I $pipe put $region $paste_bucket $paste_key -- $helper transfer-out $(quote "$cp_remote")"
+   # The size is known only on the host; this covers 10 GB at about 6 MB/s.
+   exec_timeout=1800
+  fi
+  tries=$(( exec_timeout + 15 ))
+  submit "$remote"
+  [[ $cp_direction == up ]] || cp_version
+  [[ $status == Success ]] || cp_refused
+  result=$(aws_call ssm get-command-invocation --command-id "$id" --instance-id "$instance" --query StandardOutputContent --output text) \
+   || fail 'The copy result could not be read.'
+  if [[ $cp_direction == up ]]; then
+   [[ $(field "$result" sha256) == "$cp_sha" ]] || fail 'The host reported a different SHA-256. Check the target on the host.'
+  else
+   placed=$(python3 -I -c "$cp_program" prepare "$result" "$cp_local" "$cp_force") || exit 1
+   cp_part=${placed%%$'\n'*}
+   cp_target=${placed#*$'\n'}
+   aws_call s3 cp "s3://$paste_bucket/$paste_key" "$cp_part" --only-show-errors || fail 'The download from S3 failed. Nothing was copied.'
+   result=$(python3 -I -c "$cp_program" place "$result" "$cp_target" "$cp_part" "$cp_force") || exit 1
+  fi
+  if [[ $cp_json == 1 ]]; then printf '%s\n' "$result"
+  else
+   python3 -c 'import json,sys; r=json.loads(sys.argv[1]); n=r["files"]; print("Copied %d %s, %d bytes, to %s%s (sha256 %s)." % (n, "file" if n == 1 else "entries", r["bytes"], "host:" if sys.argv[2] == "up" else "", r["path"], r["sha256"][:12]))' "$result" "$cp_direction"
+  fi
+  exit 0
+ fi
  # The host certificate that message text is encrypted to. Only the certificate is public; the key
  # stays on the host (see host/tokiwa-input.py). This reads it from the host in one Run Command call.
  # A host from before encrypted input has no certificate: the launcher stops there, and never sends the

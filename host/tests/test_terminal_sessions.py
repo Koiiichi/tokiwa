@@ -3296,3 +3296,65 @@ class PasteImage(ModelHelpers, Server):
         self.assertIn('The session cache folder is not usable. Nothing was pasted.', result.stderr)
         self.assertEqual(list(elsewhere.iterdir()), [])
         self.assertFalse(self.calls.exists())
+
+
+class TransferModes(ModelHelpers, Server):
+    """`transfer-in` and `transfer-out` run the transfer program as this user and log each success."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = Path(self.temp.name) / 'cache-root'
+        self.cache.mkdir()
+        # The disk of the test machine can be fuller than the host's limit.
+        self.env.update(TOKIWA_CACHE_ROOT=str(self.cache), TOKIWA_MIN_FREE_SHARE='0')
+
+    def run_bytes(self, args, data=b''):
+        return subprocess.run(['bash', str(ROOT / 'terminal-session.sh'), *args], env=self.env, input=data,
+                              capture_output=True, timeout=30)
+
+    def audit_lines(self):
+        log = Path(self.env['TOKIWA_STATE']) / 'audit.log'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def test_a_file_goes_in_and_out_and_both_are_logged(self):
+        data = b'report bytes'
+        sha = hashlib.sha256(data).hexdigest()
+        target = Path(os.path.realpath(self.cache)) / 'report.txt'
+        result = self.run_bytes(['transfer-in', str(self.cache), 'file', 'report.txt', sha, str(len(data)), '644', '0'], data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['path'], str(target))
+        self.assertEqual(target.read_bytes(), data)
+        sent = self.run_bytes(['transfer-out', str(target)])
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        # stdout is the stream and nothing else; the report goes to stderr.
+        self.assertEqual(sent.stdout, data)
+        self.assertIn(b'tokiwa-transfer {"kind": "file"', sent.stderr)
+        logged = self.audit_lines()
+        self.assertEqual([e['action'] for e in logged], ['transfer-in', 'transfer-out'])
+        self.assertEqual({k: logged[0][k] for k in ('path', 'kind', 'files', 'bytes', 'sha256')},
+                         {'path': str(target), 'kind': 'file', 'files': 1, 'bytes': len(data), 'sha256': sha})
+        self.assertEqual((logged[1]['source'], logged[1]['files']), (str(target), 1))
+
+    def test_a_refusal_passes_its_sentence_and_logs_nothing(self):
+        # The test's workbench folder is its whole temporary folder, so "outside" is another folder.
+        other = tempfile.TemporaryDirectory(prefix='tokiwa-outside-')
+        self.addCleanup(other.cleanup)
+        outside = Path(other.name) / 'outside.txt'
+        result = self.run_bytes(['transfer-in', str(outside), 'file', 'outside.txt', '0' * 64, '1', '644', '0'], b'x')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'outside the workbench folder', result.stderr)
+        self.assertFalse(outside.exists())
+        sent = self.run_bytes(['transfer-out', str(outside)])
+        self.assertEqual((sent.returncode, sent.stdout), (1, b''))
+        self.assertEqual(self.audit_lines(), [])
+        self.assertEqual(self.run_bytes(['transfer-in', 'a']).returncode, 1)
+        self.assertEqual(self.run_bytes(['transfer-out']).returncode, 1)
+
+    def test_a_session_path_resolves_in_the_session_folder(self):
+        self.assertEqual(self.helper('ensure', 'lead').returncode, 0)
+        folder = self.rows()['lead']['cwd']
+        data = b'x'
+        result = self.run_bytes(['transfer-in', 'lead:', 'file', 'note.txt', hashlib.sha256(data).hexdigest(), '1', '600', '0'], data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(json.loads(result.stdout)['path']).resolve(), (Path(folder) / 'note.txt').resolve())
+

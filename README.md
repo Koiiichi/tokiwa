@@ -60,6 +60,8 @@ tokiwa attach backend
 
 The second shell starts in `backend`'s current directory, joins its project and lists under it. In the app, **n** (Shell here) does the same beside the session, and attaching the session later reopens that shell beside it. + on a project title starts a session in it, **+ new project** makes a project, a drag moves a session or a project, and a double click renames one. Projects organize terminals: they do not isolate users or create Git worktrees, and they never change a session's directory. See [Sessions and projects](docs/sessions-and-projects.md).
 
+To copy a file or a directory between the Mac and the host, in either direction, use `tokiwa cp`, for example `tokiwa cp report.pdf backend:docs/` or `tokiwa cp backend:out/results.json .`. See [Local agents](docs/agents.md#copy-a-file-or-a-directory).
+
 Sessions have no `sudo`; `tokiwa admin` opens a root shell on the host through Session Manager, outside the service sandbox. On a host installed with `--with-docker`, `docker compose` in a session runs against the rootless Docker engine. Its volumes stay on the host and are not off-host backups.
 
 If the connection drops, the session keeps running on the host. Run `tokiwa attach NAME`, or press **R** in the app, to reconnect. When the AWS sign-in has expired, `tokiwa` starts `aws sso login` in an interactive terminal and then continues. In the app, press **l** to sign in. To open the sign-in link in a chosen browser or profile, set [`TOKIWA_SIGN_IN_BROWSER`](docs/configuration.md#environment-variables).
