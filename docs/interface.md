@@ -172,22 +172,22 @@ Each session row starts with one glyph. The footer explains the glyph of the row
 
 ## Footer
 
-The footer is one line of controls for the current context. A control highlights under the pointer and runs on a click. A dim hint, for example `↑↓ select`, does nothing. A click on a control keeps the keyboard and the text selection where they are.
+The footer is one line of controls for the current context, with a message at its right. A control highlights under the pointer and runs on a click. A dim hint, for example `↑↓ select`, does nothing. A click on a control keeps the keyboard and the text selection where they are.
 
 | Context | Footer |
 | --- | --- |
 | A terminal has the keyboard | `detach ctrl+k d · focus ctrl+k z · sessions ctrl+k w · shortcuts ctrl+k ?` (`detach` only for a remote session) |
-| The list has the keyboard | `↑↓ select · enter attach · esc terminal · z focus · ? shortcuts` (`esc terminal` and `z focus` only with a view open) |
-| The list is empty | `u refresh · t local shell · ? shortcuts` |
+| The list has the keyboard | `↑↓ select · enter attach · esc terminal · z focus · ? shortcuts · q quit` (`esc terminal` and `z focus` only with a view open) |
+| The list is empty | `u refresh · t local shell · ? shortcuts · q quit` |
 | Health | `↑↓ scroll · w sessions · ? shortcuts` (`↑↓ scroll` only when the view does not fit) |
 | Search | `↑↓ select · enter open · esc close`; for a prompt, `enter confirm · esc cancel` |
 | Shortcuts sheet | `↑↓ scroll · esc close` (`↑↓ scroll` only when the sheet does not fit) |
 
 Inside a terminal a control is its label then its chord. Elsewhere it is its key then its label. When the line is too long, the hints that are not controls go first, then the key labels, then the least important controls. One control always stays.
 
-With the pointer over a session row, the footer explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. The glyph is dim, not amber, for a stale `needs you` row with no connected view. It uses a short form when it is narrow.
+With the pointer over a session row, the message explains the state of that row, for example `◈ needs you · codex asked for a person, or rang the bell while no client viewed it`, and adds the clients attached elsewhere. The glyph is dim, not amber, for a stale `needs you` row with no connected view. It uses a short form when space is tight. When even the short form does not fit, the footer keeps the controls and leaves the explanation out.
 
-The footer also shows short notices: the result of a copy, a saved screen or an ended session. A failed action shows as `<action> failed · <cause>`, for example `attach worker-a failed · AWS sign-in expired`, for 8 seconds. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
+The message can also be a short notice: the result of a copy, a detach, a saved screen or an ended session. While a notice shows, it takes the place of the row explanation. A routine notice drops its detail after ` · ` before a control moves, so `detached worker-a · it keeps running` can become `detached worker-a`. On a narrow line the least important controls then give way. A failure, or a notice with controls, stays whole, and takes the line when it does not fit beside any control. A failed action shows as `<action> failed · <cause>`, for example `attach worker-a failed · AWS sign-in expired`, for 8 seconds. A program on the host can ask to open an http or https link in the Mac's browser. When you typed or clicked in its view in the last 5 seconds, the link opens at once. Otherwise the footer names the session and the link for 15 seconds and offers `open` and `copy`.
 
 ## Keyboard
 

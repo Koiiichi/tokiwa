@@ -154,16 +154,70 @@ test("the footer shows the controls of a remote terminal, and keys go first when
 test("the footer of the list and of Health", async () => {
   const w = await workspace();
   try {
-    expect(footer(w)).toBe("↑↓ select · enter attach · ? shortcuts");
+    expect(footer(w)).toBe("↑↓ select · enter attach · ? shortcuts · q quit");
     await w.attach("web-lead");
     w.app.focusSessions();
     await w.t.renderOnce();
     expect(footer(w)).toBe(
-      "↑↓ select · enter attach · esc terminal · z focus · ? shortcuts",
+      "↑↓ select · enter attach · esc terminal · z focus · ? shortcuts · q quit",
     );
     w.app.show("health");
     await w.t.renderOnce();
     expect(footer(w)).toMatch(/^(↑↓ scroll · )?w sessions · \? shortcuts$/);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a notice sits right of the controls and leaves them on the line", async () => {
+  const w = await workspace();
+  try {
+    w.app.notify("detached web-lead · it keeps running");
+    await w.t.renderOnce();
+    const line = w.t.captureCharFrame().split("\n").find((l) => l.includes("detached web-lead"))!;
+    expect(line).toMatch(/↑↓ select · enter attach · \? shortcuts · q quit +detached web-lead · it keeps running/);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("a notice sits before the background control at the end of the line", async () => {
+  const w = await workspace();
+  w.app.backgroundRows = () => [{ name: "old-lead" }] as any;
+  try {
+    w.app.notify("detached web-lead · it keeps running");
+    await w.t.renderOnce();
+    expect(footer(w)).toMatch(
+      /q quit +detached web-lead · it keeps running · 1 background b$/,
+    );
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the state of the row under the pointer sits right of the controls", async () => {
+  const w = await workspace();
+  try {
+    const row = w.at(" web-lead");
+    await w.t.mockMouse.moveTo(row.x + 3, row.y);
+    await w.t.renderOnce();
+    const line = w.t.captureCharFrame().split("\n").find((l) => l.includes("q quit"))!;
+    expect(line).toContain("enter attach");
+    expect(line).toMatch(/q quit +◆ output · the screen of web-lead/);
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("the quit control of the session list quits", async () => {
+  const w = await workspace();
+  let asked = 0;
+  w.app.askQuit = () => void asked++;
+  try {
+    const shown = w.app.footerShown.find((h) => h.id === "quit");
+    expect(shown?.key).toBe("q");
+    shown?.run?.();
+    expect(asked).toBe(1);
   } finally {
     await w.dispose();
   }
@@ -404,19 +458,19 @@ test("the footer explains the state of the session row under the pointer", async
     const codex = w.at(" coder-lead");
     await w.t.mockMouse.moveTo(codex.x + 3, codex.y);
     await w.t.renderOnce();
-    expect(footer(w)).toBe(
-      "◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it",
+    expect(footer(w)).toMatch(
+      /^↑↓ select · enter attach · \? shortcuts · q quit +◈ needs you · coder-lead is waiting for a person$/,
     );
     const tools = w.at(" tools");
     await w.t.mockMouse.moveTo(tools.x + 3, tools.y);
     await w.t.renderOnce();
-    expect(footer(w)).toBe(
-      "◇ quiet · the screen of tools did not change since the last read · ¹ 1 other client is attached",
+    expect(footer(w)).toMatch(
+      /^↑↓ select · enter attach · \? shortcuts · q quit +◇ quiet · /,
     );
-    // The pointer leaves the row: the footer returns to its hints.
+    // The pointer leaves the row: the footer has only its hints.
     await w.t.mockMouse.moveTo(4, w.t.renderer.height - 4);
     await w.t.renderOnce();
-    expect(footer(w)).toBe("↑↓ select · enter attach · ? shortcuts");
+    expect(footer(w)).toBe("↑↓ select · enter attach · ? shortcuts · q quit");
   } finally {
     await w.dispose();
   }
@@ -609,7 +663,7 @@ test("Save screen writes the emulator text and sizes to a private file; Repaint 
     w.app.runAction("repaint");
     await w.t.renderOnce();
     expect(sent).toBe("");
-    expect(footer(w)).toContain("tmux sent nothing");
+    expect(footer(w)).toContain("repainted from the view's own copy");
   } finally {
     await w.dispose();
     if (previous === undefined) delete process.env.TOKIWA_CAPTURE_DIR;
