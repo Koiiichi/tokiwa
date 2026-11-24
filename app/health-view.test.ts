@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   DEFAULT_CONFIG,
   estimateSpend,
+  parseHealthConfig,
   healthLines,
   lineText,
   loadHealthConfig,
@@ -112,13 +113,13 @@ test("the estimate uses list prices from the month start to the authorization en
   const estimate = estimateSpend(fixtureSpend, fixtureConfig, fixtureNow);
   if ("error" in estimate) throw new Error(estimate.error);
   // 234 hours since Dec 1: compute, 600 GiB gp3 for 234/730 of a month, one IPv4.
-  expect(estimate.monthToDate).toBeCloseTo(
+  expect(estimate.counted).toBeCloseTo(
     234 * 0.4032 + (600 * 0.08 * 234) / 730 + 234 * 0.005,
     2,
   );
   const remaining = (Date.UTC(2026, 11, 23, 7, 59) - fixtureNow) / 3600000;
   expect(estimate.forecast).toBeCloseTo(
-    estimate.monthToDate +
+    estimate.counted +
       remaining * 0.4032 +
       (600 * 0.08 * remaining) / 730 +
       remaining * 0.005,
@@ -126,6 +127,47 @@ test("the estimate uses list prices from the month start to the authorization en
   );
   expect(estimate.storageGib).toBe(600);
   expect(estimate.publicIpv4).toBe(1);
+});
+
+test("prior_spend_until moves the start of the count across month ends", () => {
+  const reading = {
+    ...fixtureSpend,
+    instance: { ...fixtureSpend.instance, launch_time: "2026-10-28T00:00:00Z" },
+  };
+  const month = estimateSpend(reading, fixtureConfig, fixtureNow);
+  const since = estimateSpend(
+    reading,
+    { ...fixtureConfig, prior_spend_until: "2026-11-01T00:00:00Z" },
+    fixtureNow,
+  );
+  if ("error" in month) throw new Error(month.error);
+  if ("error" in since) throw new Error(since.error);
+  // November adds 720 hours of compute, disk and address to the count and to the forecast.
+  const november = 720 * (0.4032 + (600 * 0.08) / 730 + 0.005);
+  expect(since.counted - month.counted).toBeCloseTo(november, 2);
+  expect(since.forecast - month.forecast).toBeCloseTo(november, 2);
+  expect(since.from).toBe(Date.UTC(2026, 10, 1));
+  expect(month.from).toBe(Date.UTC(2026, 11, 1));
+});
+
+test("a prior_spend_until after the reading gives no estimate", () => {
+  expect(
+    estimateSpend(
+      fixtureSpend,
+      { ...fixtureConfig, prior_spend_until: "2026-12-31T00:00:00Z" },
+      fixtureNow,
+    ),
+  ).toEqual({ error: "prior_spend_until is after now" });
+});
+
+test("health.json accepts prior_spend_until only as a time with an offset", () => {
+  expect(
+    parseHealthConfig({ prior_spend_until: "2026-11-01T00:00:00-08:00" })
+      .prior_spend_until,
+  ).toBe("2026-11-01T00:00:00-08:00");
+  expect(() => parseHealthConfig({ prior_spend_until: "2026-11-01" })).toThrow(
+    "prior_spend_until must be an ISO 8601 time with an offset",
+  );
 });
 
 test("the estimate counts compute only from a start inside the month", () => {
@@ -136,7 +178,7 @@ test("the estimate counts compute only from a start inside the month", () => {
   const estimate = estimateSpend(started, fixtureConfig, fixtureNow);
   if ("error" in estimate) throw new Error(estimate.error);
   expect(estimate.computeSince).toBe(Date.UTC(2026, 11, 5));
-  expect(estimate.monthToDate).toBeCloseTo(
+  expect(estimate.counted).toBeCloseTo(
     138 * 0.4032 + (600 * 0.08 * 234) / 730 + 234 * 0.005,
     2,
   );
@@ -258,6 +300,23 @@ test("the budget bar shows spend so far; the forecast is a number with its share
   expect(plain[3]).toMatch(/^  Month to date: +\$110\.91$/);
   expect(plain.slice(4).join(" ").replace(/ +/g, " ")).toContain(
     "Not counted: spend before Dec 1, data transfer, snapshots, S3 backups and tax.",
+  );
+  // With prior_spend_until, the row counts from that day and names it.
+  const since = spendRows(
+    healthLines(
+      fixtureModel({
+        config: {
+          ...fixtureConfig,
+          budget_usd: 350,
+          prior_spend_usd: 20,
+          prior_spend_until: "2026-11-01T00:00:00Z",
+        },
+      }),
+      96,
+    ),
+  ).map(lineText);
+  expect(since[3]).toMatch(
+    /^  Since Nov 1: +\$\d+\.\d\d · plus \$20\.00 before Nov 1, entered in health\.json$/,
   );
   // The bar measures spend so far: 37 % of 50 cells is 18.5 cells.
   const lines = healthLines(withBudget(350, 20), 112);
