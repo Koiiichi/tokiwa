@@ -168,6 +168,22 @@ test("health.json accepts prior_spend_until only as a time with an offset", () =
   expect(() => parseHealthConfig({ prior_spend_until: "2026-11-01" })).toThrow(
     "prior_spend_until must be an ISO 8601 time with an offset",
   );
+  // A date or a clock time that does not exist is refused, not moved to a nearby day.
+  for (const key of ["prior_spend_until", "authorization_end"])
+    for (const time of [
+      "2026-02-30T00:00:00Z",
+      "2026-13-01T00:00:00Z",
+      "2026-11-01T24:00:00Z",
+      "2026-11-01T10:60:00Z",
+      "2026-11-01T10:00:00+0000",
+    ])
+      expect(() => parseHealthConfig({ [key]: time })).toThrow(
+        `${key} must be an ISO 8601 time with an offset`,
+      );
+  expect(
+    parseHealthConfig({ prior_spend_until: "2028-02-29T00:00:00Z" })
+      .prior_spend_until,
+  ).toBe("2028-02-29T00:00:00Z");
 });
 
 test("the estimate counts compute only from a start inside the month", () => {
@@ -317,6 +333,22 @@ test("the budget bar shows spend so far; the forecast is a number with its share
   ).map(lineText);
   expect(since[3]).toMatch(
     /^  Since Nov 1: +\$\d+\.\d\d · plus \$20\.00 before Nov 1, entered in health\.json$/,
+  );
+  // The day is the one written, in its own offset, not the day in UTC.
+  const offset = spendRows(
+    healthLines(
+      fixtureModel({
+        config: {
+          ...fixtureConfig,
+          prior_spend_usd: 20,
+          prior_spend_until: "2026-11-01T00:00:00+09:00",
+        },
+      }),
+      96,
+    ),
+  ).map(lineText);
+  expect(offset.join("\n")).toMatch(
+    /Since Nov 1: +\$\d+\.\d\d · plus \$20\.00 before Nov 1, entered/,
   );
   // The bar measures spend so far: 37 % of 50 cells is 18.5 cells.
   const lines = healthLines(withBudget(350, 20), 112);

@@ -49,10 +49,26 @@ function rates(value: unknown, name: string) {
   return value as Record<string, number>;
 }
 
+/** True when the date and the clock time exist: Date.parse moves Feb 30 to Mar 2. */
+function realTime(iso: string) {
+  const [y, mo, d, h, mi, sec = "0"] = iso.match(/\d+/g)!;
+  const days = new Date(Date.UTC(+y, +mo, 0)).getUTCDate();
+  return (
+    +mo >= 1 &&
+    +mo <= 12 &&
+    +d >= 1 &&
+    +d <= days &&
+    +h <= 23 &&
+    +mi <= 59 &&
+    +sec <= 59
+  );
+}
+
 function isoTime(value: unknown, name: string, example: string) {
   if (
     typeof value !== "string" ||
     !ISO_WITH_OFFSET.test(value) ||
+    !realTime(value) ||
     !Number.isFinite(Date.parse(value))
   )
     throw new Error(
@@ -235,10 +251,7 @@ export function estimateSpend(
     ? Date.parse(config.prior_spend_until)
     : Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1);
   if (from > now) return { error: "prior_spend_until is after now" };
-  const computeSince = Math.max(
-    from,
-    Date.parse(reading.instance.launch_time),
-  );
+  const computeSince = Math.max(from, Date.parse(reading.instance.launch_time));
   // Without an authorization end, forecast to the start of the next month (UTC).
   const end = config.authorization_end
     ? Date.parse(config.authorization_end)
@@ -549,9 +562,12 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
 
 /** The label of the counted spend: the month to date, or the spend since `prior_spend_until`. */
 const countedLabel = (config: HealthConfig) =>
+  config.prior_spend_until ? `Since ${fromDay(config, 0)}:` : "Month to date:";
+/** The day of the start of the count, in the offset of `prior_spend_until` when it is set. */
+const fromDay = (config: HealthConfig, from: number) =>
   config.prior_spend_until
-    ? `Since ${day(Date.parse(config.prior_spend_until))}:`
-    : "Month to date:";
+    ? day(inOffset(config.prior_spend_until).local.getTime())
+    : day(from);
 
 function spend(m: HealthViewModel): Row[] {
   const known = m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
@@ -585,10 +601,10 @@ function spend(m: HealthViewModel): Row[] {
   const since =
     estimate.computeSince > estimate.from
       ? `the last start on ${day(estimate.computeSince)}`
-      : day(estimate.from);
+      : fromDay(m.config, estimate.from);
   // Spend before the count is known only from health.json; without it, the note says so.
   const prior = m.config.prior_spend_usd;
-  const excluded = `${prior ? "" : `spend before ${day(estimate.from)}, `}data transfer, snapshots, S3 backups and tax`;
+  const excluded = `${prior ? "" : `spend before ${fromDay(m.config, estimate.from)}, `}data transfer, snapshots, S3 backups and tax`;
   const addresses = `${estimate.publicIpv4} public IPv4`;
   const budget = m.config.budget_usd;
   const spent = m.config.prior_spend_usd + estimate.counted;
@@ -636,7 +652,7 @@ function spend(m: HealthViewModel): Row[] {
       kind: "pair",
       label: countedLabel(m.config),
       value: prior
-        ? `${money(estimate.counted)} · plus ${money(prior)} before ${day(estimate.from)}, entered in health.json`
+        ? `${money(estimate.counted)} · plus ${money(prior)} before ${fromDay(m.config, estimate.from)}, entered in health.json`
         : money(estimate.counted),
     },
     {

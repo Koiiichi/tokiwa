@@ -115,9 +115,9 @@ A file that cannot be read, is not JSON, or has an unknown key or a wrong value 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `budget_usd` | None | Positive number. With it, a bar shows spend so far as a share of it, and the `Forecast:` row gives the forecast as a share of it. Without it, Spend shows amounts only. |
-| `authorization_end` | None | ISO 8601 time with an offset. The forecast runs to this time, and the Host section shows the days left and the end time in that offset. Without it, the forecast runs to the end of the month (UTC) and Host shows no end row. |
+| `authorization_end` | None | ISO 8601 time with an offset (`Z` or `±HH:MM`). The forecast runs to this time, and the Host section shows the days left and the end time in that offset. Without it, the forecast runs to the end of the month (UTC) and Host shows no end row. |
 | `prior_spend_usd` | `0` | Zero or more. Spend before the start of the count that counts against the budget. It is part of `Spent so far:` and of the forecast. |
-| `prior_spend_until` | None | ISO 8601 time with an offset, for example `2026-11-01T00:00:00Z`. `prior_spend_usd` covers spend before this time, and the estimate counts from it, also after the month ends. Without it, the count starts at the start of the UTC month. |
+| `prior_spend_until` | None | ISO 8601 time with an offset (`Z` or `±HH:MM`), for example `2026-11-01T00:00:00Z`. The rows name its day in that offset. `prior_spend_usd` covers spend before this time, and the estimate counts from it, also after the month ends. Without it, the count starts at the start of the UTC month. |
 | `prices.instance_hour` | `{}` | USD per hour for each instance type. Spend shows `no price for <type> in health.json` until the map holds the type of the instance. |
 | `prices.volume_gb_month` | `{ "gp3": 0.08 }` | USD per GiB-month for each EBS volume type. A month is 730 hours. |
 | `prices.public_ipv4_hour` | `0.005` | USD per hour for each public IPv4 address. |
