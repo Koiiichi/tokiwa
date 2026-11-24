@@ -97,13 +97,19 @@ export function fitFooter(
 ) {
   const base = fitHints(hints, width, order);
   if (!forms.length) return { ...base, form: -1, takesLine: false };
-  const used = lineLength(base.hints, base.keys, order);
-  const form = forms.findIndex((cells) => used + MESSAGE_GAP + cells <= width);
+  // The separator before an end control is in the line length, unless that control is alone.
+  const cellsWith = (list: Hint[], keys: boolean, message: number) =>
+    lineLength(list, keys, order) +
+    (list[0]?.end ? SEPARATOR.length : MESSAGE_GAP) +
+    message;
+  const form = forms.findIndex(
+    (cells) => cellsWith(base.hints, base.keys, cells) <= width,
+  );
   if (form >= 0) return { ...base, form, takesLine: false };
   const last = forms.length - 1;
   const room = width - MESSAGE_GAP - forms[last];
   const squeezed = fitWithKeys(hints, room, order);
-  if (room > 0 && lineLength(squeezed.hints, true, order) <= room)
+  if (room > 0 && cellsWith(squeezed.hints, true, forms[last]) <= width)
     return { ...squeezed, form: last, takesLine: false };
   if (optional) return { ...base, form: -1, takesLine: false };
   const alone = forms.findIndex((cells) => cells <= width);

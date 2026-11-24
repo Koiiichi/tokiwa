@@ -989,7 +989,6 @@ test("the footer legend draws the needs-you glyph amber while live and dim when 
     expect(row).toBeDefined();
     const colour = () => {
       app.hover = `row:${row.name}`;
-      app.footerSignature = "";
       app.drawFooter();
       const part: any = app.footer.getChildren().find((c) => c.id === "footer-state")!;
       return glyphColour(part.content);

@@ -3321,7 +3321,7 @@ export class App {
       fit.hints.map((h) => [h.id, h.key, h.label]),
       notice ? [noticeTexts[fit.form], notice.failed] : null,
       notice?.actions?.map((action) => action.label),
-      guides.length ? [row?.name, status, fit.form] : null,
+      guides.length ? [row?.name, status, guides[fit.form]] : null,
     ]);
     if (signature === this.footerSignature) return;
     this.footerSignature = signature;

@@ -117,6 +117,24 @@ test("an optional message with no room is left out, and the controls stay", () =
   expect(fit.hints.length).toBeGreaterThan(0);
 });
 
+test("a message before a lone end control leaves room for its separator", () => {
+  const end: Hint = {
+    id: "background",
+    key: "b",
+    label: "1 background",
+    rank: 10,
+    run,
+    end: true,
+  };
+  const hints = [...list, end];
+  const cells = 44;
+  const lone = lineLength([end], true, "key-first") + SEPARATOR.length + cells;
+  expect(fitFooter(hints, [cells], lone - 1, "key-first").takesLine).toBe(true);
+  const fit = fitFooter(hints, [cells], lone, "key-first");
+  expect(ids(fit)).toEqual(["background"]);
+  expect(fit.takesLine).toBe(false);
+});
+
 test("no message gives the plain fit", () => {
   const fit = fitFooter(list, [], 120, "key-first");
   expect(ids(fit)).toEqual(ids({ hints: list }));
