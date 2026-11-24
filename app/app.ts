@@ -700,10 +700,11 @@ export class App {
       wrapMode: "none",
       // A click on a control selects no text.
       selectable: false,
-      // A navigation item leaves the shortcuts sheet for the view that it names.
+      // A navigation item leaves the shortcuts sheet for the view that it names. From Health,
+      // Workspace returns to the terminal that had the keyboard, as `w` does.
       onMouseDown: () => {
         this.closeSheet();
-        this.focusSessions();
+        this.leaveHealth();
       },
       // A project dropped on Workspace becomes a top-level project.
       onMouseDrop: (event: MouseEvent) => void this.dropOn("", event),
