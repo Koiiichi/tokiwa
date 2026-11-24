@@ -264,7 +264,7 @@ The Session keys act on the selected row while the list has the keyboard, and on
 
 | Target | Pointer action | Result |
 | --- | --- | --- |
-| `Workspace` or `Health` in the navigation row | Click | Show that view and close the sheet. `Workspace` gives the keyboard to the list. |
+| `Workspace` or `Health` in the navigation row | Click | Show that view and close the sheet. From Health, `Workspace` returns to the terminal that had the keyboard when Health opened, as `w` does. Otherwise `Workspace` gives the keyboard to the list. |
 | Header status | Pointer over | Show the connection card. |
 | `l sign in` or `u retry` in the problem band | Click | Sign in, or read again. It works also while a terminal view has the keyboard. |
 | Problem band elsewhere | Click | Open or close the details box. |

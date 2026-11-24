@@ -110,3 +110,35 @@ test("a second w after the return reaches the list", async () => {
     await finish();
   }
 });
+
+test("clicks on Health and then Workspace return to the focused terminal in focus mode", async () => {
+  const { t, app, shell, finish } = await open();
+  try {
+    app.toggleFocus();
+    await pause();
+    expect(app.listHasFocus()).toBe(false);
+    const nav = (label: string) => {
+      const lines = t.captureCharFrame().split("\n");
+      const y = lines.findIndex((l) => /Workspace +Health/.test(l));
+      return { x: lines[y].indexOf(label) + 1, y };
+    };
+    const click = async (label: string) => {
+      const at = nav(label);
+      await t.mockMouse.click(at.x, at.y);
+      await pause();
+      await t.renderOnce();
+    };
+    await click("Health");
+    expect(app.view).toBe("health");
+    await click("Workspace");
+    expect(app.view).toBe("shell");
+    expect(app.focusMode).toBe(true);
+    expect(app.listHasFocus()).toBe(false);
+    expect(shell.terminal.focused).toBe(true);
+    // In the workspace, a click on Workspace still gives the keyboard to the list.
+    await click("Workspace");
+    expect(app.listHasFocus()).toBe(true);
+  } finally {
+    await finish();
+  }
+});
