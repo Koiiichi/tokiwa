@@ -10,7 +10,7 @@ It does not change the host, its workloads or its service limits. The spend figu
 | Section | Rows | Source |
 | --- | --- | --- |
 | Workstation | `Instance:` (the instance ID, type and region, and its state when it is not running), `Uptime:`, an amber `Stuck connection:` row for each [stuck connection](host.md#stuck-connections) (its PID, age and CPU share), `Authorization:` (days left) and the end time | `tokiwa spend`, `tokiwa health`, `health.json` |
-| Spend (estimate) | `Spent so far:` and, with a budget, a bar of it against the budget, `Forecast:`, `Month to date:`, and a note on what the estimate counts | `tokiwa spend`, `health.json` |
+| Spend (estimate) | `Spent so far:` and, with a budget, a bar of it against the budget, `Forecast:`, `Month to date:` (or `Since <day>:` with `prior_spend_until`), and a note on what the estimate counts | `tokiwa spend`, `health.json` |
 | Workbench limits | `CPU` of the CPU quota, `Memory` of the memory limit, `Tasks` of the task limit, each as a bar | `tokiwa health`: the cgroup of `cloud-workbench.service` |
 | Storage | One bar for each disk that the host reports, used of total. When the host publishes a storage status file, also a `Backup:` row (level, files of the limit, age, failures), a `Private disk:` row (space and inodes used, level) and, once the host has measured scratch, a `Scratch:` row (level, size, folder count, and the survey age when it is older than 36 hours); a missing value shows `-` | `tokiwa health` |
 | Network · INTERFACE | `Received:` and `Sent:`: the rate now and the total since boot | `tokiwa health`: the interface of the default IPv4 route |
@@ -72,18 +72,18 @@ Before the first read ends, the last line says `Waiting for the first health rea
 
 ## Spend estimate
 
-The estimate uses the list prices in `health.json` and the inventory that `tokiwa spend` reads: the instance type, its state and last start, its attached volumes and its public addresses.
+The estimate uses the list prices in `health.json` and the inventory that `tokiwa spend` reads: the instance type, its state and last start, its attached volumes and its public addresses. It counts from the start of the count: `prior_spend_until` when `health.json` sets it, else the start of the UTC month.
 
 | Figure | Calculation |
 | --- | --- |
-| Compute | Hours since the later of the start of the UTC month and the last start of the instance, times `prices.instance_hour` of its type. |
-| Storage | The size of each volume times `prices.volume_gb_month` of its type, spread over 730 hours a month, from the start of the month. |
-| Public IPv4 | The distinct public addresses of the instance and its Elastic IP addresses, times `prices.public_ipv4_hour`, from the start of the month. |
-| `Month to date:` | Compute plus storage plus public IPv4. With `prior_spend_usd`, the row adds it, for example `· plus $31.34 before Nov 1, entered in health.json`. |
-| `Spent so far:` | `prior_spend_usd` plus the month to date. With `budget_usd`, a bar shows it as a share of the budget. |
+| Compute | Hours since the later of the start of the count and the last start of the instance, times `prices.instance_hour` of its type. Hours before the last start are not counted. |
+| Storage | The size of each volume times `prices.volume_gb_month` of its type, spread over 730 hours a month, from the start of the count. |
+| Public IPv4 | The distinct public addresses of the instance and its Elastic IP addresses, times `prices.public_ipv4_hour`, from the start of the count. |
+| `Month to date:` | Compute plus storage plus public IPv4. With `prior_spend_until`, the label is `Since <day>:`, for example `Since Nov 1:`. With `prior_spend_usd`, the row adds it, for example `· plus $31.34 before Nov 1, entered in health.json`. |
+| `Spent so far:` | `prior_spend_usd` plus the counted spend. With `budget_usd`, a bar shows it as a share of the budget. |
 | `Forecast:` | Spent so far plus the cost from now to `authorization_end` (or to the end of the month without it), with the host running and the same volumes and addresses. It shows the date, its share of `budget_usd` and the condition `if the host keeps running`. |
 
-The estimate counts nothing else. It does not count data transfer, snapshots, S3 storage (for example the workstation backups), provisioned IOPS or throughput, or tax. The note under `Month to date:` names what is counted and what is not. Spend before the current month counts only through `prior_spend_usd`.
+The estimate counts nothing else. It does not count data transfer, snapshots, S3 storage (for example the workstation backups), provisioned IOPS or throughput, or tax. The note under `Month to date:` names what is counted and what is not. Spend before the start of the count counts only through `prior_spend_usd`. Without `prior_spend_until`, the start of the count moves to the new month on the first of each month (UTC), and the spend of the month before leaves the estimate unless `prior_spend_usd` grows by it.
 
 When the spend read itself fails for its own reason, the Spend section shows the reason once, as `Spend read failed: REASON` under its title, and `Instance:`, `Spent so far:`, `Forecast:` and `Month to date:` say `unavailable`.
 
@@ -94,6 +94,7 @@ The estimate is `not available` with the reason in these cases:
 | `no price for TYPE in health.json` | No instance price for the instance type. |
 | `no price for TYPE volumes in health.json` | No volume price for a volume type. |
 | `the host is STATE; its running hours this month are unknown` | The instance is not running. |
+| `prior_spend_until is after now` | `prior_spend_until` is a time in the future. |
 
 ## Recorded reading
 
@@ -114,8 +115,9 @@ A file that cannot be read, is not JSON, or has an unknown key or a wrong value 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `budget_usd` | None | Positive number. With it, a bar shows spend so far as a share of it, and the `Forecast:` row gives the forecast as a share of it. Without it, Spend shows amounts only. |
-| `authorization_end` | None | ISO 8601 time with an offset. The forecast runs to this time, and the Host section shows the days left and the end time in that offset. Without it, the forecast runs to the end of the month (UTC) and Host shows no end row. |
-| `prior_spend_usd` | `0` | Zero or more. Spend before the current month that counts against the budget. It is part of `Spent so far:` and of the forecast. |
+| `authorization_end` | None | ISO 8601 time with an offset (`Z` or `±HH:MM`). The forecast runs to this time, and the Host section shows the days left and the end time in that offset. Without it, the forecast runs to the end of the month (UTC) and Host shows no end row. |
+| `prior_spend_usd` | `0` | Zero or more. Spend before the start of the count that counts against the budget. It is part of `Spent so far:` and of the forecast. |
+| `prior_spend_until` | None | ISO 8601 time with an offset (`Z` or `±HH:MM`), for example `2026-11-01T00:00:00Z`. The rows name its day in that offset. `prior_spend_usd` covers spend before this time, and the estimate counts from it, also after the month ends. Without it, the count starts at the start of the UTC month. |
 | `prices.instance_hour` | `{}` | USD per hour for each instance type. Spend shows `no price for <type> in health.json` until the map holds the type of the instance. |
 | `prices.volume_gb_month` | `{ "gp3": 0.08 }` | USD per GiB-month for each EBS volume type. A month is 730 hours. |
 | `prices.public_ipv4_hour` | `0.005` | USD per hour for each public IPv4 address. |

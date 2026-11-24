@@ -9,6 +9,8 @@ export interface HealthConfig {
   /** Without an end, the forecast runs to the end of the month and Host shows no end row. */
   authorization_end?: string;
   prior_spend_usd: number;
+  /** `prior_spend_usd` covers spend before this time, and the estimate counts from it. */
+  prior_spend_until?: string;
   prices: {
     instance_hour: Record<string, number>;
     volume_gb_month: Record<string, number>;
@@ -20,6 +22,7 @@ export const HEALTH_KEYS = [
   "budget_usd",
   "authorization_end",
   "prior_spend_usd",
+  "prior_spend_until",
   "prices",
 ] as const;
 /** No budget, no end and no instance price: health.json sets them for a host. */
@@ -46,6 +49,34 @@ function rates(value: unknown, name: string) {
   return value as Record<string, number>;
 }
 
+/** True when the date and the clock time exist: Date.parse moves Feb 30 to Mar 2. */
+function realTime(iso: string) {
+  const [y, mo, d, h, mi, sec = "0"] = iso.match(/\d+/g)!;
+  const days = new Date(Date.UTC(+y, +mo, 0)).getUTCDate();
+  return (
+    +mo >= 1 &&
+    +mo <= 12 &&
+    +d >= 1 &&
+    +d <= days &&
+    +h <= 23 &&
+    +mi <= 59 &&
+    +sec <= 59
+  );
+}
+
+function isoTime(value: unknown, name: string, example: string) {
+  if (
+    typeof value !== "string" ||
+    !ISO_WITH_OFFSET.test(value) ||
+    !realTime(value) ||
+    !Number.isFinite(Date.parse(value))
+  )
+    throw new Error(
+      `${name} must be an ISO 8601 time with an offset, for example ${example}`,
+    );
+  return value;
+}
+
 /** Merge a parsed health.json over the defaults; throw an Error that names the first bad field. */
 export function parseHealthConfig(value: unknown): HealthConfig {
   if (!isObject(value)) throw new Error("the file must hold one JSON object");
@@ -63,18 +94,18 @@ export function parseHealthConfig(value: unknown): HealthConfig {
       throw new Error("prior_spend_usd must be zero or a positive number");
     config.prior_spend_usd = value.prior_spend_usd;
   }
-  if ("authorization_end" in value) {
-    const end = value.authorization_end;
-    if (
-      typeof end !== "string" ||
-      !ISO_WITH_OFFSET.test(end) ||
-      !Number.isFinite(Date.parse(end))
-    )
-      throw new Error(
-        "authorization_end must be an ISO 8601 time with an offset, for example 2026-12-31T23:59:00-08:00",
-      );
-    config.authorization_end = end;
-  }
+  if ("authorization_end" in value)
+    config.authorization_end = isoTime(
+      value.authorization_end,
+      "authorization_end",
+      "2026-12-31T23:59:00-08:00",
+    );
+  if ("prior_spend_until" in value)
+    config.prior_spend_until = isoTime(
+      value.prior_spend_until,
+      "prior_spend_until",
+      "2026-11-01T00:00:00-08:00",
+    );
   if ("prices" in value) {
     const prices = value.prices;
     if (!isObject(prices)) throw new Error("prices must be an object");
@@ -173,11 +204,13 @@ export function spendReading(value: unknown): SpendReading {
 }
 
 export interface SpendEstimate {
-  monthToDate: number;
+  /** Spend from `from` to now. */
+  counted: number;
   forecast: number;
   /** The forecast as a share of the budget; none without a budget. */
   percent?: number;
-  monthStart: number;
+  /** The start of the count: `prior_spend_until`, else the start of the UTC month. */
+  from: number;
   computeSince: number;
   end: number;
   storageGib: number;
@@ -189,9 +222,9 @@ const HOUR = 3600000;
 const MONTH_HOURS = 730;
 
 /**
- * Estimate spend at list prices. Compute counts from the later of the UTC month start and the last
- * start; storage and public IPv4 count from the month start. The forecast assumes that the host keeps
- * running with the same volumes and addresses until the authorization end.
+ * Estimate spend at list prices. Compute counts from the later of the start of the count and the last
+ * start of the instance; storage and public IPv4 count from the start of the count. The forecast
+ * assumes that the host keeps running with the same volumes and addresses until the authorization end.
  */
 export function estimateSpend(
   reading: SpendReading,
@@ -214,11 +247,11 @@ export function estimateSpend(
       error: `the host is ${reading.instance.state}; its running hours this month are unknown`,
     };
   const today = new Date(now);
-  const monthStart = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1);
-  const computeSince = Math.max(
-    monthStart,
-    Date.parse(reading.instance.launch_time),
-  );
+  const from = config.prior_spend_until
+    ? Date.parse(config.prior_spend_until)
+    : Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1);
+  if (from > now) return { error: "prior_spend_until is after now" };
+  const computeSince = Math.max(from, Date.parse(reading.instance.launch_time));
   // Without an authorization end, forecast to the start of the next month (UTC).
   const end = config.authorization_end
     ? Date.parse(config.authorization_end)
@@ -229,21 +262,21 @@ export function estimateSpend(
       ...reading.addresses.map((a) => a.public_ip),
     ].filter(Boolean),
   ).size;
-  const elapsed = (now - monthStart) / HOUR;
+  const elapsed = (now - from) / HOUR;
   const remaining = Math.max(0, (end - now) / HOUR);
   const fixedHourly =
     storageMonthly / MONTH_HOURS + publicIpv4 * prices.public_ipv4_hour;
-  const monthToDate =
+  const counted =
     ((now - computeSince) / HOUR) * hourly + elapsed * fixedHourly;
   const forecast =
-    config.prior_spend_usd + monthToDate + remaining * (hourly + fixedHourly);
+    config.prior_spend_usd + counted + remaining * (hourly + fixedHourly);
   return {
-    monthToDate,
+    counted,
     forecast,
     ...(config.budget_usd
       ? { percent: (100 * forecast) / config.budget_usd }
       : {}),
-    monthStart,
+    from,
     computeSince,
     end,
     storageGib: reading.volumes.reduce((sum, v) => sum + v.size_gib, 0),
@@ -527,13 +560,22 @@ function workstation(m: HealthViewModel, valueWidth: number): Row[] {
   return rows;
 }
 
+/** The label of the counted spend: the month to date, or the spend since `prior_spend_until`. */
+const countedLabel = (config: HealthConfig) =>
+  config.prior_spend_until ? `Since ${fromDay(config, 0)}:` : "Month to date:";
+/** The day of the start of the count, in the offset of `prior_spend_until` when it is set. */
+const fromDay = (config: HealthConfig, from: number) =>
+  config.prior_spend_until
+    ? day(inOffset(config.prior_spend_until).local.getTime())
+    : day(from);
+
 function spend(m: HealthViewModel): Row[] {
   const known = m.spendFreshness === "last-known" ? ` · ${LAST_KNOWN}` : "";
   const rows: Row[] = [
     { kind: "title", text: "Spend", note: ` (estimate${known})` },
   ];
   const unavailable = (reason: string, value = missing(reason)) => {
-    for (const label of ["Spent so far:", "Forecast:", "Month to date:"])
+    for (const label of ["Spent so far:", "Forecast:", countedLabel(m.config)])
       rows.push({ kind: "pair", label, value, tone: "dim" });
     return rows;
   };
@@ -557,15 +599,15 @@ function spend(m: HealthViewModel): Row[] {
   const estimate = estimateSpend(m.spend, m.config, m.now);
   if ("error" in estimate) return unavailable(estimate.error);
   const since =
-    estimate.computeSince > estimate.monthStart
+    estimate.computeSince > estimate.from
       ? `the last start on ${day(estimate.computeSince)}`
-      : day(estimate.monthStart);
-  // Spend before the month is known only from health.json; without it, the note says so.
+      : fromDay(m.config, estimate.from);
+  // Spend before the count is known only from health.json; without it, the note says so.
   const prior = m.config.prior_spend_usd;
-  const excluded = `${prior ? "" : `spend before ${day(estimate.monthStart)}, `}data transfer, snapshots, S3 backups and tax`;
+  const excluded = `${prior ? "" : `spend before ${fromDay(m.config, estimate.from)}, `}data transfer, snapshots, S3 backups and tax`;
   const addresses = `${estimate.publicIpv4} public IPv4`;
   const budget = m.config.budget_usd;
-  const spent = m.config.prior_spend_usd + estimate.monthToDate;
+  const spent = m.config.prior_spend_usd + estimate.counted;
   const until = m.config.authorization_end
     ? day(inOffset(m.config.authorization_end).local.getTime())
     : day(estimate.end - 1);
@@ -608,10 +650,10 @@ function spend(m: HealthViewModel): Row[] {
     },
     {
       kind: "pair",
-      label: "Month to date:",
+      label: countedLabel(m.config),
       value: prior
-        ? `${money(estimate.monthToDate)} · plus ${money(prior)} before ${day(estimate.monthStart)}, entered in health.json`
-        : money(estimate.monthToDate),
+        ? `${money(estimate.counted)} · plus ${money(prior)} before ${fromDay(m.config, estimate.from)}, entered in health.json`
+        : money(estimate.counted),
     },
     {
       kind: "note",
