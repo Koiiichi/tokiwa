@@ -61,8 +61,8 @@ test("footer, search and hover captures stay readable at 156x40, 100x30 and 62x2
     const list = await captureScene("list", width, height);
     expect(last(list)).toBe(
       width < 100
-        ? "enter attach · esc terminal · z focus · ? shortcuts"
-        : "↑↓ select · enter attach · esc terminal · z focus · ? shortcuts",
+        ? "enter attach · esc terminal · z focus · ? shortcuts · q quit"
+        : "↑↓ select · enter attach · esc terminal · z focus · ? shortcuts · q quit",
     );
     expect(list).not.toContain("what these mean");
     const empty = await captureScene("search-empty", width, height);
@@ -80,11 +80,14 @@ test("footer, search and hover captures stay readable at 156x40, 100x30 and 62x2
     expect(typed).toContain("Sessions ───");
     expect(typed.indexOf("setup2")).toBeLessThan(typed.indexOf("Go to"));
     const hover = await captureScene("hover", width, height);
-    expect(last(hover)).toBe(
-      width < 100
-        ? "◈ needs you · coder-lead is waiting for a person"
-        : "◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it",
-    );
+    // Beside the controls while it fits; a narrow line keeps the controls.
+    if (width < 100) expect(last(hover)).toEndWith("? shortcuts · q quit");
+    else
+      expect(last(hover)).toMatch(
+        width > 150
+          ? /q quit +◈ needs you · coder-lead asked for a person, or rang the bell while no client viewed it$/
+          : /q quit +◈ needs you · coder-lead is waiting for a person$/,
+      );
     const health = await captureHealth(width, height);
     expect(health).toContain("Spent so far:");
     for (const frame of [terminal, list, empty, typed, hover, health])

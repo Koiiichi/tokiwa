@@ -385,6 +385,21 @@ export function stateGuide(
   width = Infinity,
   stale = false,
 ): Span[] {
+  const forms = stateGuides(name, state, others, stale);
+  return forms.find((c) => spanCells(c) <= width) ?? forms.at(-1)!;
+}
+
+/** The length of spans in cells. */
+export const spanCells = (spans: Span[]) =>
+  spans.reduce((n, s) => n + s.text.length, 0);
+
+/** The forms of the explanation of a row state, longest first. */
+export function stateGuides(
+  name: string,
+  state: RowState,
+  others: number,
+  stale = false,
+): Span[][] {
   const glyph: Span[] =
     state === "unknown"
       ? []
@@ -402,11 +417,9 @@ export function stateGuide(
         },
       ]
     : [];
-  const candidates: Span[][] = [
+  return [
     [...glyph, { text: STATE_GUIDE[state](name), tone: "dim" }, ...clients],
     [...glyph, { text: STATE_GUIDE[state](name), tone: "dim" }],
     [...glyph, { text: STATE_SHORT[state](name), tone: "dim" }],
   ];
-  const cells = (spans: Span[]) => spans.reduce((n, s) => n + s.text.length, 0);
-  return candidates.find((c) => cells(c) <= width) ?? candidates.at(-1)!;
 }

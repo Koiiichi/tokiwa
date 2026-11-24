@@ -74,7 +74,8 @@ import {
   projectTree,
   type TreeEntry,
   type TreeProject,
-  stateGuide,
+  spanCells,
+  stateGuides,
   projectTitle,
   rowState,
   runsOnlyShell,
@@ -103,7 +104,8 @@ import {
   type SearchRow,
 } from "./search";
 import {
-  fitHints,
+  fitFooter,
+  noticeForms,
   hint,
   hintText,
   SEPARATOR,
@@ -3267,8 +3269,8 @@ export class App {
     }
   }
   /**
-   * Draw the footer: one line of controls for the current context. While the pointer is over a
-   * session row, the line explains the state of that row instead.
+   * Draw the footer: one line of controls for the current context, with a message at its right. The
+   * message is a notice or, while the pointer is over a session row, the state of that row.
    */
   drawFooter() {
     if (this.disposed || !this.footer) return;
@@ -3278,19 +3280,49 @@ export class App {
         ? this.sessionRows().find((r) => `row:${r.name}` === this.hover)
         : undefined;
     const context = this.footerContext();
-    const fit = fitHints(context.hints, room, context.order);
+    const notice =
+      this.footerNotice && Date.now() < this.footerNotice.until
+        ? this.footerNotice
+        : undefined;
     const status = row ? this.rowStatus(row) : undefined;
-    this.footerShown = row ? [] : fit.hints;
-    const signature = JSON.stringify(
-      row
-        ? [room, row.name, status]
-        : [
-            room,
-            context.order,
-            fit.keys,
-            fit.hints.map((h) => [h.id, h.key, h.label]),
-          ],
+    const noticeTexts = notice
+      ? noticeForms(notice.text, notice.failed || !!notice.actions?.length)
+      : [];
+    const actionCells = (notice?.actions ?? []).reduce(
+      (n, action) => n + SEPARATOR.length + action.label.length,
+      0,
     );
+    // A notice reports what just happened, so the state of the row under the pointer waits for it.
+    const guides =
+      !notice && row && status
+        ? stateGuides(
+            row.name,
+            status.state,
+            status.others,
+            dimNeedsYou(status.state, row),
+          )
+        : [];
+    const fit = fitFooter(
+      context.hints,
+      notice
+        ? noticeTexts.map((text) => text.length + actionCells)
+        : guides.map(spanCells),
+      room,
+      context.order,
+      // The row itself names its state, so its explanation never hides the controls.
+      !notice,
+    );
+    this.footerShown = fit.takesLine ? [] : fit.hints;
+    const signature = JSON.stringify([
+      room,
+      context.order,
+      fit.keys,
+      fit.takesLine,
+      fit.hints.map((h) => [h.id, h.key, h.label]),
+      notice ? [noticeTexts[fit.form], notice.failed] : null,
+      notice?.actions?.map((action) => action.label),
+      guides.length ? [row?.name, status, guides[fit.form]] : null,
+    ]);
     if (signature === this.footerSignature) return;
     this.footerSignature = signature;
     for (const child of this.footer.getChildren()) child.destroyRecursively();
@@ -3304,24 +3336,17 @@ export class App {
         selectable: false,
         content: styled(spans),
       });
-    if (row && status) {
-      part(
-        this.footer,
-        "footer-state",
-        stateGuide(
-          row.name,
-          status.state,
-          status.others,
-          room,
-          dimNeedsYou(status.state, row),
-        ),
-      );
-      return;
-    }
-    if (this.footerNotice && Date.now() < this.footerNotice.until) {
-      const notice = this.footerNotice;
+    const drawMessage = () => {
+      if (!notice) {
+        if (guides.length)
+          part(this.footer, "footer-state", guides[fit.form]);
+        return;
+      }
       part(this.footer, "footer-notice", [
-        { text: notice.text, tone: notice.failed ? "warning" : "value" },
+        {
+          text: noticeTexts[fit.form],
+          tone: notice.failed ? "warning" : "dim",
+        },
       ]);
       // A notice can offer controls, for example open and copy for a link.
       notice.actions?.forEach((action, i) => {
@@ -3348,12 +3373,23 @@ export class App {
           control.backgroundColor = on ? theme.hover : "transparent";
         });
       });
+    };
+    if (fit.takesLine) {
+      drawMessage();
       return;
     }
+    const hasMessage = fit.form >= 0;
+    const endControl = fit.hints.some((h) => h.end);
     fit.hints.forEach((hint, i) => {
-      if (hint.end)
+      if (hint.end) {
         this.box(this.footer, "footer-spacer", { height: 1, flexGrow: 1 });
-      else if (i)
+        if (hasMessage) {
+          drawMessage();
+          part(this.footer, "footer-message-gap", [
+            { text: SEPARATOR, tone: "dim" },
+          ]);
+        }
+      } else if (i)
         part(this.footer, `footer-gap-${i}`, [
           { text: SEPARATOR, tone: "dim" },
         ]);
@@ -3395,6 +3431,10 @@ export class App {
           control.backgroundColor = on ? theme.hover : "transparent";
         });
     });
+    if (hasMessage && !endControl) {
+      this.box(this.footer, "footer-spacer", { height: 1, flexGrow: 1 });
+      drawMessage();
+    }
   }
   /** True when the workspace with its session list is the view under the pointer. */
   listView() {
@@ -3526,6 +3566,7 @@ export class App {
           ]
         : []),
       shortcuts,
+      hint("quit", "q", "quit", 8.5, () => this.runAction("quit")),
       ...(background
         ? [
             {
