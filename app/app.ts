@@ -2955,7 +2955,7 @@ export class App {
     if (this.remotePending.has(name)) return;
     this.remotePending.add(name);
     let opened: Shell | undefined;
-    const previousView = this.view,
+    let previousView = this.view,
       previousActive = this.active;
     try {
       let shell = this.shells.find((s) => s.remote?.name === name);
@@ -2970,8 +2970,22 @@ export class App {
         return;
       }
       const ref = known ?? (await this.backend.resolve(name, expected));
-      if (shell?.remote && shell.remote.identity !== ref.identity)
-        throw new Error("The session identity changed. Open a new view.");
+      if (shell?.remote && shell.remote.identity !== ref.identity) {
+        if (!shell.exited || reconnect)
+          throw new Error("The session identity changed. Open a new view.");
+        // The ended view shows a session that is gone, so nothing in it is lost.
+        const unmoved =
+          this.view === previousView && this.active === previousActive;
+        const current = this.view;
+        this.discardView(shell);
+        shell = undefined;
+        // The discard moves the view itself; a person who moved it during the read keeps their place.
+        if (unmoved) [previousView, previousActive] = [this.view, this.active];
+        else {
+          previousActive = -1;
+          if (this.view !== current) this.show(current);
+        }
+      }
       if (!shell && this.shells.length >= 4)
         throw new Error("Tokiwa supports four terminal views.");
       if (shell && reconnect) {
