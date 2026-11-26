@@ -48,6 +48,7 @@ The helper, [`terminal-session.sh`](../host/terminal-session.sh), runs outside t
 | `NoNewPrivileges` | `yes` | No process can gain privileges. `sudo` and other setuid programs do not work in a session. `CapabilityBoundingSet=` (empty) and `RestrictSUIDSGID=yes` add to this. |
 | `Restart` | `no` | systemd does not start the service again after it stops. |
 | `KillMode` | `control-group` | When the service stops, systemd stops every process in its cgroup, also processes that detached from their session. |
+| `OOMPolicy` | `continue` | When the sessions together reach `MemoryMax`, the kernel ends one process, and the service and the other sessions keep running. With the systemd default, `stop`, systemd stops the whole service, and every session ends. |
 
 Other settings of the unit:
 
