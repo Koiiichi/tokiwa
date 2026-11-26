@@ -515,6 +515,48 @@ test("the new view takes the place of an ended second view in front", async () =
   }
 });
 
+test("Health opened during the read stays in view when the ended view gives way", async () => {
+  const t = await createTestRenderer({ width: 120, height: 30 });
+  const app = new App(t.renderer, { spawn: false });
+  app.startShell("fixture");
+  const old = app.shells[0];
+  old.remote = {
+    name: "fixture",
+    identity: "1:$2:3",
+    cwd: "/work",
+    project: "/work",
+    clients: 0,
+  };
+  old.exited = true;
+  app.show("shell");
+  let release = () => {};
+  app.backend.resolve = () =>
+    new Promise((done) => {
+      release = () =>
+        done({
+          name: "fixture",
+          identity: "1:$3:4",
+          cwd: "/work",
+          project: "/work",
+          clients: 0,
+        });
+    });
+  app.backend.attachCommand = () => ["/bin/sh", "-c", "sleep 30"];
+  try {
+    const attach = app.attachRemote("fixture");
+    await Bun.sleep(20);
+    app.show("health");
+    release();
+    await attach;
+    expect(app.shells).not.toContain(old);
+    expect(app.shells.map((s) => s.remote?.identity)).toEqual(["1:$3:4"]);
+    expect(app.view).toBe("health");
+  } finally {
+    app.shells.forEach((s) => s.adapter.closeTransport());
+    await t.dispose();
+  }
+});
+
 test("palette copy preserves terminal selection across search focus", async () => {
   const t = await createTestRenderer({ width: 80, height: 24 });
   const app = new App(t.renderer, { spawn: false });

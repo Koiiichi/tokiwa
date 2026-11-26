@@ -2976,11 +2976,15 @@ export class App {
         // The ended view shows a session that is gone, so nothing in it is lost.
         const unmoved =
           this.view === previousView && this.active === previousActive;
+        const current = this.view;
         this.discardView(shell);
         shell = undefined;
         // The discard moves the view itself; a person who moved it during the read keeps their place.
         if (unmoved) [previousView, previousActive] = [this.view, this.active];
-        else previousActive = -1;
+        else {
+          previousActive = -1;
+          if (this.view !== current) this.show(current);
+        }
       }
       if (!shell && this.shells.length >= 4)
         throw new Error("Tokiwa supports four terminal views.");
