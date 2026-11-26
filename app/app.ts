@@ -2970,8 +2970,13 @@ export class App {
         return;
       }
       const ref = known ?? (await this.backend.resolve(name, expected));
-      if (shell?.remote && shell.remote.identity !== ref.identity)
-        throw new Error("The session identity changed. Open a new view.");
+      if (shell?.remote && shell.remote.identity !== ref.identity) {
+        if (!shell.exited || reconnect)
+          throw new Error("The session identity changed. Open a new view.");
+        // The ended view shows a session that is gone, so nothing in it is lost.
+        this.discardView(shell);
+        shell = undefined;
+      }
       if (!shell && this.shells.length >= 4)
         throw new Error("Tokiwa supports four terminal views.");
       if (shell && reconnect) {

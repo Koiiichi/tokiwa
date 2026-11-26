@@ -442,6 +442,44 @@ test("switching a connected remote terminal does not wait for an AWS snapshot", 
   }
 });
 
+test("an ended view gives way to a new view when a new session took its name", async () => {
+  const t = await createTestRenderer({ width: 80, height: 24 });
+  const app = new App(t.renderer, { spawn: false });
+  app.startShell("fixture");
+  const old = app.shells[0];
+  old.remote = {
+    name: "fixture",
+    identity: "1:$2:3",
+    cwd: "/work",
+    project: "/work",
+    clients: 0,
+  };
+  app.backend.resolve = async () => ({
+    name: "fixture",
+    identity: "1:$3:4",
+    cwd: "/work",
+    project: "/work",
+    clients: 0,
+  });
+  app.backend.attachCommand = () => ["/bin/sh", "-c", "sleep 30"];
+  const notice = () => app.footerNotice?.text ?? "";
+  try {
+    // A view that still runs keeps the refusal: its session may still be the one it shows.
+    await app.attachRemote("fixture", undefined, true);
+    expect(notice()).toContain("identity changed");
+    expect(app.shells).toEqual([old]);
+    old.exited = true;
+    app.footerNotice = undefined;
+    await app.attachRemote("fixture");
+    expect(notice()).not.toContain("identity changed");
+    expect(app.shells).not.toContain(old);
+    expect(app.shells.map((s) => s.remote?.identity)).toEqual(["1:$3:4"]);
+  } finally {
+    app.shells.forEach((s) => s.adapter.closeTransport());
+    await t.dispose();
+  }
+});
+
 test("palette copy preserves terminal selection across search focus", async () => {
   const t = await createTestRenderer({ width: 80, height: 24 });
   const app = new App(t.renderer, { spawn: false });

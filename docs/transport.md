@@ -76,7 +76,7 @@ Each layer checks the identity before it attaches.
 | Launcher | The same pattern; it quotes the identity for the remote shell, because the identity holds `$` | `The session identity is invalid. Refresh the session list.` |
 | Host helper | `if-shell -F` compares the identity and runs `attach-session` in one tmux command queue | `Session identity changed. No session was attached.`, then the launcher prints `The terminal connection ended with an error. Run tokiwa status.` |
 
-The view itself holds the identity of its session. A later attach to the same view with another identity fails with `The session identity changed. Open a new view.` or `The session identity changed. Selection was refused.`
+The view itself holds the identity of its session. A later attach to the same view with another identity fails with `The session identity changed. Open a new view.` or `The session identity changed. Selection was refused.` The exception is a view whose transport ended: when a new session took its name, for example after a workstation restart, an attach closes the ended view and opens a new one. A reconnect never replaces a view.
 
 ### Child shell beside
 
