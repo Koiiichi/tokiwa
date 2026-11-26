@@ -2981,7 +2981,8 @@ export class App {
         this.discardView(shell);
         shell = undefined;
         // The discard moves the view itself; a person who moved it during the read keeps their place.
-        if (unmoved) [previousView, previousActive] = [this.view, this.active];
+        if (unmoved && focus)
+          [previousView, previousActive] = [this.view, this.active];
         else {
           previousActive = -1;
           if (this.view !== current) this.show(current);
