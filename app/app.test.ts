@@ -480,6 +480,41 @@ test("an ended view gives way to a new view when a new session took its name", a
   }
 });
 
+test("the new view takes the place of an ended second view in front", async () => {
+  const t = await createTestRenderer({ width: 120, height: 30 });
+  const app = new App(t.renderer, { spawn: false });
+  app.startShell("other");
+  app.startShell("fixture");
+  const old = app.shells[1];
+  old.remote = {
+    name: "fixture",
+    identity: "1:$2:3",
+    cwd: "/work",
+    project: "/work",
+    clients: 0,
+  };
+  old.exited = true;
+  app.active = 1;
+  app.show("shell");
+  app.backend.resolve = async () => ({
+    name: "fixture",
+    identity: "1:$3:4",
+    cwd: "/work",
+    project: "/work",
+    clients: 0,
+  });
+  app.backend.attachCommand = () => ["/bin/sh", "-c", "sleep 30"];
+  try {
+    await app.attachRemote("fixture");
+    expect(app.shells).not.toContain(old);
+    expect(app.view).toBe("shell");
+    expect(app.shells[app.active].remote?.identity).toBe("1:$3:4");
+  } finally {
+    app.shells.forEach((s) => s.adapter.closeTransport());
+    await t.dispose();
+  }
+});
+
 test("palette copy preserves terminal selection across search focus", async () => {
   const t = await createTestRenderer({ width: 80, height: 24 });
   const app = new App(t.renderer, { spawn: false });
