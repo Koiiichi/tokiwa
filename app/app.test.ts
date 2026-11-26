@@ -557,6 +557,69 @@ test("Health opened during the read stays in view when the ended view gives way"
   }
 });
 
+test("Health opened during an attach stays in view while the child shell reopens", async () => {
+  const t = await createTestRenderer({ width: 200, height: 40 });
+  const app = new App(t.renderer, { spawn: false });
+  const ref = (name: string, identity: string, parent?: string) =>
+    ({ name, identity, cwd: "/work", project: "/work", clients: 0, parent }) as any;
+  app.remoteSessions = [ref("fixture", "1:$3:4"), ref("child", "1:$5:9", "$3")];
+  let release = () => {};
+  app.backend.resolve = (name: string) =>
+    name === "child"
+      ? Promise.resolve(ref("child", "1:$5:9", "$3"))
+      : new Promise((done) => {
+          release = () => done(ref("fixture", "1:$3:4"));
+        });
+  app.backend.attachCommand = () => ["/bin/sh", "-c", "sleep 30"];
+  app.show("shell");
+  try {
+    const attach = app.attachRemote("fixture");
+    await Bun.sleep(20);
+    app.show("health");
+    release();
+    await attach;
+    expect(app.shells.map((s) => s.remote?.name)).toEqual(["fixture", "child"]);
+    expect(app.view).toBe("health");
+  } finally {
+    app.shells.forEach((s) => s.adapter.closeTransport());
+    await t.dispose();
+  }
+});
+
+test("Health stays in view when an ended child view gives way during the reopen", async () => {
+  const t = await createTestRenderer({ width: 200, height: 40 });
+  const app = new App(t.renderer, { spawn: false });
+  const ref = (name: string, identity: string, parent?: string) =>
+    ({ name, identity, cwd: "/work", project: "/work", clients: 0, parent }) as any;
+  app.startShell("child");
+  const ended = app.shells[0];
+  ended.remote = ref("child", "1:$4:5", "$3");
+  ended.exited = true;
+  app.remoteSessions = [ref("fixture", "1:$3:4"), ref("child", "1:$5:9", "$3")];
+  let release = () => {};
+  app.backend.resolve = (name: string) =>
+    name === "child"
+      ? Promise.resolve(ref("child", "1:$5:9", "$3"))
+      : new Promise((done) => {
+          release = () => done(ref("fixture", "1:$3:4"));
+        });
+  app.backend.attachCommand = () => ["/bin/sh", "-c", "sleep 30"];
+  app.show("shell");
+  try {
+    const attach = app.attachRemote("fixture");
+    await Bun.sleep(20);
+    app.show("health");
+    release();
+    await attach;
+    expect(app.shells).not.toContain(ended);
+    expect(app.shells.map((s) => s.remote?.identity).sort()).toEqual(["1:$3:4", "1:$5:9"]);
+    expect(app.view).toBe("health");
+  } finally {
+    app.shells.forEach((s) => s.adapter.closeTransport());
+    await t.dispose();
+  }
+});
+
 test("palette copy preserves terminal selection across search focus", async () => {
   const t = await createTestRenderer({ width: 80, height: 24 });
   const app = new App(t.renderer, { spawn: false });

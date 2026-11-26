@@ -80,7 +80,7 @@ The view itself holds the identity of its session. A later attach to the same vi
 
 ### Child shell beside
 
-A fresh attach also reopens the newest child of the session (a session made with **Shell here**) in a second view beside it. The child is the session whose `parent` equals the session's tmux session id; the newest has the largest creation time. The child gets its own transport, and the source session keeps the keyboard.
+A fresh attach also reopens the newest child of the session (a session made with **Shell here**) in a second view beside it. The child is the session whose `parent` equals the session's tmux session id; the newest has the largest creation time. The child gets its own transport, and the source session keeps the keyboard. When another view, such as Health, took the place of the session during the attach, that view stays.
 
 | Condition | Effect |
 | --- | --- |

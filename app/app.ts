@@ -2951,6 +2951,7 @@ export class App {
     reconnect = false,
     withChild = true,
     known?: SessionRef,
+    focus = true,
   ) {
     if (this.remotePending.has(name)) return;
     this.remotePending.add(name);
@@ -2980,7 +2981,8 @@ export class App {
         this.discardView(shell);
         shell = undefined;
         // The discard moves the view itself; a person who moved it during the read keeps their place.
-        if (unmoved) [previousView, previousActive] = [this.view, this.active];
+        if (unmoved && focus)
+          [previousView, previousActive] = [this.view, this.active];
         else {
           previousActive = -1;
           if (this.view !== current) this.show(current);
@@ -3089,6 +3091,7 @@ export class App {
       adapter.resize(terminal.screen().columns, terminal.screen().rows);
       this.acknowledge(name);
       if (
+        focus &&
         !this.palette &&
         this.view === previousView &&
         this.active === previousActive
@@ -3137,7 +3140,17 @@ export class App {
       this.shells.find((s) => s.remote?.name === child.name && !s.exited);
     if (!open()) {
       if (this.shells.length >= 4) return;
-      await this.attachRemote(child.name, child.identity, false, false);
+      // The child takes the keyboard only from its session in front, not from Health or the search.
+      const front =
+        this.view === "shell" && this.shells[this.active] === parent;
+      await this.attachRemote(
+        child.name,
+        child.identity,
+        false,
+        false,
+        undefined,
+        front,
+      );
     }
     const shell = open();
     if (!shell || this.disposed || parent.exited) return;
