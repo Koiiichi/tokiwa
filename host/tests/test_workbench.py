@@ -45,6 +45,11 @@ class WorkbenchLauncher(unittest.TestCase):
         self.assertIn('claude auth login', source)
         self.assertIn('codex login', source)
 
+class WorkbenchService(unittest.TestCase):
+    def test_a_memory_kill_ends_one_process_not_the_service(self):
+        unit = (ROOT / 'units/cloud-workbench.service').read_text()
+        self.assertIn('OOMPolicy=continue\n', unit)
+
 class NativeEngineContract(unittest.TestCase):
     def test_long_lived_child_can_notify_without_automatic_retry(self):
         unit = (ROOT / 'units/docker.service').read_text()

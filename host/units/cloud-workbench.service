@@ -18,6 +18,7 @@ RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/tmux -D -S /run/cloud-workbench/tmux.sock -f /dev/null
 ExecStartPost=/opt/agent-platform/rootless/start-workbench.sh
 Restart=no
+OOMPolicy=continue
 KillMode=control-group
 MemoryMax=8G
 MemorySwapMax=0
