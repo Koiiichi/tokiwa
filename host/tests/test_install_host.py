@@ -110,7 +110,7 @@ class HostInstall(unittest.TestCase):
 
     def test_with_docker_adds_the_engine_and_the_socket_drop_in(self):
         out = self.install('--with-docker').stdout
-        self.assertIn('docker.io docker-compose-v2 rootlesskit slirp4netns uidmap', out)
+        self.assertIn('docker.io docker-buildx docker-compose-v2 rootlesskit slirp4netns uidmap', out)
         self.assertIn('would run: useradd --uid 2200 --gid 2200', out)
         self.assertIn('would run: truncate -s 24G /srv/development/cache/rootless-engine.ext4', out)
         self.assertIn('/etc/systemd/system/cloud-workbench.service.d/docker.conf', out)

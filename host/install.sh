@@ -65,7 +65,7 @@ say "Tokiwa host install on ${PRETTY_NAME:-Ubuntu}$( (( docker )) && printf ' wi
 
 # Packages.
 packages=(tmux python3 acl nftables openssl)
-(( docker )) && packages+=(docker.io docker-compose-v2 rootlesskit slirp4netns uidmap)
+(( docker )) && packages+=(docker.io docker-buildx docker-compose-v2 rootlesskit slirp4netns uidmap)
 missing=()
 for package in "${packages[@]}"; do
  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed' || missing+=("$package")
